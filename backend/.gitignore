@@ -1,0 +1,34 @@
+# Python Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*.so
+
+# Environment Variables
+.env
+secrets/gcp-service-account.json
+
+# Received Frames (can be large!)
+received_frames/
+*.jpg
+*.jpeg
+*.png
+
+# Server State & Logs
+server_state.json
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS Files
+.DS_Store
+
+backend/.env

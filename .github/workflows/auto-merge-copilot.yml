@@ -1,0 +1,56 @@
+name: Auto-Merge Main into Copilot Branches
+
+# Trigger on push to main or manual trigger
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+# Give workflow write permissions for private repos
+permissions:
+  contents: write
+
+jobs:
+  merge-copilot-branches:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repo with full history and proper token
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # fetch all branches
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Setup git for commit/push
+      - name: Setup Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+
+      # List all Copilot branches safely
+      - name: List Copilot branches
+        id: branches
+        run: |
+          # Get all remote branches starting with 'copilot/'
+          COPILOT_BRANCHES=$(git branch -r | grep 'origin/copilot/' | sed 's|origin/||' | tr '\n' ' ')
+          # Write to GitHub Actions environment safely
+          echo "COPILOT_BRANCHES=${COPILOT_BRANCHES}" >> $GITHUB_ENV
+          echo "Found branches: $COPILOT_BRANCHES"
+
+      # Merge main into each Copilot branch
+      - name: Merge main into Copilot branches
+        run: |
+          for branch in $COPILOT_BRANCHES; do
+            echo "Processing branch: $branch"
+            git checkout $branch
+            # Merge main, prefer Copilot branch changes if conflict
+            git merge origin/main -X ours --no-edit || {
+              echo "Conflict detected in $branch, merge aborted"
+              git merge --abort
+              continue
+            }
+            # Push changes using GITHUB_TOKEN (write access)
+            git push origin HEAD:$branch
+          done

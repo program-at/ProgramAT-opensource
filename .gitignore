@@ -1,0 +1,10 @@
+__pycache__/
+tools/models/
+secrets/gcp-service-account.json
+
+# User session logs (keep directory structure via .gitkeep)
+backend/user_logs/*
+!backend/user_logs/.gitkeep
+
+# Copilot logs database (generated at runtime)
+backend/copilot_logs.db
