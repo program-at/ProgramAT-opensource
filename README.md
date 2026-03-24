@@ -4,26 +4,26 @@ An AI-powered assistive technology platform that runs vision and language tools 
 
 ## Features
 
-### �️ Pluggable Tool System
+###  Pluggable Tool System
 - **Tool Selector & Runner** — Browse available tools, select one, and run it against the live camera feed
 - **Streaming mode** — Tools process frames continuously and return real-time audio feedback
 - **Single-frame mode** — Capture one frame and get a detailed result
 - **Conversation mode** — Ask follow-up questions about tool results via a Chat tab
 - **Custom GPT tools** — Tools flagged as Custom GPT use Gemini Live for streaming multimodal conversations instead of executing code per frame
 
-### 📹 Camera & Audio
+### Camera & Audio
 - **Real-time camera streaming** at configurable FPS via `react-native-vision-camera`
 - **Text-to-Speech feedback** — all tool results are spoken aloud automatically
 - **Rich audio output** — tools can return speech, beeps, haptic vibration, earcons, and more via the AudioOutputService
 - **Speech-to-Text input** — voice input for follow-up questions using `@react-native-voice/voice` and OS-level dictation
 
-### 📋 Development Mode (GitHub Integration)
+###  Development Mode (GitHub Integration)
 - **PR browser** — List open pull requests, select one, and load its tools
 - **Text input for issues** — Create or update GitHub issues with AI-powered parsing (Gemini)
 - **Multi-turn conversations** — The server asks for missing fields until the issue is complete
 - **Copilot session logs** — View AI coding session summaries per PR
 
-### ⚙️ Production Mode
+###  Production Mode
 - Tools are pulled from the `main` branch only
 - The PR browser tab is hidden; users go straight to the tool list
 
@@ -38,7 +38,6 @@ An AI-powered assistive technology platform that runs vision and language tools 
 | **Door Detection** | Detects doors/doorways with clock-face navigation cues | YOLOWorld |
 | **Empty Seat Detection** | Finds unoccupied chairs and gives directional guidance | YOLOv11 |
 | **Clothing Recognition** | Identifies the most prominent clothing item and its features | Google Gemini Vision |
-| **Package Finding** | Locates packages/boxes with directional guidance | YOLOWorld |
 
 New tools can be added by placing a Python file in the `tools/` directory. Each tool exposes a `main(image, input_data)` function and returns an audio-friendly string or dict.
 
@@ -75,8 +74,7 @@ ProgramAT-opensource/
     ├── camera_aiming.py
     ├── door_detection.py
     ├── empty_seat_detection.py
-    ├── clothing_recognition.py
-    └── package_finding.py
+    └── clothing_recognition.py
 ```
 
 ## Getting Started
@@ -125,7 +123,7 @@ The backend uses environment variables for API keys and configuration:
 | `GEMINI_API_KEY` | Yes (for AI tools) | Google Gemini API key — used by scene description, clothing recognition, AI parsing, and Gemini Live |
 | `GOOGLE_APPLICATION_CREDENTIALS` | For OCR tools | Google Cloud Vision API credentials (used by Live OCR) |
 | `GITHUB_TOKEN` | For GitHub features | GitHub personal access token with `repo` scope |
-| `GITHUB_REPO` | Optional | Target repo in `owner/repo` format |
+| `GITHUB_REPO` | Yes (to be able to access your own tools) | Target repo in `owner/repo` format |
 | `HOST` / `PORT` | Optional | Server bind address (default `0.0.0.0:8080`) |
 
 ### Running the Application
