@@ -43,8 +43,8 @@ ProgramAT/
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/program-at/ProgramAT.git
-   cd ProgramAT
+   git clone https://github.com/program-at/ProgramAT-opensource.git
+   cd ProgramAT-opensource
    ```
 
 2. **Install React Native dependencies**
