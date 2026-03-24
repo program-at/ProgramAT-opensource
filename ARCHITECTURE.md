@@ -2,59 +2,73 @@
 
 ## System Overview
 
-ProgramAT is a **mobile-first AI-powered issue management system** that combines camera streaming with text input to create and manage GitHub issues through natural language processing.
+ProgramAT is a **mobile-first assistive technology platform** for blind and visually impaired users. It combines a React Native app with a Python WebSocket backend to run AI-powered vision tools in real-time. Camera frames stream from the device to the server, where Python tools process them using ML models (YOLO, Gemini, Google Vision) and return audio-friendly results that are spoken aloud via TTS. The platform also supports GitHub issue/PR management and live Copilot session monitoring.
 
 ## Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Mobile App (React Native)                 │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-│  │ Camera View  │  │  Text Input  │  │Issue Selector│      │
-│  │ (Vision Cam) │  │ (with OS     │  │              │      │
-│  │              │  │  dictation)  │  │              │      │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘      │
-│         │                  │                  │              │
-│         └──────────┬───────┴──────────────────┘              │
-│                    │                                         │
-│         ┌──────────▼──────────┐                              │
-│         │ WebSocket Service   │                              │
-│         │   (Socket.IO)       │                              │
-│         └──────────┬──────────┘                              │
-└────────────────────┼────────────────────────────────────────┘
-                     │
-                     │ WebSocket (ws://server:8080)
-                     │
-┌────────────────────▼────────────────────────────────────────┐
-│              Python WebSocket Server                         │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │          Message Handler (async)                      │   │
-│  │  • Receives frames (base64 images)                    │   │
-│  │  • Receives text (with delta tracking)                │   │
-│  │  • Routes to appropriate processor                    │   │
-│  └─────────┬────────────────────────────────┬───────────┘   │
-│            │                                 │               │
-│  ┌─────────▼──────────┐         ┌───────────▼──────────┐    │
-│  │  Frame Processor   │         │   Text Processor     │    │
-│  │  • Save to disk    │         │  • Delta extraction  │    │
-│  │  • OpenCV process  │         │  • Pause detection   │    │
-│  └────────────────────┘         └───────────┬──────────┘    │
-│                                              │               │
-│                                  ┌───────────▼──────────┐    │
-│                                  │   AI Parser          │    │
-│                                  │  (Google Gemini)     │    │
-│                                  │  • Parse transcript  │    │
-│                                  │  • Extract fields    │    │
-│                                  │  • Detect missing    │    │
-│                                  └───────────┬──────────┘    │
-│                                              │               │
-│                                  ┌───────────▼──────────┐    │
-│                                  │  GitHub Integration  │    │
-│                                  │  • Create issues     │    │
-│                                  │  • Update issues     │    │
-│                                  │  • Mention @copilot  │    │
-│                                  └──────────────────────┘    │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                    Mobile App (React Native / iOS & Android)      │
+│                                                                    │
+│  ┌───────────────┐  ┌───────────────┐  ┌──────────┐  ┌────────┐ │
+│  │  PRs & Text   │  │ Tools/Runner  │  │   Chat   │  │Settings│ │
+│  │  (Dev mode)   │  │ (both modes)  │  │          │  │        │ │
+│  └───────┬───────┘  └───────┬───────┘  └────┬─────┘  └────────┘ │
+│          │                  │               │                     │
+│          └──────────────────┴───────────────┘                    │
+│                             │                                     │
+│               ┌─────────────▼──────────────┐                     │
+│               │       WebSocketService      │                     │
+│               │  (native WebSocket, not     │                     │
+│               │   Socket.IO)                │                     │
+│               └─────────────┬──────────────┘                     │
+│                             │                                     │
+│       ┌─────────────────────┤                                     │
+│       │                     │                                     │
+│  ┌────▼──────┐  ┌───────────▼────────┐  ┌────────────────────┐  │
+│  │CameraView │  │  AudioOutputService │  │TextToSpeechService │  │
+│  │(frame     │  │  (TTS, beeps,       │  │ (react-native-tts) │  │
+│  │ capture)  │  │   earcons, haptics) │  │                    │  │
+│  └───────────┘  └────────────────────┘  └────────────────────┘  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               │
+                               │ WebSocket (ws://server:8080)
+                               │ Binary / JSON messages
+                               │
+┌──────────────────────────────▼───────────────────────────────────┐
+│                    Python Backend (GCP VM)                         │
+│                      stream_server.py                             │
+│                                                                    │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │                 Message Router (async)                    │    │
+│  │  frame | text | run_tool | start_streaming | stop |       │    │
+│  │  request_issue_list | request_pr_list | ping | ...        │    │
+│  └───┬──────────────┬───────────────────┬────────────────────┘   │
+│      │              │                   │                          │
+│  ┌───▼────┐  ┌──────▼──────┐  ┌────────▼─────────────────────┐  │
+│  │ Frame  │  │ Text / Issue │  │       Tool Executor          │  │
+│  │ Store  │  │ Processor    │  │                              │  │
+│  │(disk + │  │ (Gemini AI   │  │  • exec() Python tool code   │  │
+│  │ last   │  │  parsing,    │  │  • YOLO model cache          │  │
+│  │ frame) │  │  GitHub ops) │  │  • Module auto-install       │  │
+│  └────────┘  └─────────────┘  │  • Streaming (per-frame loop)│  │
+│                                │  • Gemini Live (custom GPT)  │  │
+│                                └──────────────────────────────┘  │
+│                                                                    │
+│  ┌────────────────────┐  ┌────────────────┐  ┌─────────────────┐ │
+│  │  GeminiLiveManager │  │  copilot_db.py │  │GeminiSummarizer │ │
+│  │  (native audio,    │  │  (SQLite,      │  │(summarize logs  │ │
+│  │   real-time conv.) │  │   sessions,    │  │ for TTS)        │ │
+│  │                    │  │   logs,        │  │                 │ │
+│  └────────────────────┘  │   summaries)   │  └─────────────────┘ │
+│                           └────────────────┘                      │
+└───────────────────────────────────────────────────────────────────┘
+
+External Services:
+  • GitHub API (PyGithub)        — issue/PR/comment management
+  • Google Gemini API            — AI parsing, tool execution, live audio
+  • Google Cloud Vision API      — OCR / text extraction (in tools)
+  • GCP Secret Manager           — secret storage (GitHub token, etc.)
 ```
 
 ## Frontend Architecture
@@ -63,334 +77,358 @@ ProgramAT is a **mobile-first AI-powered issue management system** that combines
 - **Framework**: React Native (iOS & Android)
 - **Language**: TypeScript
 - **Camera**: react-native-vision-camera
-- **Text-to-Speech**: react-native-tts (for server feedback)
-- **WebSocket**: Socket.IO client
-- **UI**: React Native core components
+- **Speech-to-Text**: @react-native-voice/voice (used in ToolRunner for follow-up queries)
+- **Text-to-Speech**: react-native-tts + `AudioOutputService.ts`
+- **WebSocket**: Native WebSocket (not Socket.IO)
+- **Storage**: AsyncStorage (persisted tool selections, chat sessions)
+- **UI**: React Native core components + react-native-safe-area-context
+
+### App Modes
+
+The app runs in one of two modes configured in `config.ts`:
+
+| Feature | Development | Production |
+|---------|-------------|------------|
+| PRs & Text tab | ✅ | ❌ |
+| Issues tab | ✅ | ❌ |
+| PR / branch selection | ✅ | ❌ |
+| Tools tab | ✅ | ✅ |
+| Chat tab | ✅ | ✅ |
+| Tools loaded from | Any PR/branch | `main` only |
+| Default tab on launch | PRs & Text | Tools |
 
 ### Key Components
 
-#### 1. **App.tsx** - Main Container
-- Connection management (connect/disconnect)
-- Mode switching (create vs update)
-- Issue selection state
-- Server feedback handling
-- Coordinates all child components
+#### 1. **TabNavigator.tsx** – App Shell
+- Bottom tab bar with: **PRs & Text** (dev only), **Tools**, **Chat**, **Settings**
+- Passes `issueTools`, `prList`, `copilotSessions/Logs/Summaries` down to children
+- Handles mode switching (Dev ↔ Production)
+- Coordinates cross-tab navigation (e.g. ToolRunner → Chat)
 
-#### 2. **TextInput.tsx** - Text Input Interface
-- **Multi-line text input** with auto-expanding height
-- **OS-level dictation support** (microphone icon on keyboard)
-- **Auto-send complete sentences** as user types
-- **Delta tracking** to avoid resending entire text
-- Character counter
-- Clear and Send buttons
-- Server feedback display
+#### 2. **PRsAndText.tsx** – Dev Workflow Tab *(development mode only)*
+- Three sub-views: PR list (`IssueSelector`), text input (`TextInput`), log viewer (`ViewLogsScreen`)
+- Browse open PRs, select one, compose issue text, watch Copilot logs
 
-#### 3. **CameraView.tsx** - Camera Frame Capture
-- Real-time camera preview
-- Periodic frame capture (configurable interval)
-- Base64 encoding
-- WebSocket streaming
+#### 3. **ToolsAndRunner.tsx** – Tool Tab
+- Composes `ToolSelector` + `ToolRunner`
+- Persists selected tool via AsyncStorage across app restarts
+- Refreshes tool definition when code or `gpt_query` changes on server
 
-#### 4. **IssueSelector.tsx** - Issue Browser
-- Modal interface to browse open GitHub issues
-- Search and filter capabilities
-- Issue selection for update mode
+#### 4. **ToolSelector.tsx** – Tool Browser
+- Fetches available tools from backend via `request_tool_list` WebSocket message
+- Displays tools from the `tools/` directory (filtered by mode)
+- Plays loading beep if fetch takes > 3 seconds
 
-#### 5. **WebSocketService.ts** - Communication Layer
-- Socket.IO connection management
-- Message sending (text, frames)
-- Event handlers for server responses
-- Automatic reconnection
+#### 5. **ToolRunner.tsx** – Tool Execution UI
+- Sends `run_tool` / `start_streaming_tool` / `stop_streaming_tool` messages
+- Displays text output from tool results
+- **Audio output**: passes result through `AudioOutputService` (TTS, beeps, earcons, haptics)
+- **Streaming mode**: continuous per-frame execution with throttling and similarity filtering
+- **Custom GPT mode**: activates `GeminiLiveSession` on the server; supports voice follow-up questions via `@react-native-voice/voice`; auto-re-queries every `query_interval` seconds
+- Camera frames captured via `CameraView` ref and attached to each run
 
-#### 6. **TextToSpeechService.ts** - Voice Feedback
-- Speaks server feedback messages
-- Handles TTS queue
-- Platform-specific implementations
+#### 6. **CameraView.tsx** – Camera
+- Live preview via react-native-vision-camera
+- Captures single frames (base64 JPEG) on demand or on a timer
+- Exposes `CameraViewHandle` ref so parent components can trigger captures
 
-### Input Flow (Text-Based)
+#### 7. **Chat.tsx** – Conversation History
+- Stores chat sessions in AsyncStorage
+- Shows image thumbnail, tool name, and full message history per session
+- Supports follow-up questions that are sent to the server as `chat_followup` messages
+- Auto-navigated to from ToolRunner when a Gemini Live conversation produces a conversation ID
+
+#### 8. **WebSocketService.ts** – Network Layer
+- Native WebSocket connection to `ws://server:8080`
+- 25-second heartbeat ping with 8-second pong timeout and auto-reconnect
+- 15-second connection timeout
+- Single `onMessage` callback dispatched to all registered listeners
+- Sends: `StreamFrame` (base64 image), `StreamText` (text), and arbitrary JSON commands
+
+#### 9. **AudioOutputService.ts** – Audio Output
+- Unified interface for TTS, beeps (200 / 440 / 880 Hz), earcons (success/error/warning), and haptic patterns
+- `interrupt` flag stops current speech before starting new audio
+- Tools return a dict with `audio.type` to control which output mode is used
+
+#### 10. **IssueSelector.tsx** – PR/Issue Browser *(dev mode)*
+- Browse open GitHub issues and PRs
+- Select to enter update mode, view Copilot logs, or navigate to Tools
+
+#### 11. **ViewLogsScreen.tsx** – Copilot Log Viewer *(dev mode)*
+- Shows live Copilot agent logs for a selected PR
+- Displays rolling summaries generated by `GeminiSummarizer`
+
+### Tool Execution Flow
 
 ```
-User Input → TextInput Component → Extract Complete Sentences
-    ↓
-Sentence Detected (ends with . ! ?)
-    ↓
-WebSocket.sendText(sentence)
-    ↓
-Backend Processing
-    ↓
-Server Response (feedback/success)
-    ↓
-Display + Optional TTS Spoken Feedback
+User selects tool in ToolSelector
+          │
+          ▼
+ToolRunner sends start_streaming_tool (or run_tool for one-shot)
+          │
+          ▼
+CameraView captures frame (base64 JPEG)
+          │
+          ▼
+WebSocket sends frame + run command to backend
+          │
+          ▼
+Backend exec()s tool code with (image, input_data)
+          │
+          ▼
+Tool returns string or dict with 'audio'/'text' keys
+          │
+          ▼
+Backend sends tool_result WebSocket message
+          │
+          ▼
+ToolRunner receives result
+          │
+     ┌────┴────────────────────────────┐
+     │                                 │
+     ▼                                 ▼
+AudioOutputService.speak()     setToolOutput() → UI text
+(TTS / beep / earcon)
 ```
-
-### OS-Level Dictation Support
-
-The system leverages native OS dictation features:
-
-- **iOS**: Microphone icon on keyboard (tap to dictate)
-- **Android**: Voice input button on keyboard
-- No custom voice recognition library needed
-- User can mix typing and dictation seamlessly
 
 ## Backend Architecture
 
 ### Technology Stack
 - **Language**: Python 3.11
-- **WebSocket Server**: websockets library
-- **AI**: Google Gemini API (gemini-3-flash-preview)
+- **WebSocket Server**: `websockets` library (asyncio)
+- **AI – General**: Google Gemini API (`gemini-2.5-flash-lite` default; configurable)
+- **AI – Live Audio**: `gemini-2.5-flash-native-audio-preview` via `google-genai` SDK
+- **Object Detection**: YOLO11 (`yolo11n.pt`) and YOLOWorld (`yolov8s-world.pt`) via Ultralytics
+- **OCR**: Google Cloud Vision API
 - **GitHub**: PyGithub
 - **Image Processing**: OpenCV, NumPy, Pillow
-- **Secrets**: GCP Secret Manager
-- **Environment**: GCP VM instance
+- **Secrets**: GCP Secret Manager (with `.env` fallback)
+- **Database**: SQLite via `copilot_db.py`
+- **Deployment**: GCP Compute Engine VM
 
-### Core Services
+### Core Modules
 
-#### 1. **WebSocket Server** (`stream_server.py`)
-- Async event loop with websockets
-- Handles multiple concurrent connections
-- 20MB max message size for large images
-- Ping/pong keepalive (20s interval)
+#### 1. **stream_server.py** – WebSocket Server & Message Router
+- Single asyncio event loop; handles all connected clients concurrently
+- 20 MB max message size; 20s ping/pong keepalive
+- Per-client `SessionLogger` writes timestamped `.log` files to `user_logs/`
+- Global state: `last_frame`, `active_streaming_tools`, `yolo_model_cache`, `conversation_images`, `active_copilot_streams`, `pending_copilot_issues`
 
-#### 2. **Message Router**
-- Detects message type (frame, text, command)
-- Routes to appropriate processor
-- Sends acknowledgments
-- Broadcasts stats periodically
+#### 2. **Tool Executor**
+- Tools from the `tools/` directory are fetched from GitHub and `exec()`-ed directly in Python
+- Each tool must expose a `main(image, input_data)` function
+- Returns a `str` (spoken via TTS) or `dict` with `audio` / `text` keys
+- **YOLO model cache** (`yolo_model_cache`) is shared across all tool runs to avoid reloading weights on every frame
+- **Module auto-install**: `ModuleManager` installs missing pip packages at runtime and updates `requirements.txt`
+- **Streaming tools**: `run_streaming_tools()` loops on every incoming frame; per-client throttle (default 500 ms)
+- **Gemini Live tools** (`custom_gpt=True`): handled by `GeminiLiveManager`, bypass the `exec()` loop
 
-#### 3. **Frame Processor**
-- Decodes base64 images
-- Saves to disk (`received_frames/`)
-- OpenCV processing pipeline (ready for ML)
-- Size validation
+#### 3. **module_manager.py** – Dependency Manager
+- `install_module(name)` runs `pip install` in a subprocess
+- `load_module(name)` imports and caches; installs if missing
+- Tracks installed modules per session to avoid duplicate installs
+- Maps common import aliases (`cv2` → `opencv-python`, `PIL` → `pillow`, etc.)
 
-#### 4. **Text Processor**
-- **Delta tracking**: Only new words are queued
-- Prevents duplicate issue creation
-- Logs all text to `received_texts.log`
-- Triggers pause detection
+#### 4. **gemini_live.py** – Gemini Live Session Manager
+- `GeminiLiveSession`: connects to Gemini Live API with native audio response modality
+- Background `_receive_loop` collects audio transcription and text parts
+- `send_image_query(base64_image, query)` sends a frame + prompt; awaits `turn_complete`
+- Images are downscaled to ≤ 1024 px on longest edge before transmission
+- `GeminiLiveManager` (in `stream_server.py`) manages per-client sessions and the periodic re-query loop
 
-#### 5. **AI Parser** (Google Gemini)
-- Parses natural language into structured data
-- Supports 3 issue types:
-  - **Bug Report**: description, steps, expected, actual
-  - **Feature Request**: description, problem, solution
-  - **Personal Website**: name, bio, skills, education, etc.
-- Multi-turn conversations to fill missing fields
-- Context-aware follow-ups
+#### 5. **copilot_db.py** – SQLite Database
+- Tables: `copilot_sessions`, `copilot_logs`, `copilot_summaries`
+- Tracks GitHub Copilot agent subprocess sessions by PR number
+- Bulk log inserts run in a `ThreadPoolExecutor` to avoid blocking the asyncio loop
 
-#### 6. **GitHub Integration**
-- Creates issues from templates
-- Fills templates with AI-parsed data
-- Updates existing issues with comments
-- Mentions @copilot for code changes
-- Associates with pull requests
+#### 6. **gemini_summarizer.py** – Log Summarizer
+- Summarizes batches of Copilot log entries into 1–3 sentence TTS-friendly strings
+- Uses `gemini-2.5-flash-lite` (configurable via `GEMINI_MODEL` env var)
+- Called periodically while a Copilot session is streaming
 
-### Processing Flow
+#### 7. **GitHub Integration** (in `stream_server.py`)
+- Creates issues from `.github/ISSUE_TEMPLATE/` templates
+- Fills templates with Gemini-parsed field data
+- Adds comments to existing issues (update mode)
+- Mentions `@copilot` for code-change requests
+- Polls GitHub for new PRs after Copilot issue creation (`pending_copilot_issues`)
 
-```
-Text Received
-    ↓
-Delta Extraction (new words only)
-    ↓
-Buffer Update (last_text['content'])
-    ↓
-Pause Detection (5 second timer)
-    ↓
-AI Parsing (parse_transcript_with_ai)
-    ↓
-Field Validation (missing_fields check)
-    ↓
-┌─────────────┬─────────────┐
-│  Complete   │ Incomplete  │
-│             │             │
-│ Fill        │ Generate    │
-│ Template    │ Feedback    │
-│             │             │
-│ Create      │ Send to     │
-│ GitHub      │ Client      │
-│ Issue       │             │
-│             │ Wait for    │
-│ Send        │ More Info   │
-│ Success     │             │
-└─────────────┴─────────────┘
-```
-
-### Dual Mode Operation
-
-#### Create Mode (Default)
-- Accumulates text via pause detection
-- AI parses into issue data
-- Asks for missing fields
-- Creates new GitHub issue when complete
-
-#### Update Mode
-- Activated by "select issue X" command
-- OR by browsing issue selector
-- All subsequent text becomes comments
-- Adds @copilot mention for code changes
-- Stays in update mode until switched
-
-### Issue Selection Intelligence
-
-The AI can parse voice commands like:
-- "select issue 42"
-- "work on the bug about login"
-- "update the camera issue"
-- "create new issue" (switch back to create mode)
-- "show issues" / "list issues"
-
-## Communication Protocol
-
-### WebSocket Message Types
+### Message Types
 
 #### Client → Server
 
-| Type | Payload | Purpose |
-|------|---------|---------|
-| Text | `{data: {text: "..."}}` | Send text transcript |
-| Frame | `{data: {base64Image: "..."}}` | Send camera frame |
-| Request Issues | `{type: 'request_issue_list'}` | Fetch open issues |
-| Ping | `{type: 'ping'}` | Keep-alive |
+| Message type | Key fields | Purpose |
+|---|---|---|
+| `frame` | `data.base64Image` | Camera frame for active streaming tool |
+| `text` | `data.text` | Issue/PR text input (delta-tracked) |
+| `run_tool` | `tool`, `image` | One-shot tool execution |
+| `start_streaming_tool` | `tool` | Begin continuous per-frame tool |
+| `stop_streaming_tool` | — | Stop streaming tool |
+| `request_tool_list` | `productionMode`, `issueNumber` | Fetch available tools |
+| `request_issue_list` | — | Fetch open GitHub issues |
+| `request_pr_list` | — | Fetch open PRs |
+| `start_copilot_stream` | `pr_number` | Stream Copilot agent logs for a PR |
+| `stop_copilot_stream` | — | Stop Copilot log stream |
+| `chat_followup` | `conversationId`, `message` | Follow-up question on a tool result |
+| `resume_live_query` | — | Resume Gemini Live query loop after voice input |
+| `ping` | — | Keepalive |
 
 #### Server → Client
 
-| Type | Payload | Purpose |
-|------|---------|---------|
-| `ack` | `{frame_number, results}` | Acknowledge receipt |
-| `issue_created` | `{issue_number, issue_url}` | Issue created |
-| `issue_updated` | `{issue_number, message}` | Comment added |
-| `issue_selected` | `{issue_number, issue_title}` | Issue selected |
-| `issue_list` | `{issues: [...]}` | List of open issues |
-| `feedback` | `{message, missing_fields}` | Request more info |
-| `stats` | `{total_frames, fps, ...}` | Server statistics |
+| Message type | Key fields | Purpose |
+|---|---|---|
+| `tool_result` | `result`, `audio` | Tool execution output |
+| `tool_list` | `tools[]` | Available tools |
+| `streaming_started` | `tool_name` | Streaming tool activated |
+| `streaming_stopped` | — | Streaming tool deactivated |
+| `issue_created` | `issue_number`, `issue_url` | New GitHub issue created |
+| `issue_updated` | `issue_number`, `message` | Comment added to issue |
+| `issue_list` | `issues[]` | Open GitHub issues |
+| `pr_list` | `prs[]` | Open PRs |
+| `copilot_log` | `log_line`, `session_id` | Live Copilot agent log line |
+| `copilot_summary` | `summary`, `session_id` | Gemini summary of log batch |
+| `feedback` | `message`, `missing_fields` | Request more info from user |
+| `ack` | `frame_number` | Frame acknowledged |
+| `pong` | — | Keepalive response |
 
-## Data Flow Examples
+### Tools Directory (`tools/`)
 
-### Example 1: Creating a Bug Report
+Each tool is a standalone Python file with:
+- `main(image, input_data)` — entry point called by the server
+- Returns `str` (auto-TTS) or `dict` with `audio`/`text` keys
+- Tools share building-block patterns but are fully self-contained (no cross-imports at runtime)
 
-1. **User types/dictates**: "There's a bug in the login screen. When I enter my password and tap submit, nothing happens. It should log me in."
+| Tool | Description | Model |
+|---|---|---|
+| `object_recognition.py` | Detect objects in scene | YOLO11 + COCO |
+| `scene_description.py` | Describe full scene | Gemini Vision |
+| `live_ocr.py` | Real-time text extraction | Google Cloud Vision |
+| `door_detection.py` | Detect doors and openings | YOLO11 |
+| `empty_seat_detection.py` | Find empty seats | YOLO11 |
+| `clothing_recognition.py` | Identify clothing items | YOLOWorld |
+| `camera_aiming.py` | Guide camera alignment (clock-face directions) | YOLO11 |
 
-2. **Backend receives** complete sentences incrementally
+### Processing Flows
 
-3. **AI parses** after 5-second pause:
-```json
-{
-  "type": "bug",
-  "title": "Login screen submit button not working",
-  "description": "When entering password and tapping submit, nothing happens",
-  "steps": "1. Enter password\n2. Tap submit button",
-  "expected": "Should log me in",
-  "actual": "Nothing happens",
-  "missing_fields": []
-}
+#### One-Shot Tool Execution
+```
+run_tool message received (with base64 image)
+    │
+    ▼
+Decode image → PIL Image
+    │
+    ▼
+exec() tool code in isolated namespace
+    │
+    ▼
+Call main(image, input_data)
+    │
+    ▼
+Serialize result (str or dict)
+    │
+    ▼
+Send tool_result to client → AudioOutputService → TTS
 ```
 
-4. **Template filled** and **GitHub issue created**
+#### Streaming Tool Execution
+```
+start_streaming_tool received
+    │
+    ▼
+Register in active_streaming_tools[client_id]
+    │
+    ▼
+Each incoming frame triggers run_streaming_tools()
+    │  (throttled per tool config, default 500 ms)
+    ▼
+exec() tool → result → tool_result message
+```
 
-5. **Client receives** success notification with issue URL
+#### Gemini Live (Custom GPT) Mode
+```
+start_streaming_tool with custom_gpt=True
+    │
+    ▼
+GeminiLiveManager.start_session(client_id, system_instruction)
+    │
+    ▼
+Background query loop every query_interval seconds:
+    send_image_query(last_frame, gpt_query)
+    │
+    ▼
+Receive audio transcription + turn_complete
+    │
+    ▼
+Send tool_result with Gemini's spoken response
+    │
+    ▼
+Client receives → AudioOutputService plays native audio or TTS
+    │
+    ▼
+User can ask follow-up via voice (ToolRunner speech-to-text)
+→ resume_live_query restarts the query loop
+```
 
-### Example 2: Multi-turn Conversation
-
-1. **User**: "I want a new feature"
-
-2. **AI parses**, finds missing fields: `['problem', 'solution']`
-
-3. **Server sends feedback**: "I need problem description."
-
-4. **User**: "Users can't export their data to CSV"
-
-5. **AI merges** with existing data, still missing: `['solution']`
-
-6. **Server**: "I need proposed solution."
-
-7. **User**: "Add an export button that downloads a CSV file"
-
-8. **AI merges**, all fields complete
-
-9. **GitHub issue created**
-
-### Example 3: Updating an Issue
-
-1. **User**: "select issue 42"
-
-2. **Server switches** to update mode
-
-3. **User**: "The login bug also happens on Android"
-
-4. **Server adds comment** to issue #42 (no @copilot mention, just status)
-
-5. **User**: "Fix the submit button handler"
-
-6. **Server adds comment** with @copilot mention (code change requested)
+#### GitHub Issue Creation (Dev Mode)
+```
+Text received → delta extraction (new words only)
+    │
+    ▼
+5-second pause detection
+    │
+    ▼
+Gemini parses transcript → structured issue fields
+    │
+    ▼
+Missing fields? → send feedback → wait for more input
+    │
+    ▼
+All fields present → fill .github/ISSUE_TEMPLATE → create GitHub issue
+    │
+    ▼
+Poll for Copilot PR creation → stream logs to client
+```
 
 ## Deployment
 
 ### Frontend
 - React Native app built for iOS/Android
-- Deployed via App Store / Google Play
-- Or distributed via TestFlight / APK
+- Distributed via App Store / TestFlight / APK
 
 ### Backend
-- GCP VM instance (Compute Engine)
-- Public IP: ws://34.144.178.116:8080
-- Python 3.11 virtual environment
-- Systemd service for auto-restart
-- Logs to syslog
+- GCP Compute Engine VM
+- WebSocket server: `ws://<SERVER_IP>:8080`
+- Python 3.11 virtual environment (`venv`)
+- `restart_server.sh` / `clear_frames.sh` utility scripts
+- Logs: per-session files in `backend/user_logs/`; SQLite DB at `backend/copilot_logs.db`
 
 ### Environment Variables
 
-Backend `.env` file:
+Backend `.env` (or GCP Secret Manager):
 ```bash
 GITHUB_TOKEN=<GitHub PAT>
 GITHUB_REPO=owner/repo
 GEMINI_API_KEY=<Google AI API key>
-GEMINI_MODEL=gemini-3-flash-preview
-PAUSE_DURATION=5.0
+GEMINI_MODEL=gemini-2.5-flash-lite    # or gemini-2.5-flash, etc.
+GCP_PROJECT=<project-id>              # for Secret Manager fallback
+PAUSE_DURATION=5.0                    # seconds before issue creation
 ```
 
 Frontend `config.ts`:
 ```typescript
-export const WS_URL = 'ws://34.144.178.116:8080';
+export const WEBSOCKET_SERVER_URL = 'ws://<SERVER_IP>:8080';
+export const APP_MODE: AppMode = 'development'; // or 'production'
 ```
-
-## Key Improvements in Text-Based Version
-
-### Before (Voice-Based)
-- Required @react-native-voice/voice library
-- Complex voice recognition setup
-- Streaming partial results
-- Platform-specific voice permissions
-- Voice quality dependent
-
-### After (Text-Based)
-- Standard React Native TextInput
-- OS-level dictation (built into keyboard)
-- Simpler implementation
-- User can type OR dictate
-- Mix typing and voice seamlessly
-- Better accessibility
-- Works in any environment (quiet/noisy)
-
-## Future Enhancements
-
-1. **Frame Analysis**: Use Gemini Vision to analyze camera frames
-2. **Issue Templates**: More template types
-3. **Offline Mode**: Queue messages when disconnected
-4. **Draft Saving**: Save incomplete issues locally
-5. **Rich Text**: Markdown formatting in input
-6. **Attachments**: Upload images from camera directly to issues
-7. **Voice Commands**: "Send", "Clear", "New issue" voice shortcuts
-8. **Multi-language**: Support for non-English input
 
 ## Security Considerations
 
-- GitHub PAT stored in GCP Secret Manager
-- WebSocket connection (consider WSS/TLS for production)
-- Input validation on backend
-- Rate limiting for API calls
-- Frame storage cleanup (disk space management)
+- GitHub PAT stored in GCP Secret Manager (`.env` fallback for local dev)
+- WebSocket runs over plain WS — use WSS/TLS behind a reverse proxy for production
+- Input validation on backend; tool code is fetched from a trusted GitHub repo
+- Rate limiting should be applied at the reverse-proxy level
+- Frame storage in `received_frames/` should be cleaned up periodically (`clear_frames.sh`)
 
 ---
 
-**Last Updated**: December 18, 2025
-**Architecture Version**: 2.0 (Text-Based)
+**Last Updated**: March 24, 2026  
+**Architecture Version**: 3.0 (Vision Tools + Gemini Live)
