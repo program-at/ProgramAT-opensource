@@ -1,29 +1,147 @@
 # ProgramAT
 
-An AI-powered assistive technology platform that runs vision and language tools on a live camera feed. A React Native mobile app streams frames to a Python backend, which executes pluggable tools — object detection, OCR, scene description, and more — and returns audio-friendly results spoken aloud via text-to-speech.
+This repository contains code for an AI-powered assistive technology platform, ProgramAT. ProgramAT equips blind or low-vision (BLV) users to create custom camera-based assistive technologies via natural language instructions. BLV users can test their camera-based ATs with input from their iPhone's camera. The system has 3 major components:
+- a mobile app, installable via TestFlight. Link will be provided closer to the event.
+- a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. Instructions to set a server up will be updated shortly.
+- ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date.
 
-## Features
 
-###  Pluggable Tool System
-- **Tool Selector & Runner** — Browse available tools, select one, and run it against the live camera feed
+## What is the ProgramAT Mobile App?
+
+This is a React Native app that facilitates AT creation, iteration, and testing of the created AT using your camera feed. You can also monitor the status of their creation. The app streams frames to a Python backend on your server, which executes pluggable tools — object detection, OCR, scene description, and more and returns spoken feedback.
+
+## Getting Started
+
+### Prerequisites
+
+- A [GitHub account](https://github.com/). Refer to [screen reader friendly instructions by Jeff Bishop](https://community-access.org/git-going-with-github/docs/00-pre-workshop-setup.html).
+- A computer with decent compute capacity. Exact specifications coming soon. A GPU is not required.
+- A screen reader and an accessible web browser.
+- iPhone 12 or higher running iOS 26. Apple Intelligence or AI-specific features for processors are not required.
+- Python 3.11+ (for the backend server)
+- Node.js >= 20
+- Optional: React Native CLI development environment ([setup guide](https://reactnative.dev/docs/set-up-your-environment)). This is required if you want to run and install the app. You can skip this requirement if you are installing the app using our TestFlight link.
+- Optional: For iOS: Xcode and CocoaPods. You can skip if you are building and running the app.
+- For Android: Android Studio and Android SDK
+
+
+### Installation
+
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/program-at/ProgramAT-opensource.git
+   cd ProgramAT-opensource
+   ```
+
+2. Optional (required if you are building the app): **Install React Native dependencies**
+   ```bash
+   cd ProgramATApp
+   npm install
+   ```
+
+3. Optional (required if you are building the app): **Install iOS dependencies (iOS only)**
+   ```bash
+   cd ios
+   pod install
+   cd ..
+   ```
+
+4. **Install backend dependencies**
+   ```bash
+   cd ../backend
+   pip install -r requirements.txt
+   ```
+
+### Environment Variables
+
+The backend uses environment variables for API keys and configuration:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `GEMINI_API_KEY` | Yes (for VLM tools) | Google Gemini API key — used by scene description, clothing recognition, AI parsing, and Gemini Live |
+| `GOOGLE_APPLICATION_CREDENTIALS` | For OCR tools | Google Cloud Vision API credentials (used by Live OCR) |
+| `GITHUB_TOKEN` | For GitHub features | GitHub personal access token with `repo` scope |
+| `GITHUB_REPO` | Yes (to be able to access your own tools) | Target repo in `owner/repo` format |
+| `HOST` / `PORT` | Optional | Server bind address (default `0.0.0.0:8080`) |
+
+### Running the Application (instructions to be updated)
+
+1. **Start the backend server**
+   ```bash
+   cd backend
+   export GEMINI_API_KEY="your_key_here"
+   python stream_server.py
+   ```
+   The server starts on port 8080.
+
+2. **Start the React Native app**. Skip if you are running the app from the TestFlight link.
+   ```bash
+   cd ProgramATApp
+   npm start
+   ```
+
+3. **Run on your device**. Skip if you are running the app via TestFlight.
+
+   For iOS:
+   ```bash
+   npm run ios
+   ```
+
+   For Android:
+   ```bash
+   npm run android
+   ```
+
+### Configuration (will be updated closer to event)
+
+Server URLs are managed in `ProgramATApp/config.ts`. The app supports multiple named servers selectable via a secret code in Settings:
+
+```typescript
+export const SERVER_CONFIGS: Record<string, { url: string; name: string }> = {
+  'default': { url: 'ws://YOUR_SERVER_IP:8080', name: 'Default Server' },
+};
+```
+
+Switch between **Development** and **Production** modes in the Settings tab.
+
+## Usage
+
+1. **Connect** — The app auto-connects to the configured server on launch. Connection status is shown in the UI; a loading sound plays while connecting.
+
+2. **Select a Tool** — Navigate to the **Tools** tab, browse the available tools, and tap one to select it.
+
+3. **Run** — The Tool Runner opens with a live camera preview. Tap **Run** to execute the tool on single frames, or **Stream** to process frames continuously. Results are spoken aloud via TTS.
+
+4. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by Gemini).
+
+5. **Development mode** — Use the **PRs** tab to browse open pull requests, select one to load its tools, and send text updates to GitHub issues.
+
+Creation instructions coming soon.
+
+
+ 
+## Supported Input Modes
+
 - **Streaming mode** — Tools process frames continuously and return real-time audio feedback
 - **Single-frame mode** — Capture one frame and get a detailed result
-- **Conversation mode** — Ask follow-up questions about tool results via a Chat tab
-- **Custom GPT tools** — Tools flagged as Custom GPT use Gemini Live for streaming multimodal conversations instead of executing code per frame
-
-### Camera & Audio
 - **Real-time camera streaming** at configurable FPS via `react-native-vision-camera`
+- **Conversation mode** — Ask follow-up questions about tool results via a Chat tab
+- **Custom GPT-like tools** — Tools flagged as Custom GPT use Gemini Live for streaming multimodal conversations instead of executing code per frame
+
+## Supported Feedback Modes
+
 - **Text-to-Speech feedback** — all tool results are spoken aloud automatically
 - **Rich audio output** — tools can return speech, beeps, haptic vibration, earcons, and more via the AudioOutputService
 - **Speech-to-Text input** — voice input for follow-up questions using `@react-native-voice/voice` and OS-level dictation
 
-###  Development Mode (GitHub Integration)
+## Usage Modes
+### Development Mode (GitHub Integration)
 - **PR browser** — List open pull requests, select one, and load its tools
 - **Text input for issues** — Create or update GitHub issues with AI-powered parsing (Gemini)
 - **Multi-turn conversations** — The server asks for missing fields until the issue is complete
 - **Copilot session logs** — View AI coding session summaries per PR
 
-###  Production Mode
+### Production Mode
 - Tools are pulled from the `main` branch only
 - The PR browser tab is hidden; users go straight to the tool list
 
@@ -77,106 +195,6 @@ ProgramAT-opensource/
     └── clothing_recognition.py
 ```
 
-## Getting Started
-
-### Prerequisites
-
-- Node.js >= 20
-- React Native CLI development environment ([setup guide](https://reactnative.dev/docs/set-up-your-environment))
-- For iOS: Xcode and CocoaPods
-- For Android: Android Studio and Android SDK
-- Python 3.11+ (for the backend server)
-
-### Installation
-
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/program-at/ProgramAT-opensource.git
-   cd ProgramAT-opensource
-   ```
-
-2. **Install React Native dependencies**
-   ```bash
-   cd ProgramATApp
-   npm install
-   ```
-
-3. **Install iOS dependencies (iOS only)**
-   ```bash
-   cd ios
-   pod install
-   cd ..
-   ```
-
-4. **Install backend dependencies**
-   ```bash
-   cd ../backend
-   pip install -r requirements.txt
-   ```
-
-### Environment Variables
-
-The backend uses environment variables for API keys and configuration:
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes (for AI tools) | Google Gemini API key — used by scene description, clothing recognition, AI parsing, and Gemini Live |
-| `GOOGLE_APPLICATION_CREDENTIALS` | For OCR tools | Google Cloud Vision API credentials (used by Live OCR) |
-| `GITHUB_TOKEN` | For GitHub features | GitHub personal access token with `repo` scope |
-| `GITHUB_REPO` | Yes (to be able to access your own tools) | Target repo in `owner/repo` format |
-| `HOST` / `PORT` | Optional | Server bind address (default `0.0.0.0:8080`) |
-
-### Running the Application
-
-1. **Start the backend server**
-   ```bash
-   cd backend
-   export GEMINI_API_KEY="your_key_here"
-   python stream_server.py
-   ```
-   The server starts on port 8080.
-
-2. **Start the React Native app**
-   ```bash
-   cd ProgramATApp
-   npm start
-   ```
-
-3. **Run on your device**
-
-   For iOS:
-   ```bash
-   npm run ios
-   ```
-
-   For Android:
-   ```bash
-   npm run android
-   ```
-
-### Configuration
-
-Server URLs are managed in `ProgramATApp/config.ts`. The app supports multiple named servers selectable via a secret code in Settings:
-
-```typescript
-export const SERVER_CONFIGS: Record<string, { url: string; name: string }> = {
-  'default': { url: 'ws://YOUR_SERVER_IP:8080', name: 'Default Server' },
-};
-```
-
-Switch between **Development** and **Production** modes in the Settings tab.
-
-## Usage
-
-1. **Connect** — The app auto-connects to the configured server on launch. Connection status is shown in the UI; a loading sound plays while connecting.
-
-2. **Select a Tool** — Navigate to the **Tools** tab, browse the available tools, and tap one to select it.
-
-3. **Run** — The Tool Runner opens with a live camera preview. Tap **Run** to execute the tool on single frames, or **Stream** to process frames continuously. Results are spoken aloud via TTS.
-
-4. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by Gemini).
-
-5. **Development mode** — Use the **PRs** tab to browse open pull requests, select one to load its tools, and send text updates to GitHub issues.
 
 ## Development
 
@@ -230,3 +248,11 @@ For Android:
 
 See [LICENSE](LICENSE).
 
+## Contributions
+
+
+- [Ellie Seehorn](https://seehorne.github.io/) (PhD student at University of Michigan)
+- [Venkatesh Potluri](https://venkateshpotluri.me/) (Assistant Professor, University of Michigan. Principal Investigator of the [Intelligent Developer Experiences for Accessibility Lab](https://idea11y.dev/))
+- [Anhong Guo](https://guoanhong.com/) (Assistant Professor, University of Michigan and principal investigator of the [Human AI Lab](https://guoanhong.com/))
+
+Found a problem? Please file an issue!
