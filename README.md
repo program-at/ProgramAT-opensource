@@ -5,6 +5,8 @@ This repository contains code for an AI-powered assistive technology platform, P
 - a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. Instructions to set a server up will be updated shortly.
 - ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date.
 
+> Notice: Setup instructions and TestFlight link will be updated closer to the event.
+
 
 ## What is the ProgramAT Mobile App?
 
