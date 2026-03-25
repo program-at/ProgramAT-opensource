@@ -17,14 +17,13 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 ### Prerequisites
 
 - A [GitHub account](https://github.com/). Refer to [screen reader friendly instructions by Jeff Bishop](https://community-access.org/git-going-with-github/docs/00-pre-workshop-setup.html).
-- A computer with decent compute capacity. Exact specifications coming soon. A GPU is not required.
+- A computer with decent compute capacity, or ability to host a VM with decent compute capacity. Exact specifications coming soon. A GPU is not required.
 - A screen reader and an accessible web browser.
 - iPhone 12 or higher running iOS 26. Apple Intelligence or AI-specific features for processors are not required.
 - Python 3.11+ (for the backend server)
 - Node.js >= 20
 - Optional: React Native CLI development environment ([setup guide](https://reactnative.dev/docs/set-up-your-environment)). This is required if you want to run and install the app. You can skip this requirement if you are installing the app using our TestFlight link.
 - Optional: For iOS: Xcode and CocoaPods. You can skip if you are building and running the app.
-- For Android: Android Studio and Android SDK
 
 
 ### Installation
@@ -87,11 +86,6 @@ The backend uses environment variables for API keys and configuration:
    For iOS:
    ```bash
    npm run ios
-   ```
-
-   For Android:
-   ```bash
-   npm run android
    ```
 
 ### Configuration (will be updated closer to event)
@@ -222,10 +216,6 @@ For iOS:
 2. Select your signing team and provisioning profile
 3. Build for Release
 
-For Android:
-1. Generate a signing key
-2. Configure `android/app/build.gradle`
-3. Run `cd android && ./gradlew assembleRelease`
 
 ## Technology Stack
 
