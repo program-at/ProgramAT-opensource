@@ -148,7 +148,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
 
   // Start capturing and streaming frames at regular intervals
   const startFrameStreaming = () => {
-    if (!WebSocketService.isConnected()) {
+    if (!WebSocketService.isActiveConnected()) {
       setError('WebSocket not connected. Please connect to server first.');
       return;
     }
@@ -174,7 +174,12 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   };
 
   const captureAndSendFrame = async () => {
-    if (!cameraRef.current || !WebSocketService.isConnected()) {
+    const inReviewMode = Config.APP_MODE === 'review';
+    const connected = inReviewMode
+      ? WebSocketService.isReviewConnected()
+      : WebSocketService.isConnected();
+
+    if (!cameraRef.current || !connected) {
       return;
     }
 
@@ -198,12 +203,10 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       // Add data URL prefix to match server expectations
       const base64WithPrefix = `data:image/jpeg;base64,${base64Image}`;
 
-      // Send to server
-      const sent = WebSocketService.sendFrame(
-        base64WithPrefix,
-        photo.width,
-        photo.height
-      );
+      // Send to server — route to review server when in review mode
+      const sent = inReviewMode
+        ? WebSocketService.sendFrameToReview(base64WithPrefix, photo.width, photo.height)
+        : WebSocketService.sendFrame(base64WithPrefix, photo.width, photo.height);
 
       if (sent) {
         setFrameCount(prev => prev + 1);

@@ -16,16 +16,18 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTheme } from './ThemeContext';
 import WebSocketService from './WebSocketService';
+import Config from './config';
 
 interface ReviewPaneProps {
   prNumber: number;
   prTitle: string;
+  prBody?: string;
   onBack: () => void;
 }
 
 type ReviewVerdict = 'approve' | 'reject' | null;
 
-export default function ReviewPane({ prNumber, prTitle, onBack }: ReviewPaneProps) {
+export default function ReviewPane({ prNumber, prTitle, prBody, onBack }: ReviewPaneProps) {
   const { theme } = useTheme();
   const [verdict, setVerdict] = useState<ReviewVerdict>(null);
   const [comment, setComment] = useState('');
@@ -38,6 +40,16 @@ export default function ReviewPane({ prNumber, prTitle, onBack }: ReviewPaneProp
       return;
     }
 
+    // In review mode, approval goes through the user's primary server (for GitHub identity).
+    // Fail fast if it's not connected rather than waiting for the 15s timeout.
+    if (!WebSocketService.isConnected()) {
+      Alert.alert(
+        'Not Connected',
+        'Your personal server is not connected. Please go to Settings and connect to your server — it\'s needed to submit reviews with your GitHub identity.'
+      );
+      return;
+    }
+
     Alert.alert(
       `Confirm Review`,
       `Submit a ${verdict === 'approve' ? '✅ Approval' : '❌ Request Changes'} for PR #${prNumber}?`,
@@ -47,7 +59,14 @@ export default function ReviewPane({ prNumber, prTitle, onBack }: ReviewPaneProp
           text: 'Submit',
           onPress: async () => {
             setSubmitting(true);
-            const result = await WebSocketService.submitToolReview(prNumber, verdict === 'approve', comment.trim());
+            // In review mode, the user's server must post to the general repo's PR.
+            // Pass REVIEW_GITHUB_REPO so stream_server uses it instead of its own GITHUB_REPO.
+            const result = await WebSocketService.submitToolReview(
+              prNumber,
+              verdict === 'approve',
+              comment.trim(),
+              Config.APP_MODE === 'review' ? Config.REVIEW_GITHUB_REPO : undefined
+            );
             setSubmitting(false);
             if (result.success) {
               setSubmitted(true);
@@ -90,6 +109,14 @@ export default function ReviewPane({ prNumber, prTitle, onBack }: ReviewPaneProp
           <Text style={[styles.prTitleLabel, { color: theme.textSecondary }]}>Pull Request</Text>
           <Text style={[styles.prTitleText, { color: theme.text }]}>{prTitle}</Text>
         </View>
+
+        {/* PR description */}
+        {!!prBody && (
+          <View style={[styles.prTitleCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[styles.prTitleLabel, { color: theme.textSecondary }]}>Description</Text>
+            <Text style={[styles.prBodyText, { color: theme.text }]}>{prBody}</Text>
+          </View>
+        )}
 
         {submitted ? (
           /* Success state */
@@ -223,6 +250,7 @@ const styles = StyleSheet.create({
   },
   prTitleLabel: { fontSize: 12, fontWeight: '500', marginBottom: 4 },
   prTitleText: { fontSize: 15, fontWeight: '600' },
+  prBodyText: { fontSize: 14, lineHeight: 20 },
   sectionLabel: { fontSize: 13, fontWeight: '500', marginTop: 8, marginBottom: 6 },
   verdictRow: { flexDirection: 'row', gap: 12, marginBottom: 8 },
   verdictButton: {

@@ -112,7 +112,7 @@ export default function ToolRunner({
       // Cancel Voice to clean up
       Voice.cancel().catch(() => {});
       // Resume query loop if we errored out
-      const ws = (WebSocketService as any).ws;
+      const ws = WebSocketService.getActiveSocket();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resume_live_query' }));
       }
@@ -139,7 +139,7 @@ export default function ToolRunner({
       // Ignore
     }
     // Pause the query loop on server
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: 'pause_live_query' }));
     }
@@ -185,7 +185,7 @@ export default function ToolRunner({
     } else {
       console.log('[ToolRunner] No follow-up transcript captured, resuming query loop');
       // Nothing captured, just resume the query loop
-      const ws = (WebSocketService as any).ws;
+      const ws = WebSocketService.getActiveSocket();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resume_live_query' }));
       }
@@ -195,7 +195,7 @@ export default function ToolRunner({
   const sendFollowup = (text: string) => {
     if (!text.trim()) {
       // Nothing to send, resume query loop
-      const ws = (WebSocketService as any).ws;
+      const ws = WebSocketService.getActiveSocket();
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'resume_live_query' }));
       }
@@ -205,7 +205,7 @@ export default function ToolRunner({
     console.log('[ToolRunner] Sending follow-up:', text);
     setIsProcessingFollowup(true);
     setIsListeningFollowup(false);
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         type: 'live_followup',
@@ -228,7 +228,7 @@ export default function ToolRunner({
     console.log('[ToolRunner] Image base64 length (before):', imageBase64.length);
     console.log('[ToolRunner] Image base64 preview:', imageBase64.substring(0, 100));
 
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     if (ws && ws.readyState === WebSocket.OPEN) {
       // Extract just the base64 part (remove data:image/jpeg;base64, prefix if present)
       // Use a more robust approach: find the comma and take everything after it
@@ -831,16 +831,14 @@ export default function ToolRunner({
       }
     };
 
-    const ws = (WebSocketService as any).ws;
-    console.log('[ToolRunner] Setting up message listener, ws exists:', !!ws);
+    console.log('[ToolRunner] Setting up message listener');
     
-    //use websockets to listen for tool results
-    if (ws) {
-      ws.addEventListener('message', handleMessage);
-      return () => {
-        ws.removeEventListener('message', handleMessage);
-      };
-    }
+    // Use addMessageListener so the handler auto-attaches to the review socket
+    // if the user switches to review mode after ToolRunner has already mounted.
+    WebSocketService.addMessageListener(handleMessage);
+    return () => {
+      WebSocketService.removeMessageListener(handleMessage);
+    };
   }, []);
 
   const handleRunTool = async (isConversation: boolean = false) => {
@@ -937,7 +935,7 @@ export default function ToolRunner({
       timestamp: Date.now(),
     };
 
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     console.log('[ToolRunner] WebSocket state:', ws ? ws.readyState : 'no ws');
     
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -990,7 +988,7 @@ export default function ToolRunner({
       console.log('[ToolRunner] Starting Gemini Live streaming mode, query:', selectedTool.gpt_query);
     }
 
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
       console.log('[ToolRunner] Sent streaming start request');
@@ -1040,7 +1038,7 @@ export default function ToolRunner({
       type: 'stop_streaming_tool',
     };
 
-    const ws = (WebSocketService as any).ws;
+    const ws = WebSocketService.getActiveSocket();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(message));
       console.log('[ToolRunner] Sent streaming stop request');

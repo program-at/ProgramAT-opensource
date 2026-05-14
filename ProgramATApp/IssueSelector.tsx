@@ -31,6 +31,7 @@ interface Issue {
 interface PR {
   number: number;
   title: string;
+  body?: string;
   branch: string;
   state: string;
   mentioned_issues: string[];
@@ -46,7 +47,7 @@ interface IssueSelectorProps {
   onCreateNew?: () => void; // New prop for switching to create mode
   onNavigateToTools?: () => void; // Callback to navigate to Tools tab
   onViewLogs?: (pr: {number: number; title: string}) => void; // Callback to view logs for a PR
-  onReviewPR?: (pr: {number: number; title: string}) => void; // Callback to open review pane for a PR
+  onReviewPR?: (pr: {number: number; title: string; body?: string}) => void; // Callback to open review pane for a PR
   issues?: Issue[]; // Optional - not used in PR-only mode
   prs?: PR[];
   embedded?: boolean;
@@ -113,18 +114,17 @@ export default function IssueSelector({
     setExpectingNewPRs(true);
     setError('');
     
-    // Clear existing PRs so we know when fresh ones arrive  
-    // Note: This will be handled by the parent component that manages the prs prop
-    // But we mark that we're expecting new ones
-    
-    const success = WebSocketService.requestPRList();
+    const success = reviewMode
+      ? WebSocketService.requestPRListFromReview()
+      : WebSocketService.requestPRList();
     if (!success) {
       setLoading(false);
       setExpectingNewPRs(false);
       // Auto-retry after a short delay (connection might still be establishing)
       console.log('[IssueSelector] Not connected, will retry in 1 second...');
       setTimeout(() => {
-        if (WebSocketService.isConnected()) {
+        const connected = reviewMode ? WebSocketService.isReviewConnected() : WebSocketService.isConnected();
+        if (connected) {
           requestPRList();
         } else {
           setError('Not connected to server. Please connect first.');
@@ -173,7 +173,11 @@ export default function IssueSelector({
 
     const openTools = () => {
       WebSocketService.sendIssueSelection('update', pr.number, pr.title);
-      WebSocketService.requestPRTools(pr.number);
+      if (reviewMode) {
+        WebSocketService.requestPRToolsFromReview(pr.number);
+      } else {
+        WebSocketService.requestPRTools(pr.number);
+      }
       const prAsIssue: Issue = {
         number: pr.number,
         title: pr.title,
@@ -201,7 +205,7 @@ export default function IssueSelector({
             onPress: () => {
               console.log('[IssueSelector] Opening review pane for PR:', pr.number);
               if (onReviewPR) {
-                onReviewPR({ number: pr.number, title: pr.title });
+                onReviewPR({ number: pr.number, title: pr.title, body: pr.body });
               }
               onClose();
             }
@@ -230,7 +234,7 @@ export default function IssueSelector({
             console.log('[IssueSelector] Opening update mode for PR:', pr.number);
             
             WebSocketService.sendIssueSelection('update', pr.number, pr.title);
-            WebSocketService.requestPRTools(pr.number);
+            WebSocketService.requestPRTools(pr.number); // non-review mode only
             
             const prAsIssue: Issue = {
               number: pr.number,

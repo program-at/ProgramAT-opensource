@@ -47,7 +47,7 @@ export default function PRsAndText({
   const { theme } = useTheme();
   // Start with PR list view
   const [viewMode, setViewMode] = useState<ViewMode>('pr-list');
-  const [viewLogsPR, setViewLogsPR] = useState<{number: number; title: string} | null>(null);
+  const [viewLogsPR, setViewLogsPR] = useState<{number: number; title: string; body?: string} | null>(null);
   
   // Track the last PR we viewed logs for
   const lastViewedPRRef = useRef<number | null>(null);
@@ -71,7 +71,7 @@ export default function PRsAndText({
     setViewMode('text-input'); // Navigate to text input for new issue
   };
 
-  const handleReviewPR = (pr: {number: number; title: string}) => {
+  const handleReviewPR = (pr: {number: number; title: string; body?: string}) => {
     setViewLogsPR(pr); // reuse this state to track the target PR
     setViewMode('review');
   };
@@ -126,6 +126,7 @@ export default function PRsAndText({
         <ReviewPane
           prNumber={viewLogsPR.number}
           prTitle={viewLogsPR.title}
+          prBody={viewLogsPR.body}
           onBack={handleBackToPRs}
         />
       ) : appMode !== 'review' ? (
