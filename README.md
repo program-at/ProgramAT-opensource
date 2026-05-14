@@ -114,7 +114,7 @@ $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\credentials.json"
 1. Go to any GitHub page: <https://github.com/>. Click your profile picture (top right) and open **Settings**.
 2. Go to **Developer settings** -> **Personal access tokens** -> **Tokens (classic)**.
 3. Click **Generate new token**.
-4. Add a note, choose an expiration, and select scopes to be **repo**.
+4. Add a note, choose an expiration, and select scopes to be **repo** and **workflow**.
 5. Click **Generate token**, copy it and save it properly. You won't be able to see it again.
 6. Paste the token into `backend/.env` as `GITHUB_TOKEN`.
 
@@ -189,6 +189,18 @@ You can skip to step 3 if ngrok is already installed and configured, or if you a
 
 5. **Paste the forwarding address into the app**
    Change the prefix of the forwarding address from **https** to **wss** because we are using a websocket. Open ProgramAT app on your mobile device, go to the server address field in Settings, paste the ngrok forwarding address, and tap **Connect**.
+
+## Troubleshooting
+
+### Forked Repository Settings
+
+Since you are working from a fork of this repository, GitHub-related features may need a few repo-level settings that are not always copied over from the upstream project.
+
+1. Make sure **Issues** are enabled in **Settings** -> **General** -> **Features**.
+2. Make sure the workflow **Auto-assign to Copilot** is visible in **Actions**. If it is missing, delete and re-upload [`.github/workflows/copilot-assignment.yml`](.github/workflows/copilot-assignment.yml).
+3. Go to **Settings** -> **Secrets and variables** -> **Actions**, click **New repository secret**, create a secret named `COPILOT_PAT`, and set its value to your GitHub personal access token.
+4. If you use `gh auth login`, make sure that token has the required scopes, including `repo`, `workflow`, and `admin:org`.
+
 
 ## Usage
 
