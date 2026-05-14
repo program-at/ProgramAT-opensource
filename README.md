@@ -23,7 +23,7 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 - Python 3.11+ (for the backend server)
 - Node.js >= 20
 - Optional: React Native CLI development environment ([setup guide](https://reactnative.dev/docs/set-up-your-environment)). This is required if you want to run and install the app. You can skip this requirement if you are installing the app using our TestFlight link.
-- Optional: For iOS: Xcode and CocoaPods. You can skip if you are building and running the app.
+- Optional: For iOS: Xcode and CocoaPods. You can skip if you are not building and running the app itself locally.
 
 
 ### Installation
@@ -334,15 +334,24 @@ For iOS:
 - **OpenCV / NumPy / Pillow** — Image processing
 - **PyGithub** — GitHub issue and PR integration
 
+## Get involved!!
+As an open source project, we welcome community feedback and contributions.
+
+If you are interested in going beyond your fork and contributing to ProgramAT, please start by reading our [Code of Conduct](https://github.com/program-at/ProgramAT-opensource/blob/main/CODE_OF_CONDUCT.md) and [Contribution Guidelines](https://github.com/program-at/ProgramAT-opensource/blob/main/CONTRIBUTING.md).
+
+Once you have done so, you can request the permissions needed to become a contributor by following [these instructions](https://github.com/program-at/ProgramAT-opensource/issues/40)!
+
 ## License
 
 See [LICENSE](LICENSE).
+
 
 ## Contributions
 
 
 - [Ellie Seehorn](https://seehorne.github.io/) (PhD student at University of Michigan)
+- [Yushan Wei](https://github.com/yushanwe) (Undergraduate Student at University of Michigan)
 - [Venkatesh Potluri](https://venkateshpotluri.me/) (Assistant Professor, University of Michigan. Principal Investigator of the [Intelligent Developer Experiences for Accessibility Lab](https://idea11y.dev/))
-- [Anhong Guo](https://guoanhong.com/) (Assistant Professor, University of Michigan and principal investigator of the [Human AI Lab](https://guoanhong.com/))
+- [Anhong Guo](https://guoanhong.com/) (Assistant Professor, University of Michigan. Principal investigator of the [Human AI Lab](https://guoanhong.com/))
 
 Found a problem? Please file an issue!
