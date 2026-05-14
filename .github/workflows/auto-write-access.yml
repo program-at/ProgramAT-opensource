@@ -1,0 +1,104 @@
+name: Auto Grant Write Access
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  grant-access:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Process access request
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          script: |
+            const yaml = require('js-yaml');
+
+            // CONFIG
+            const ISSUE_NUMBER = 40;
+            const TEAM_SLUG = "contributors";
+            const ORG = context.repo.owner;
+
+            // Ensure correct issue
+            if (context.payload.issue.number !== ISSUE_NUMBER) {
+              return;
+            }
+
+            const comment =
+              context.payload.comment.body.trim();
+
+            if (!comment.includes("/request-contributor-status")) {
+              return;
+            }
+
+            const username =
+              context.payload.comment.user.login.toLowerCase();
+
+            // Load denylist from coc-signatures branch
+            let bannedUsers = [];
+
+            try {
+              const denylistFile =
+                await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: '.github/denylist.yml',
+                  ref: 'coc-signatures'
+                });
+
+              const content = Buffer
+                .from(denylistFile.data.content, 'base64')
+                .toString('utf8');
+
+              const data = yaml.load(content);
+
+              bannedUsers =
+                (data.banned_users || [])
+                .map(u => u.toLowerCase());
+
+            } catch (err) {
+              core.warning(
+                'Could not load denylist from coc-signatures branch.'
+              );
+            }
+
+            // Check denylist
+            if (bannedUsers.includes(username)) {
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: ISSUE_NUMBER,
+                body:
+                  `@${username} cannot be granted access.`
+              });
+
+              core.setFailed("User is denylisted.");
+              return;
+            }
+
+            // Add user to contributors team
+            await github.rest.teams.addOrUpdateMembershipForUserInOrg({
+              org: ORG,
+              team_slug: TEAM_SLUG,
+              username: username,
+              role: "member"
+            });
+
+            // Success comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: ISSUE_NUMBER,
+              body:
+                `@${username} has been granted write access via the ${TEAM_SLUG} team.`
+            });

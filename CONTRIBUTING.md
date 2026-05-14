@@ -16,6 +16,8 @@ This can be done by checking the box in the PR template indicating you have read
 If you forget to do so, a configured Github action will prompt you to sign, and only then will a merge be successful.
 This is only required for the first contribution, afterwards, your "signature" (Github username) will have been recorded as in agreement.
 
+In order to be able to review contributions or have the power to actually make changes (i.e merge pull requests), you must become a contributor. You can become a contributor by following the [instructions for becoming a contributor](https://github.com/program-at/ProgramAT-opensource/issues/40). 
+
 ## Visual Assistive Tools
 ### Why do I want to make a Visual Assistive Tools contribution?
 As mentioned earlier, visual assistive tool contributions intend to push visual assistive tools upstream.
