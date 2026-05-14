@@ -3,18 +3,25 @@ Gemini-based summarization for Copilot session logs.
 """
 import os
 import logging
-import google.generativeai as genai
 from typing import List, Dict
+from litellm_utils import resolve_model_name, resolve_api_key, extract_text
+
+try:
+    import litellm
+    LITELLM_AVAILABLE = True
+except ImportError:
+    litellm = None
+    LITELLM_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-# Lazy initialization - don't configure until first use
+# Lazy initialization - cache the resolved model name until first use
 _model = None
 _model_initialized = False
 
 
 def _get_model():
-    """Lazy initialization of Gemini model."""
+    """Lazy initialization of LiteLLM model name."""
     global _model, _model_initialized
     
     if _model_initialized:
@@ -23,20 +30,18 @@ def _get_model():
     _model_initialized = True
     
     # Get configuration at runtime (after .env is loaded)
-    api_key = os.environ.get('GEMINI_API_KEY')
-    model_name = os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash-lite')  # Match stream_server.py default
+    model_name = os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash-lite'))
     
-    if not api_key:
-        logger.warning("GEMINI_API_KEY not found, summarization will be disabled")
+    if not LITELLM_AVAILABLE:
+        logger.warning("litellm not found, summarization will be disabled")
         return None
     
     try:
-        genai.configure(api_key=api_key)
-        _model = genai.GenerativeModel(model_name)
-        logger.info(f"Gemini model initialized: {model_name}")
+        _model = model_name
+        logger.info(f"LiteLLM model initialized: {model_name}")
         return _model
     except Exception as e:
-        logger.error(f"Failed to initialize Gemini model: {e}")
+        logger.error(f"Failed to initialize LiteLLM model: {e}")
         return None
 
 
@@ -52,7 +57,7 @@ async def summarize_entries(entries: List[Dict]) -> str:
     """
     model = _get_model()
     if not model:
-        logger.warning("Gemini model not available, returning placeholder summary")
+        logger.warning("LiteLLM model not available, returning placeholder summary")
         return "Copilot is processing..."
     
     if not entries:
@@ -82,8 +87,12 @@ Log entries:
 Summary (1-3 sentences describing what was accomplished):"""
     
     try:
-        response = model.generate_content(prompt)
-        summary = response.text.strip()
+        response = litellm.completion(
+            model=resolve_model_name(model, default_model='gemini-2.5-flash-lite'),
+            messages=[{'role': 'user', 'content': prompt}],
+            api_key=resolve_api_key(model),
+        )
+        summary = extract_text(response)
         
         # Remove any quotes or extra formatting
         summary = summary.strip('"').strip("'").strip()
@@ -101,7 +110,7 @@ Summary (1-3 sentences describing what was accomplished):"""
         return summary
         
     except Exception as e:
-        logger.error(f"Error generating summary with Gemini: {e}")
+        logger.error(f"Error generating summary with LiteLLM: {e}")
         # Fallback: use first entry text truncated
         fallback = entries[0]['text'][:150]
         return f"{fallback}..." if len(entries[0]['text']) > 150 else fallback
@@ -119,7 +128,7 @@ def summarize_entries_sync(entries: List[Dict]) -> str:
     """
     model = _get_model()
     if not model:
-        logger.warning("Gemini model not available, returning placeholder summary")
+        logger.warning("LiteLLM model not available, returning placeholder summary")
         return "Copilot is processing..."
     
     # Filter out code entries
@@ -148,8 +157,12 @@ Log entries:
 Summary (one sentence only):"""
     
     try:
-        response = model.generate_content(prompt)
-        summary = response.text.strip()
+        response = litellm.completion(
+            model=resolve_model_name(model, default_model='gemini-2.5-flash-lite'),
+            messages=[{'role': 'user', 'content': prompt}],
+            api_key=resolve_api_key(model),
+        )
+        summary = extract_text(response)
         
         # Remove any quotes or extra formatting
         summary = summary.strip('"').strip("'").strip()
@@ -163,7 +176,7 @@ Summary (one sentence only):"""
         return summary
         
     except Exception as e:
-        logger.error(f"Error generating summary with Gemini: {e}")
+        logger.error(f"Error generating summary with LiteLLM: {e}")
         # Fallback: use first entry text truncated
         fallback = non_code_entries[0]['text'][:100]
         return f"{fallback}..." if len(non_code_entries[0]['text']) > 100 else fallback
