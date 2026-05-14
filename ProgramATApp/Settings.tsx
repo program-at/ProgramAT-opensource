@@ -16,7 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Config, { AppMode, MAIN_DEV_SERVER_URL } from './config';
+import Config, { AppMode } from './config';
 import WebSocketService from './WebSocketService';
 import { useTheme } from './ThemeContext';
 
@@ -96,50 +96,52 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
     );
   };
 
-  const handleModeSwitch = (targetMode: AppMode) => {
+  const handleModeSwitchTo = (targetMode: AppMode) => {
     const modeDescriptions: Record<AppMode, string> = {
-      development: '• Full development features\n• PR and branch selection\n• Create and test new tools\n• Connects to your own server',
-      production: '• Only main branch tools available\n• Simplified interface\n• Production-ready tools only\n• Connects to your own server',
-      review: '• Browse community tools on main server\n• Submit yes/no reviews on open PRs\n• Cannot create or edit tools\n• Connects to main dev server',
-    };
-    const modeLabels: Record<AppMode, string> = {
-      development: '🔧 Development',
-      production: '🚀 Production',
-      review: '🔍 Review',
+      production: '• Text Input tab will be hidden\n• Issues tab will be hidden\n• Tools will only load from main branch',
+      development: '• Text Input tab will be shown\n• Issues tab will be shown\n• Tools can load from any PR/branch\n• Full development features enabled',
+      review: '• Connect to general server to browse and test community PRs\n• Approve or reject PRs using your own GitHub identity\n• Your server handles all approvals/rejections',
     };
 
     Alert.alert(
-      `Switch to ${modeLabels[targetMode]}?`,
-      modeDescriptions[targetMode],
+      'Switch App Mode?',
+      `Switch to ${targetMode} mode?\n\n${modeDescriptions[targetMode]}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Switch',
-          onPress: async () => {
-            // Handle server URL swap
-            if (targetMode === 'review') {
-              // Save current server URL so we can restore it later
-              const current = await AsyncStorage.getItem(SERVER_URL_KEY);
-              if (current) {
-                await AsyncStorage.setItem('@saved_server_url', current);
-              }
-              await AsyncStorage.setItem(SERVER_URL_KEY, MAIN_DEV_SERVER_URL);
-              WebSocketService.setServerUrl(MAIN_DEV_SERVER_URL, true);
-            } else if (appMode === 'review') {
-              // Leaving review — restore individual server URL
-              const saved = await AsyncStorage.getItem('@saved_server_url');
-              if (saved) {
-                await AsyncStorage.setItem(SERVER_URL_KEY, saved);
-                await AsyncStorage.removeItem('@saved_server_url');
-                WebSocketService.setServerUrl(saved, true);
-                setServerUrl(saved);
-              } else {
-                setServerUrl('');
-              }
-            }
-
+          onPress: () => {
             onModeChange(targetMode);
-            Alert.alert('Mode Changed', `Now running in ${modeLabels[targetMode]} mode`, [{ text: 'OK' }]);
+            Alert.alert('Mode Changed', `Now running in ${targetMode} mode`, [{ text: 'OK' }]);
+          }
+        }
+      ]
+    );
+  };
+
+  const handleModeSwitch = () => {
+    // Cycle: development → production → review → development
+    const nextMode: AppMode =
+      appMode === 'development' ? 'production'
+      : appMode === 'production' ? 'review'
+      : 'development';
+
+    const modeDescriptions: Record<AppMode, string> = {
+      production: '• Text Input tab will be hidden\n• Issues tab will be hidden\n• Tools will only load from main branch',
+      development: '• Text Input tab will be shown\n• Issues tab will be shown\n• Tools can load from any PR/branch\n• Full development features enabled',
+      review: '• Connect to general server to browse and test community PRs\n• Approve or reject PRs using your own GitHub identity\n• Your server handles all approvals/rejections',
+    };
+
+    Alert.alert(
+      'Switch App Mode?',
+      `Switch to ${nextMode} mode?\n\n${modeDescriptions[nextMode]}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Switch',
+          onPress: () => {
+            onModeChange(nextMode);
+            Alert.alert('Mode Changed', `Now running in ${nextMode} mode`, [{ text: 'OK' }]);
           }
         }
       ]
@@ -234,6 +236,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
               <Text style={[styles.settingLabel, { color: theme.text }]}>Current Mode</Text>
               <View style={[
                 styles.modeBadge,
+                appMode === 'production' ? styles.productionBadge : styles.developmentBadge,
                 { backgroundColor: (appMode === 'production' ? theme.primary : appMode === 'review' ? theme.warning : theme.info) + '20' }
               ]}>
                 <Text style={[styles.modeBadgeText, { color: appMode === 'production' ? theme.primary : appMode === 'review' ? theme.warning : theme.info }]}>
@@ -242,27 +245,49 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
               </View>
             </View>
 
+            {/* Explicit buttons for all three modes */}
             <View style={styles.modeButtonRow}>
-              {(['development', 'production', 'review'] as AppMode[]).map((mode) => (
-                <TouchableOpacity
-                  key={mode}
-                  style={[
-                    styles.modeButton,
-                    appMode === mode
-                      ? { backgroundColor: theme.primary }
-                      : { backgroundColor: theme.backgroundSecondary, borderColor: theme.border, borderWidth: 1 }
-                  ]}
-                  onPress={() => appMode !== mode && handleModeSwitch(mode)}
-                  disabled={appMode === mode}
-                  accessible={true}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Switch to ${mode} mode`}
-                  accessibilityState={{ selected: appMode === mode }}>
-                  <Text style={[styles.modeButtonText, { color: appMode === mode ? '#fff' : theme.textSecondary }]}>
-                    {mode === 'development' ? '🔧 Dev' : mode === 'production' ? '🚀 Prod' : '🔍 Review'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              <TouchableOpacity
+                style={[
+                  styles.modeButton,
+                  { borderColor: theme.info },
+                  appMode === 'development' && { backgroundColor: theme.info + '20' }
+                ]}
+                onPress={() => appMode !== 'development' && handleModeSwitchTo('development')}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to development mode"
+                accessibilityState={{ selected: appMode === 'development' }}>
+                <Text style={[styles.modeButtonText, { color: theme.info }]}>🔧 Dev</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.modeButton,
+                  { borderColor: theme.primary },
+                  appMode === 'production' && { backgroundColor: theme.primary + '20' }
+                ]}
+                onPress={() => appMode !== 'production' && handleModeSwitchTo('production')}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to production mode"
+                accessibilityState={{ selected: appMode === 'production' }}>
+                <Text style={[styles.modeButtonText, { color: theme.primary }]}>🚀 Prod</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.modeButton,
+                  { borderColor: theme.warning },
+                  appMode === 'review' && { backgroundColor: theme.warning + '20' }
+                ]}
+                onPress={() => appMode !== 'review' && handleModeSwitchTo('review')}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to review mode"
+                accessibilityState={{ selected: appMode === 'review' }}>
+                <Text style={[styles.modeButtonText, { color: theme.warning }]}>🔍 Review</Text>
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -272,10 +297,10 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
             </Text>
             <Text style={[styles.modeDescriptionText, { color: theme.textSecondary }]}>
               {appMode === 'production'
-                ? '• Only main branch tools available\n• Simplified interface\n• Production-ready tools only\n• Connects to your own server'
+                ? '• Only main branch tools available\n• Simplified interface\n• Production-ready tools only'
                 : appMode === 'review'
-                ? '• Browse community tools on main server\n• Submit yes/no reviews on open PRs\n• Cannot create or edit tools\n• Connects to main dev server'
-                : '• Full development features\n• PR and branch selection\n• Create and test new tools\n• Connects to your own server'}
+                ? '• Browse and test community PRs from the general server\n• Approve or reject using your own GitHub identity\n• Tool frames run on the general server'
+                : '• Full development features\n• PR and branch selection\n• Create and test new tools'}
             </Text>
           </View>
         </View>
@@ -325,8 +350,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
             </TouchableOpacity>
           </View>
 
-          {/* Server URL Input — hidden in review mode (URL managed automatically) */}
-          {appMode !== 'review' && (<>
+          {/* Server URL Input */}
           <View style={[styles.secretCodeSection, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <Text style={[styles.secretCodeLabel, { color: theme.text }]}>Server URL</Text>
             <Text style={[styles.settingDescription, { color: theme.textSecondary, marginBottom: 8 }]}>
@@ -377,7 +401,6 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
               </TouchableOpacity>
             )}
           </View>
-          </>)}
 
           <View style={[styles.serverInfo, { backgroundColor: theme.backgroundSecondary }]}>
             <Text style={[styles.serverInfoLabel, { color: theme.textSecondary }]} accessible={false}>Active URL:</Text>
@@ -661,13 +684,15 @@ const styles = StyleSheet.create({
   },
   modeButtonRow: {
     flexDirection: 'row',
-    gap: 8,
+    justifyContent: 'space-between',
     marginTop: 12,
+    gap: 8,
   },
   modeButton: {
     flex: 1,
-    paddingVertical: 10,
+    paddingVertical: 8,
     borderRadius: 8,
+    borderWidth: 1.5,
     alignItems: 'center',
   },
   modeButtonText: {

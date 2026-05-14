@@ -234,6 +234,10 @@ function AppContent() {
 
     WebSocketService.onMessage(handleMessage);
 
+    // In review mode, the PR list and PR tools come from the review (general) server.
+    // Register the same handler so those messages update App state identically.
+    WebSocketService.onReviewMessage(handleMessage);
+
     // Auto-connect on mount
     console.log('[App] Calling connectToServer on mount');
     connectToServer();

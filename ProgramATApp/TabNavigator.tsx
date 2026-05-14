@@ -62,6 +62,15 @@ export default function TabNavigator({
   const handleModeChange = (newMode: AppMode) => {
     setAppMode(newMode);
     Config.APP_MODE = newMode;
+
+    // Manage the review (general) server connection
+    if (newMode === 'review') {
+      WebSocketService.connectReview().catch(err =>
+        console.error('[TabNavigator] Failed to connect to review server:', err)
+      );
+    } else {
+      WebSocketService.disconnectReview();
+    }
     
     // Production: go to tools (no PR tab)
     if (newMode === 'production' && activeTab === 'prs') {

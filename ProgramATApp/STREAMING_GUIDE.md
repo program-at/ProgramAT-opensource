@@ -15,7 +15,7 @@ The WebSocket server URL and other streaming settings are configured in `config.
 
 ```typescript
 export const Config = {
-  WEBSOCKET_SERVER_URL: '', // Set at runtime via Settings screen
+  WEBSOCKET_SERVER_URL: 'ws://34.144.178.116:8080',
   FRAME_CAPTURE_INTERVAL_MS: 500, // 2 FPS
   FRAME_QUALITY_PRIORITIZATION: 'speed',
   IMAGE_QUALITY: 0.7, // 0.0 - 1.0 (lower = smaller files)
@@ -24,7 +24,7 @@ export const Config = {
 };
 ```
 
-To connect to your self-hosted server, enter the WebSocket URL (e.g. `ws://your-server-ip:8080`) in the Settings screen at runtime. No rebuild required.
+To change the server URL or other settings, edit `config.ts` before building the app.
 
 ### Performance Tuning
 

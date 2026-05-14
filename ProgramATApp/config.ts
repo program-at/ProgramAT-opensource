@@ -13,17 +13,9 @@
 
 export type AppMode = 'development' | 'production' | 'review';
 
-// The main community development server used in review mode.
-// Review mode connects here regardless of the user's own server URL.
-// Update this when the canonical review server address changes.
-export const MAIN_DEV_SERVER_URL = 'ws://34.144.178.116:8080';
-
 // Server configuration mapping - secret codes to server URLs
-// For self-hosting: add entries mapping secret codes to your server URLs.
-// Example: 'mysecret123': { url: 'ws://10.0.0.1:8080', name: 'My Server' }
-// Users must enter a server URL manually in Settings if no matching code is found.
+// Add new servers here as needed
 export const SERVER_CONFIGS: Record<string, { url: string; name: string }> = {
-  // Add servers with secret codes for self-hosting
   // Default server (no code needed)
   'default': {
     url: 'ws://34.144.178.116:8080',
@@ -44,6 +36,14 @@ export const Config = {
   // Set at runtime from AsyncStorage (entered by user in Settings).
   // Empty string means no server configured yet.
   WEBSOCKET_SERVER_URL: '',
+
+  // General/review server URL — used in review mode for tool execution and PR fetching.
+  // This is the shared server that hosts the tools being reviewed.
+  REVIEW_SERVER_URL: 'ws://34.162.96.157:8080',
+
+  // GitHub repo for the general/review server (owner/repo format).
+  // Used in review mode so the user's server can post approve/reject to the correct repo.
+  REVIEW_GITHUB_REPO: 'program-at/ProgramAT-opensource',
   
   // GitHub branch configuration
   // In production mode, tools are fetched from this branch only
@@ -68,19 +68,13 @@ export const Config = {
     return this.APP_MODE === 'development';
   },
   get ENABLE_PR_SELECTION() {
-    return this.APP_MODE === 'development';
+    return this.APP_MODE === 'development' || this.APP_MODE === 'review';
   },
   get ENABLE_BRANCH_SELECTION() {
     return this.APP_MODE === 'development';
   },
-  get ENABLE_TOOL_EDITING() {
-    return this.APP_MODE === 'development';
-  },
-  get ENABLE_REVIEW_PANE() {
-    return this.APP_MODE === 'review';
-  },
   get ENABLE_MODE_SWITCHER() {
-    return true;
+    return true; // Allow switching between modes in app
   },
 };
 

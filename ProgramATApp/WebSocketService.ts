@@ -41,6 +41,17 @@ class WebSocketService {
   private frameNumber: number = 0;
   private connectionTimeout: ReturnType<typeof setTimeout> | null = null;
   private readonly CONNECTION_TIMEOUT_MS = 15000; // 15 second timeout
+
+  // Review (general) server connection — used in review mode for tool execution and PR fetching
+  private reviewWs: WebSocket | null = null;
+  private reviewFrameNumber: number = 0;
+  private isReviewConnecting: boolean = false;
+  private onReviewMessageCallback?: (message: ServerMessage) => void;
+  private onReviewConnectionChangeCallback?: (connected: boolean) => void;
+
+  // Raw message listeners — attached to whichever socket is active.
+  // Saved so they auto-attach to reviewWs when connectReview() opens it.
+  private rawMessageListeners: Set<(event: MessageEvent) => void> = new Set();
   
   // Heartbeat mechanism
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -870,22 +881,28 @@ class WebSocketService {
 
   /**
    * Submit a review on a PR (approve or request changes).
-   * Returns a Promise that resolves with {success, error?} after the backend acks.
+   * Routes to the PRIMARY (user's) server so their GITHUB_TOKEN is used for attribution.
+   * Pass targetRepo to override the server's own GITHUB_REPO env var (required in review mode
+   * so the user's server posts to the general repo's PR, not the user's own repo).
    */
-  submitToolReview(prNumber: number, approved: boolean, comment: string): Promise<{success: boolean; error?: string}> {
+  submitToolReview(prNumber: number, approved: boolean, comment: string, targetRepo?: string): Promise<{success: boolean; error?: string}> {
     if (!this.isConnected()) {
       return Promise.resolve({ success: false, error: 'Not connected to server.' });
     }
 
     return new Promise((resolve) => {
       try {
-        const message = {
+        const message: any = {
           type: 'submit_tool_review',
           pr_number: prNumber,
           approved,
           comment,
           timestamp: Date.now(),
         };
+
+        if (targetRepo) {
+          message.target_repo = targetRepo;
+        }
 
         const handleResponse = (event: any) => {
           try {
@@ -911,11 +928,207 @@ class WebSocketService {
 
         this.ws!.addEventListener('message', handleResponse);
         this.ws!.send(JSON.stringify(message));
-        console.log(`Submitting review for PR #${prNumber}: approved=${approved}`);
+        console.log(`Submitting review for PR #${prNumber}: approved=${approved}${targetRepo ? ` (target repo: ${targetRepo})` : ''}`);
       } catch (error) {
         resolve({ success: false, error: `Failed to send review: ${error}` });
       }
     });
+  }
+
+  /**
+   * Add a raw WebSocket message event listener.
+   * Attaches to the primary socket immediately (if open) and will also be
+   * auto-attached to the review socket when connectReview() succeeds.
+   * Use this instead of (WebSocketService as any).ws.addEventListener().
+   */
+  addMessageListener(fn: (event: MessageEvent) => void): void {
+    this.rawMessageListeners.add(fn);
+    if (this.ws) this.ws.addEventListener('message', fn);
+    if (this.reviewWs) this.reviewWs.addEventListener('message', fn);
+  }
+
+  /**
+   * Remove a raw WebSocket message event listener from all sockets.
+   */
+  removeMessageListener(fn: (event: MessageEvent) => void): void {
+    this.rawMessageListeners.delete(fn);
+    if (this.ws) this.ws.removeEventListener('message', fn);
+    if (this.reviewWs) this.reviewWs.removeEventListener('message', fn);
+  }
+
+  // ─── Review Server (general server) methods ────────────────────────────────
+
+  /**
+   * Connect to the general/review server for tool execution and PR fetching.
+   * Call this when entering review mode.
+   */
+  connectReview(url: string = Config.REVIEW_SERVER_URL): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (this.reviewWs?.readyState === WebSocket.OPEN) {
+        resolve();
+        return;
+      }
+      if (this.isReviewConnecting) {
+        reject(new Error('Review connection already in progress'));
+        return;
+      }
+      if (this.reviewWs) {
+        try { this.reviewWs.close(); } catch { /* ignore */ }
+        this.reviewWs = null;
+      }
+
+      this.isReviewConnecting = true;
+      console.log(`[WebSocketService] Connecting to review server: ${url}`);
+
+      let hasResolved = false;
+      try {
+        this.reviewWs = new WebSocket(url);
+        const currentWs = this.reviewWs;
+
+        this.reviewWs.onopen = () => {
+          console.log('[WebSocketService] Review server connected');
+          this.isReviewConnecting = false;
+          this.reviewFrameNumber = 0;
+          hasResolved = true;
+          // Auto-attach any raw message listeners that were registered before review mode
+          this.rawMessageListeners.forEach(fn => this.reviewWs!.addEventListener('message', fn));
+          if (this.onReviewConnectionChangeCallback) this.onReviewConnectionChangeCallback(true);
+          resolve();
+        };
+
+        this.reviewWs.onmessage = (event) => {
+          try {
+            const message: ServerMessage = JSON.parse(event.data);
+            if (this.onReviewMessageCallback) this.onReviewMessageCallback(message);
+          } catch (error) {
+            console.error('[WebSocketService] Failed to parse review server message:', error);
+          }
+        };
+
+        this.reviewWs.onerror = (error) => {
+          console.error('[WebSocketService] Review server error:', error);
+        };
+
+        this.reviewWs.onclose = (event) => {
+          console.log('[WebSocketService] Review server connection closed', event.code, event.reason);
+          this.isReviewConnecting = false;
+          if (this.reviewWs === currentWs) this.reviewWs = null;
+          if (this.onReviewConnectionChangeCallback) this.onReviewConnectionChangeCallback(false);
+          if (!hasResolved) {
+            reject(new Error(`Failed to connect to review server: ${event.code}`));
+          }
+        };
+      } catch (error) {
+        this.isReviewConnecting = false;
+        this.reviewWs = null;
+        reject(error);
+      }
+    });
+  }
+
+  /**
+   * Disconnect from the review/general server.
+   * Call this when leaving review mode.
+   */
+  disconnectReview(): void {
+    if (this.reviewWs) {
+      console.log('[WebSocketService] Disconnecting from review server');
+      // Detach raw message listeners before closing
+      this.rawMessageListeners.forEach(fn => this.reviewWs!.removeEventListener('message', fn));
+      try {
+        if (this.reviewWs.readyState === WebSocket.OPEN || this.reviewWs.readyState === WebSocket.CONNECTING) {
+          this.reviewWs.close();
+        }
+      } catch { /* ignore */ }
+      this.reviewWs = null;
+    }
+    this.isReviewConnecting = false;
+  }
+
+  /** Whether the review/general server connection is open. */
+  isReviewConnected(): boolean {
+    return this.reviewWs !== null && this.reviewWs.readyState === WebSocket.OPEN;
+  }
+
+  /**
+   * Returns the active WebSocket based on the current app mode.
+   * In review mode, tool execution and streaming go to the general server.
+   * All other actions (PR approval, issue management) always use the primary socket.
+   * Use this anywhere that currently accesses (WebSocketService as any).ws directly.
+   */
+  getActiveSocket(): WebSocket | null {
+    const inReviewMode = require('./config').default.APP_MODE === 'review';
+    return inReviewMode ? this.reviewWs : this.ws;
+  }
+
+  /**
+   * Returns true if the "active" socket (primary or review depending on mode) is open.
+   * Use this as a drop-in replacement for isConnected() in tool-execution paths.
+   */
+  isActiveConnected(): boolean {
+    const sock = this.getActiveSocket();
+    return sock !== null && sock.readyState === WebSocket.OPEN;
+  }
+
+  /** Set callback for messages from the review/general server. */
+  onReviewMessage(callback: (message: ServerMessage) => void) {
+    this.onReviewMessageCallback = callback;
+  }
+
+  /** Set callback for review/general server connection state changes. */
+  onReviewConnectionChange(callback: (connected: boolean) => void) {
+    this.onReviewConnectionChangeCallback = callback;
+    if (callback) callback(this.isReviewConnected());
+  }
+
+  /** Send a frame to the review/general server (used for tool execution in review mode). */
+  sendFrameToReview(base64Image: string, width?: number, height?: number): boolean {
+    if (!this.isReviewConnected()) {
+      console.warn('[WebSocketService] Cannot send frame to review server: not connected');
+      return false;
+    }
+    try {
+      const frame: StreamFrame = {
+        frameNumber: this.reviewFrameNumber++,
+        timestamp: Date.now(),
+        data: { base64Image, width, height },
+      };
+      this.reviewWs!.send(JSON.stringify(frame));
+      return true;
+    } catch (error) {
+      console.error('[WebSocketService] Failed to send frame to review server:', error);
+      return false;
+    }
+  }
+
+  /** Request the PR list from the review/general server. */
+  requestPRListFromReview(): boolean {
+    if (!this.isReviewConnected()) {
+      console.warn('[WebSocketService] Cannot request PR list: review server not connected');
+      return false;
+    }
+    try {
+      this.reviewWs!.send(JSON.stringify({ type: 'request_pr_list', target_repo: Config.REVIEW_GITHUB_REPO, timestamp: Date.now() }));
+      return true;
+    } catch (error) {
+      console.error('[WebSocketService] Failed to request PR list from review server:', error);
+      return false;
+    }
+  }
+
+  /** Request tools for a specific PR from the review/general server. */
+  requestPRToolsFromReview(prNumber: number): boolean {
+    if (!this.isReviewConnected()) {
+      console.warn('[WebSocketService] Cannot request PR tools: review server not connected');
+      return false;
+    }
+    try {
+      this.reviewWs!.send(JSON.stringify({ type: 'request_pr_tools', pr_number: prNumber, timestamp: Date.now() }));
+      return true;
+    } catch (error) {
+      console.error('[WebSocketService] Failed to request PR tools from review server:', error);
+      return false;
+    }
   }
 }
 
