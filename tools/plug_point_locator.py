@@ -50,9 +50,14 @@ STREAMING_WORD_LIMIT = 15
 # announcing "no plug point" to avoid noisy flickering output
 NO_PLUG_ANNOUNCEMENT_DELAY = 5
 
+# After this many consecutive no-detection frames, fully reset the state buffer
+# so that the next detection is always announced (keeps state in sync with image)
+RESET_FRAME_THRESHOLD = 10
+
 # Global state for streaming mode
 _last_plug_state = None  # None, 'no_plug', or a clock-position string
 _consecutive_no_plug_frames = 0
+_frames_since_plug = 0  # Frames since last confirmed detection; drives buffer reset
 
 
 def detect_plug_points(image: np.ndarray, confidence_threshold: float = DEFAULT_CONFIDENCE) -> List[Dict[str, Any]]:
@@ -223,7 +228,7 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
         Audio-friendly string or dict with 'audio'/'text' keys.
         In streaming mode returns "" when the scene has not changed.
     """
-    global _last_plug_state, _consecutive_no_plug_frames
+    global _last_plug_state, _consecutive_no_plug_frames, _frames_since_plug
 
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
         return {
@@ -244,6 +249,14 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
     # ------------------------------------------------------------------ #
     if not detections:
         _consecutive_no_plug_frames += 1
+        _frames_since_plug += 1
+
+        # After enough consecutive frames without a plug, fully reset the state
+        # buffer so the next detection is always re-announced.  This prevents
+        # stale state (accumulated across sessions or after long gaps) from
+        # keeping the output out of sync with the actual image.
+        if _frames_since_plug >= RESET_FRAME_THRESHOLD:
+            _last_plug_state = None
 
         if is_streaming:
             # Announce only after several consecutive frames without detection
@@ -267,6 +280,7 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
     # Plug point(s) detected                                               #
     # ------------------------------------------------------------------ #
     _consecutive_no_plug_frames = 0
+    _frames_since_plug = 0
 
     # Use the largest (most prominent) detection
     main_det = max(detections, key=lambda d: d['bbox'][2] * d['bbox'][3])
