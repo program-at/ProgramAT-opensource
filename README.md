@@ -3,9 +3,9 @@
 This repository contains code for an AI-powered assistive technology platform, ProgramAT. ProgramAT equips blind or low-vision (BLV) users to create custom camera-based assistive technologies via natural language instructions. BLV users can test their camera-based ATs with input from their iPhone's camera. The system has 3 major components:
 - a mobile app, installable via TestFlight. Link will be provided closer to the event.
 - a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. Instructions to set a server up will be updated shortly.
-- ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date.
+- ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date, or keeping an eye on when your fork is behind the parent repository in order to sync.
 
-> Notice: Setup instructions and TestFlight link will be updated closer to the event.
+> Notice: TestFlight link will be updated closer to the event.
 
 
 ## What is the ProgramAT Mobile App?
@@ -17,7 +17,7 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 ### Prerequisites
 
 - A [GitHub account](https://github.com/). Refer to [screen reader friendly instructions by Jeff Bishop](https://community-access.org/git-going-with-github/docs/00-pre-workshop-setup.html).
-- A computer with decent compute capacity, or ability to host a VM with decent compute capacity. Exact specifications coming soon. A GPU is not required.
+- A computer with decent compute capacity, or ability to host a VM with decent compute capacity. For best performance, we recommend around 20G of available disk space wherever you plan to host. A GPU is not required.
 - A screen reader and an accessible web browser.
 - iPhone 12 or higher running iOS 26. Apple Intelligence or AI-specific features for processors are not required.
 - Python 3.11+ (for the backend server)
@@ -227,8 +227,8 @@ Creation instructions coming soon.
 - **Streaming mode** — Tools process frames continuously and return real-time audio feedback
 - **Single-frame mode** — Capture one frame and get a detailed result
 - **Real-time camera streaming** at configurable FPS via `react-native-vision-camera`
-- **Conversation mode** — Ask follow-up questions about tool results via a Chat tab
-- **Custom GPT-like tools** — Tools flagged as Custom GPT use the configured live/streaming provider (Gemini Live).
+- **Conversation mode** — Ask follow-up questions about tool results via a Chat tab. This becomes available after a single-frame mode interaction.
+- **Custom GPT-like tools** — Tools flagged as Custom GPT use Gemini Live for streaming multimodal conversations instead of executing code per frame
 
 ## Supported Feedback Modes
 
