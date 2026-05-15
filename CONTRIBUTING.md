@@ -16,7 +16,7 @@ This can be done by checking the box in the PR template indicating you have read
 If you forget to do so, a configured Github action will prompt you to sign, and only then will a merge be successful.
 This is only required for the first contribution, afterwards, your "signature" (Github username) will have been recorded as in agreement.
 
-In order to be able to review contributions or have the power to actually make changes (i.e merge pull requests), you must become a contributor. You can become a contributor by following the [instructions for becoming a contributor](https://github.com/program-at/ProgramAT-opensource/issues/40). 
+In order to be able to review contributions or have the power to actually make changes (i.e merge pull requests), you must become a contributor. You can become a contributor by following the [instructions for becoming a contributor](https://github.com/program-at/ProgramAT-opensource/issues/44). 
 
 ## Visual Assistive Tools
 ### Why do I want to make a Visual Assistive Tools contribution?
@@ -105,4 +105,11 @@ You do not, however, start from scratch in terms of number of prior approvals af
 Once you have achieved three approvals, without any unresolved requested changes from maintainers, your documentation contribution is eligible to be merged upstream.
 
 
+## A Note on Maintainer Availability
+While maintainer involvement is necessary for several types of contributions, outside of dedicated open source events, we cannot make any promises about the timeline under which maintainers' will respond to new feature requests. We set this expectation because our current maintainer team is small, and the number regularly doing development work is even smaller. We are very excited to for the possibilities open-sourcing lends to seeing ProgramAT grow, but at our current scale, it is unrealistic for the maintainer team to be able to guarantee support for high-speed change, at all times, by ourselves.
 
+We will, however, make every effort to respond to requests to be granted org membership in a timely fashion so contributors beyond the maintainer team can begin laying the groundwork for addressing requests from the community (i.e. raising and voting on issues, reviewing PRs, etc.). Information on how to make such requests can be found [here](https://github.com/program-at/ProgramAT-opensource/issues/44). Further, we will keep a regular eye on community raised issues to prevent ideas that are both compatible with the broader ProgramAT vision and highly valued by the community from being unduly blocked by needing a maintainer's go ahead to raise a PR.
+
+With this in mind, if there is a feature you are passionate about including in ProgramAT, we encourage, if you are able, trying an implementation on your fork, raising an issue here, and when that issue has satisfied the criteria, submitting an upstream PR. It is much more likely that the maintainer team will be able to find time to review a variety of new features than implement them all ourselves! This also will give you, as a contributor, the ability to have and use valuable features you are excited about on a timeline you are satisfied with, even if it takes some time for the community at large to have access to them.
+
+Further, we are open to inviting particularly constructive contributors to eventually join the maintainer team! As a newer project, we do not yet have a firm policy for how this decision will get made, but as one develops, check back here for updates.

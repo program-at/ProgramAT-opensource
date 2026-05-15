@@ -59,7 +59,7 @@ jobs:
       - name: Validate request
         id: validate
         run: |
-          ISSUE="40"
+          ISSUE="44"
           COMMENT="${{ steps.event.outputs.comment }}"
 
           echo "::notice title=Validation::Checking issue + command"
