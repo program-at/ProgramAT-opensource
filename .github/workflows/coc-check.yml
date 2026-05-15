@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   check-and-record-coc:
+    if: github.repository == 'program-at/ProgramAT-opensource'
     runs-on: ubuntu-latest
 
     steps:

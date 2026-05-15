@@ -3,12 +3,15 @@ name: Check if codebase contributions have approved issue link
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+    branches:
+      - main
 
 permissions:
   pull-requests: read
 
 jobs:
   check-approved-issue-link:
+    if: github.repository == 'program-at/ProgramAT-opensource'
     runs-on: ubuntu-latest
 
     steps:
