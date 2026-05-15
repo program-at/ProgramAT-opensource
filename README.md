@@ -339,7 +339,7 @@ As an open source project, we welcome community feedback and contributions.
 
 If you are interested in going beyond your fork and contributing to ProgramAT, please start by reading our [Code of Conduct](https://github.com/program-at/ProgramAT-opensource/blob/main/CODE_OF_CONDUCT.md) and [Contribution Guidelines](https://github.com/program-at/ProgramAT-opensource/blob/main/CONTRIBUTING.md).
 
-Once you have done so, you can request the permissions needed to become a contributor by following [these instructions](https://github.com/program-at/ProgramAT-opensource/issues/40)!
+Once you have done so, you can request the permissions needed to become a contributor by following [these instructions](https://github.com/program-at/ProgramAT-opensource/issues/44)!
 
 ## License
 
