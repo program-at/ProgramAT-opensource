@@ -5,6 +5,8 @@ on:
     types: [submitted, dismissed]
   pull_request:
     types: [opened, edited, reopened, synchronize]
+    branches:
+      - main
 
 permissions:
   pull-requests: read
@@ -12,6 +14,7 @@ permissions:
 
 jobs:
   check-maintainer-approval:
+    if: github.repository == 'program-at/ProgramAT-opensource'
     runs-on: ubuntu-latest
 
     steps:

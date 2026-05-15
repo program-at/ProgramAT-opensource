@@ -3,9 +3,12 @@ name: Validate Visual Assistive Tool PR
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+    branches:
+      - main
 
 jobs:
   validate-tool-pr:
+    if: github.repository == 'program-at/ProgramAT-opensource'
     runs-on: ubuntu-latest
 
     steps:
