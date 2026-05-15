@@ -68,7 +68,8 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
    ```
 
 7. **Fill in the values in `backend/.env`**
-   - `GEMINI_API_KEY`
+   - `LLM_MODEL`: model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without modifying code.
+   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
    - `GITHUB_TOKEN`
    - `GITHUB_REPO`
    - `GOOGLE_APPLICATION_CREDENTIALS` if you use OCR tools
@@ -81,7 +82,8 @@ Use the table below as a quick reference for what each value does.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `GEMINI_API_KEY` | Yes (for VLM tools) | Google Gemini API key used by scene description, clothing recognition, AI parsing, and Gemini Live |
+| `LLM_MODEL` | Optional | Model name used by LiteLLM. Update this in `backend/.env` to change which provider/model is active (falls back to `GEMINI_MODEL` if present). |
+| `GEMINI_API_KEY` | Optional | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | For OCR tools | Google Cloud Vision API credentials used by Live OCR |
 | `GITHUB_TOKEN` | For GitHub features | GitHub personal access token with `repo` scope |
 | `GITHUB_REPO` | Yes (to access your own tools) | Target repo in `owner/repo` format |
@@ -93,7 +95,9 @@ Instead of using `backend/.env`, you can export the variables in your shell befo
 
 **Linux / macOS:**
 ```bash
-export GEMINI_API_KEY="your_key_here"
+export LLM_MODEL="gemini-3-flash-preview"
+export GEMINI_API_KEY="your_gemini_key_here"
+export OPENAI_API_KEY="your_openai_key_here"
 export GITHUB_TOKEN="your_token_here"
 export GITHUB_REPO="username/your-programat-fork"
 export GOOGLE_APPLICATION_CREDENTIALS="/home/username/path/to/credentials.json"
@@ -101,13 +105,17 @@ export GOOGLE_APPLICATION_CREDENTIALS="/home/username/path/to/credentials.json"
 
 **Windows PowerShell:**
 ```powershell
+$env:LLM_MODEL="gemini-3-flash-preview"
 $env:GEMINI_API_KEY = "your_key_here"
+$env:OPENAI_API_KEY="your_openai_key_here"
 $env:GITHUB_TOKEN = "your_token_here"
 $env:GITHUB_REPO = "username/your-programat-fork"
 $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\credentials.json"
 ```
 
 ### How to Get the Keys
+
+The following keys are required for the application to run, but you can add the key of other providers and use the corresponding model for text parsing and image analysis.
 
 #### GitHub Token
 
@@ -208,7 +216,7 @@ Since you are working from a fork of this repository, GitHub-related features ma
 
 2. **Run** — The Tool Runner opens with a live camera preview. Tap **Run** to execute the tool on single frames, or **Stream** to process frames continuously. Results are spoken aloud via TTS.
 
-3. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by Gemini).
+3. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by LiteLLM; change the active model with `LLM_MODEL` in `backend/.env`).
 
 4. **Development mode** — Use the **PRs** tab to browse open pull requests, select one to load its tools, and send text updates to GitHub issues.
 
@@ -220,7 +228,7 @@ Creation instructions coming soon.
 - **Single-frame mode** — Capture one frame and get a detailed result
 - **Real-time camera streaming** at configurable FPS via `react-native-vision-camera`
 - **Conversation mode** — Ask follow-up questions about tool results via a Chat tab
-- **Custom GPT-like tools** — Tools flagged as Custom GPT use Gemini Live for streaming multimodal conversations instead of executing code per frame
+- **Custom GPT-like tools** — Tools flagged as Custom GPT use the configured live/streaming provider (Gemini Live).
 
 ## Supported Feedback Modes
 
@@ -231,7 +239,7 @@ Creation instructions coming soon.
 ## Usage Modes
 ### Development Mode (GitHub Integration)
 - **PR browser** — List open pull requests, select one, and load its tools
-- **Text input for issues** — Create or update GitHub issues with AI-powered parsing (Gemini)
+- **Text input for issues** — Create or update GitHub issues with AI-powered parsing (LiteLLM)
 - **Multi-turn conversations** — The server asks for missing fields until the issue is complete
 - **Copilot session logs** — View AI coding session summaries per PR
 
@@ -245,11 +253,11 @@ Creation instructions coming soon.
 |------|-------------|-------|
 | **Object Recognition** | Detects and announces objects using YOLO11 + COCO | YOLOv11 |
 | **Live OCR** | Reads visible text aloud in real time | Google Cloud Vision API |
-| **Scene Description** | Generates a spoken description of the scene | Google Gemini Vision |
+| **Scene Description** | Generates a spoken description of the scene | LiteLLM Vision |
 | **Camera Aiming** | Guides users to center an object for a well-framed photo | YOLOv11 |
 | **Door Detection** | Detects doors/doorways with clock-face navigation cues | YOLOWorld |
 | **Empty Seat Detection** | Finds unoccupied chairs and gives directional guidance | YOLOv11 |
-| **Clothing Recognition** | Identifies the most prominent clothing item and its features | Google Gemini Vision |
+| **Clothing Recognition** | Identifies the most prominent clothing item and its features | LiteLLM Vision |
 
 New tools can be added by placing a Python file in the `tools/` directory. Each tool exposes a `main(image, input_data)` function and returns an audio-friendly string or dict.
 
@@ -328,7 +336,7 @@ For iOS:
 
 ### Backend
 - **Python 3.11** with async `websockets`
-- **Google Gemini API** — AI parsing, scene description, clothing recognition, Gemini Live
+- **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. LiteLLM can route requests to provider backends such as Google Gemini, OpenAI, or Anthropic; switch the active model via `LLM_MODEL` in `backend/.env`.
 - **Google Cloud Vision API** — OCR
 - **Ultralytics (YOLOv11 / YOLOWorld)** — Object detection
 - **OpenCV / NumPy / Pillow** — Image processing
@@ -352,6 +360,6 @@ See [LICENSE](LICENSE).
 - [Ellie Seehorn](https://seehorne.github.io/) (PhD student at University of Michigan)
 - [Yushan Wei](https://github.com/yushanwe) (Undergraduate Student at University of Michigan)
 - [Venkatesh Potluri](https://venkateshpotluri.me/) (Assistant Professor, University of Michigan. Principal Investigator of the [Intelligent Developer Experiences for Accessibility Lab](https://idea11y.dev/))
-- [Anhong Guo](https://guoanhong.com/) (Assistant Professor, University of Michigan. Principal investigator of the [Human AI Lab](https://guoanhong.com/))
+- [Anhong Guo](https://guoanhong.com/) (Assistant Professor, University of Michigan and principal investigator of the [Human AI Lab](https://guoanhong.com/))
 
 Found a problem? Please file an issue!

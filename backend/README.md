@@ -31,14 +31,14 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `GEMINI_API_KEY`: Your Google Gemini API key for intelligent issue parsing
-  - Create one at: https://aistudio.google.com/app/apikey
-  - Required for automatic template filling
-  - If not provided, falls back to simple parsing
+- `LLM_MODEL`: Optional model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without code changes.
+
+- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+  - If a provider-specific model is selected, ensure the corresponding provider API key is present.
 
 ### Optional
 
-- `GEMINI_MODEL`: Gemini model to use (default: `gemini-3-flash-preview`)
+- `GEMINI_MODEL`: (legacy) Gemini model name used as a fallback if `LLM_MODEL` isn't set (default: `gemini-3-flash-preview`)
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8080`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
@@ -55,7 +55,9 @@ python stream_server.py
 
 ```bash
 export GITHUB_TOKEN="your_github_token_here"
+export LLM_MODEL="gemini-3-flash-preview"
 export GEMINI_API_KEY="your_gemini_api_key_here"
+export OPENAI_API_KEY="your_openai_key_here"
 export GITHUB_REPO="owner/repo"
 python stream_server.py
 ```
@@ -64,7 +66,7 @@ python stream_server.py
 
 1. **Text Reception**: Server receives complete sentences from mobile app
 2. **Pause Detection**: Monitors for 5-second pause after last sentence received
-3. **AI Parsing**: Uses Google Gemini to parse transcript and extract structured information
+3. **AI Parsing**: Uses LiteLLM (configurable provider backends) to parse transcript and extract structured information
    - Determines if it's a bug report or feature request
    - Extracts relevant fields (title, description, steps, etc.)
 4. **Template Filling**: Fills appropriate GitHub issue template with parsed data
@@ -170,11 +172,11 @@ User: "I open the camera and click the photo button. I expected to take a photo 
 
 ## Security Notes
 
-- Never commit your `GITHUB_TOKEN` or `GEMINI_API_KEY` to source control
+- Never commit your `GITHUB_TOKEN` or any provider API key (for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) to source control
 - Use environment variables or a secure secrets manager
 - The GitHub token should have minimal required permissions (only `repo` scope)
-- The Gemini API key should be kept secure and rotated regularly
-- Monitor your Gemini API usage to avoid unexpected costs
+- Provider API keys should be kept secure and rotated regularly
+- Monitor your model provider usage to avoid unexpected costs
 - Consider using GitHub Apps for production deployments
 
 ## Troubleshooting
@@ -189,10 +191,10 @@ User: "I open the camera and click the photo button. I expected to take a photo 
 
 ### AI Parsing Not Working
 
-1. Check that `GEMINI_API_KEY` environment variable is set
-2. Verify API key is valid and has sufficient quota
-3. Check server logs for Gemini API errors
-4. Server will fallback to simple parsing if AI fails
+1. Check that a provider API key is set (for example `GEMINI_API_KEY` or `OPENAI_API_KEY`) when using a provider-specific model
+2. Verify the API key is valid and has sufficient quota
+3. Check server logs for LiteLLM / provider errors
+4. Server will fall back to simpler parsing if AI fails
 
 ### Sentence Detection Issues
 
