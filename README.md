@@ -17,6 +17,9 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 ### Prerequisites
 
 - A [GitHub account](https://github.com/). Refer to [screen reader friendly instructions by Jeff Bishop](https://community-access.org/git-going-with-github/docs/00-pre-workshop-setup.html).
+- A [Copilot subscription](https://github.com/features/copilot/plans).
+- Github mobile, installed and logged in
+- Testflight, installed from Apple's app store
 - A computer with decent compute capacity, or ability to host a VM with decent compute capacity. For best performance, we recommend around 20G of available disk space wherever you plan to host. A GPU is not required.
 - A screen reader and an accessible web browser.
 - iPhone 12 or higher running iOS 26. Apple Intelligence or AI-specific features for processors are not required.

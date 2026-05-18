@@ -10,6 +10,12 @@ permissions:
 
 jobs:
   grant-access:
+    if: >
+      ${{
+        github.event.issue.number == 44 &&
+        !github.event.issue.pull_request &&
+        contains(github.event.comment.body, '/request-contributor-status')
+      }}
     runs-on: ubuntu-latest
 
     steps:
@@ -183,9 +189,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
         run: |
-          gh issue comment "${{ github.event.issue.number }}" \
-            --body "@${{ steps.event.outputs.user }} already has contributor access."
-
           echo "::notice title=Skipped::User already had access"
           exit 0
 
