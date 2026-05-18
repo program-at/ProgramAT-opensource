@@ -212,6 +212,8 @@ jobs:
             -f role=member
 
           echo "::notice title=Success::Access granted to $USER"
+          gh issue comment "${{ github.event.issue.number }}" \
+          --body "@${{ steps.event.outputs.user }} has been granted contributor access."
 
       # -----------------------------
       # Final audit summary
