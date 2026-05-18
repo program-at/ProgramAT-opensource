@@ -276,7 +276,7 @@ New tools can be added by placing a Python file in the `tools/` directory. Each 
 ## Example tool ideas!
 You can make a wide variety of tools using ProgramAT! For best performance, we recommend thinking about tools that are camera based, and, for the time being, are stateless (do not need to remember their previous responses/backreference previous frames) and do not require bringing in an outside dataset.
 
-> Want to bring in stateless capabilities? Or ability to use outside datasets? Implement these features and [become a contibutor](https://github.com/program-at/ProgramAT-opensource/issues/44) to share them with the community!
+> Want to bring in stateless capabilities? Or ability to use outside datasets? Implement these features and [become a contributor](https://github.com/program-at/ProgramAT-opensource/issues/44) to share them with the community!
 
 To get your imagination started, here are some ideas for tools people have tried before!
 
