@@ -310,6 +310,7 @@ You can make a wide variety of tools using ProgramAT! For best performance, we r
 To get your imagination started, here are some ideas for tools people have tried before!
 
 - Plug point detector: Help find plug points/outlets in unfamiliar rooms.
+- Clothing description: Get a simple description of an article or articles of clothing
 - Uber finder: Help identify an Uber by describing the colors, makes, and models of car in frame.
 - Mail sorter: Describe what important vs. junk mail means to you and get guidance on whether you should open a particular piece of mail.
 - Makeup checker: Take a photo and analyze if there are any issues with your makeup application.
