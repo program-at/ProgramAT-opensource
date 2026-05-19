@@ -354,7 +354,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
           <View style={[styles.secretCodeSection, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <Text style={[styles.secretCodeLabel, { color: theme.text }]}>Server URL</Text>
             <Text style={[styles.settingDescription, { color: theme.textSecondary, marginBottom: 8 }]}>
-              Enter the WebSocket address of your self-hosted server (e.g. wss://192.168.1.10:8080)
+              Enter the WebSocket address of your self-hosted server (e.g. wss://192.168.1.10)
             </Text>
             <View style={styles.secretCodeInputRow}>
               <TextInput
@@ -365,7 +365,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
                 }]}
                 value={serverUrl}
                 onChangeText={setServerUrl}
-                placeholder="ws://your-server-ip:8080"
+                placeholder="wss://your-server-ip:8080"
                 placeholderTextColor={theme.inputPlaceholder}
                 autoCapitalize="none"
                 autoCorrect={false}
