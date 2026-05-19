@@ -23,7 +23,7 @@ import os
 import base64
 import io
 from PIL import Image
-from backend.litellm_utils import (
+from litellm_utils import (
     resolve_model_name,
     resolve_api_key,
     extract_text,

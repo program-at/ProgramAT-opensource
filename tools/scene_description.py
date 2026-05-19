@@ -34,7 +34,7 @@ except ImportError:
     LITELLM_AVAILABLE = False
     print("⚠️  litellm not installed. Install with: pip install litellm")
 
-from backend.litellm_utils import (
+from litellm_utils import (
     resolve_model_name,
     resolve_api_key,
     extract_text,
