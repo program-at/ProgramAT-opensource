@@ -161,7 +161,7 @@ We provide instructions here for hosting from your personal machine. If you woul
    Download ngrok for your system from <https://ngrok.com/download> and make sure `ngrok version` works in your terminal.
 
 2. **Connect ngrok to your account**
-   Follow the instructions on the downloading page to sign up for an account and get your authtoken in the ngrok dashboard. Configure it in your terminal.
+   Sign up or log in your account in the downloading page. Go to **Getting started** -> **Your authtoken** -> **Copy** to get your authtoken. Configure it in your terminal.
 
    ```bash
    ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
@@ -186,16 +186,14 @@ We provide instructions here for hosting from your personal machine. If you woul
 
    ```bash
    cd ../backend
-   python3 -m venv .venv
-   source .venv/bin/activate
+   python3 -m venv .venv (python -m venv .venv for Windows powershell)
+   source .venv/bin/activate (.\.venv\Scripts\Activate.ps1 for Windows powershell)
    pip install -r requirements.txt
    ```
 
 6. **Activate the virtual environment and start the backend server**
 
    ```bash
-   cd backend
-   source .venv/bin/activate
    python stream_server.py
    ```
 
