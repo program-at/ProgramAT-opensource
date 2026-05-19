@@ -309,13 +309,13 @@ You can make a wide variety of tools using ProgramAT! For best performance, we r
 
 To get your imagination started, here are some ideas for tools people have tried before!
 
-- Plug point detector: Help find plug points/outlets in unfamiliar rooms.
+- Plug point detector [(see it run!)](https://youtube.com/shorts/AXy-D1c47Bk?feature=share): Help find plug points/outlets in unfamiliar rooms.
+- Playing card reader [(see it run!)](https://youtube.com/shorts/okevY0bmcr8?feature=share): Describe a hand of playing cards, and how they change over the course of a card game
+- Uber finder [(see it run!)](https://youtube.com/shorts/wspprXIsd3Y?feature=share): Help identify an Uber by describing the colors, makes, and models of car in frame.
 - Clothing description: Get a simple description of an article or articles of clothing
-- Uber finder: Help identify an Uber by describing the colors, makes, and models of car in frame.
 - Mail sorter: Describe what important vs. junk mail means to you and get guidance on whether you should open a particular piece of mail.
 - Makeup checker: Take a photo and analyze if there are any issues with your makeup application.
 - Sock matcher: Determine if two socks out of the laundry match
-- Playing card reader: Describe a hand of playing cards, and how they change over the course of a card game
 
 
 ## Project Structure
