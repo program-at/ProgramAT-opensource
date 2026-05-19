@@ -26,54 +26,68 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 - Optional: React Native CLI development environment ([setup guide](https://reactnative.dev/docs/set-up-your-environment)). This is required if you want to run and install the app. You can skip this requirement if you are installing the app using our TestFlight link.
 - Optional: For iOS: Xcode and CocoaPods. You can skip if you are not building and running the app itself locally.
 
-
 ### Installation
 
 1. **Fork this repository**
-   This is easiest to do from the Github website. 
+   This is easiest to do from the Github website.
    First, select the button that says Fork.
    Once you have done so, it will take you to an interface where you can select the owner and name of the fork. By default, this is your username for owner, and `ProgramAT-opensource` for the repository name. We recommend leaving these defaults intact, but you can change them if you would like.
    Then, click the button that says Create Fork.
    After a few seconds, a copy of the repository will be made in your Github account.
 
 2. **Clone the repository**
+
    ```bash
    git clone https://github.com/your-username/ProgramAT-opensource.git
    cd ProgramAT-opensource
    ```
 
-3. Optional (required if you are building the app): **Install React Native dependencies**
+3. **Get the API keys**
+   See the API keys section for a detailed description.
+
+### Running the Mobile App Locally (Optional)
+
+You only need this section if you want to make changes to the frontend and run the React Native app yourself. If you are using the TestFlight version of the app, you can skip this section.
+
+This section requires an iPhone and XCode on Mac system.
+
+1. **Install React Native dependencies**
+
    ```bash
    cd ProgramATApp
    npm install
    ```
 
-4. Optional (required if you are building the app): **Install iOS dependencies (iOS only)**
+2. **Install iOS dependencies (iOS only)**
+
    ```bash
    cd ios
    pod install
    cd ..
    ```
 
-5. **Set up the backend**
+3. **Start the React Native development server**
+
    ```bash
-   cd ../backend
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
+   cd ProgramATApp
+   npx react-native start
    ```
 
-6. **Create the backend `.env` file**
-   ```bash
-   cp .env.example .env
-   ```
+   This starts the React Native Metro development server.
 
-7. **Fill in the values in `backend/.env`**
-   - `LLM_MODEL`: model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without modifying code.
-   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
-   - `GITHUB_TOKEN`
-   - `GITHUB_REPO`
-   - `GOOGLE_APPLICATION_CREDENTIALS` if you use OCR tools
+4. **Connect your phone**
+   Plug your iPhone into your computer while running the development server.
+
+   Depending on your setup, you may also need to:
+   - Trust the computer on your iPhone.
+   - Turn on Developer Mode on your iPhone.
+   - Open the app through Xcode or the React Native development workflow.
+
+Notes:
+
+- If you are using the TestFlight version of the app, you do not need to run the React Native development server.
+- The backend server and the React Native development server are separate processes and must be started in different terminals or windows.
+- The backend handles tool execution and AI processing. The React Native development server only serves the mobile app frontend during local development.
 
 ### API Keys
 
@@ -90,48 +104,23 @@ Use the table below as a quick reference for what each value does.
 | `GITHUB_REPO` | Yes (to access your own tools) | Target repo in `owner/repo` format |
 | `HOST` / `PORT` | Optional | Server bind address (default `0.0.0.0:8080`) |
 
-#### Alternative: Set environment variables directly
-
-Instead of using `backend/.env`, you can export the variables in your shell before starting the backend:
-
-**Linux / macOS:**
-```bash
-export LLM_MODEL="gemini-3-flash-preview"
-export GEMINI_API_KEY="your_gemini_key_here"
-export OPENAI_API_KEY="your_openai_key_here"
-export GITHUB_TOKEN="your_token_here"
-export GITHUB_REPO="username/your-programat-fork"
-export GOOGLE_APPLICATION_CREDENTIALS="/home/username/path/to/credentials.json"
-```
-
-**Windows PowerShell:**
-```powershell
-$env:LLM_MODEL="gemini-3-flash-preview"
-$env:GEMINI_API_KEY = "your_key_here"
-$env:OPENAI_API_KEY="your_openai_key_here"
-$env:GITHUB_TOKEN = "your_token_here"
-$env:GITHUB_REPO = "username/your-programat-fork"
-$env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\to\credentials.json"
-```
-
 ### How to Get the Keys
 
 The following keys are required for the application to run, but you can add the key of other providers and use the corresponding model for text parsing and image analysis.
 
 #### GitHub Token
 
-1. Go to any GitHub page: <https://github.com/>. Click your profile picture (top right) and open **Settings**.
-2. Go to **Developer settings** -> **Personal access tokens** -> **Tokens (classic)**.
-3. Click **Generate new token**.
-4. Add a note, choose an expiration, and select scopes to be **repo** and **workflow**.
-5. Click **Generate token**, copy it and save it properly. You won't be able to see it again.
-6. Paste the token into `backend/.env` as `GITHUB_TOKEN`.
+1. Go to any GitHub page: <https://github.com/settings/tokens>.
+2. Click **Tokens(classic)** and click **Generate new token**.
+3. Add a note, choose an expiration, and select scopes to be **repo** and **workflow**.
+4. Click **Generate token**, copy it and save it properly. You won't be able to see it again.
+5. Paste the token into `backend/.env` as `GITHUB_TOKEN`.
 
 #### Gemini API Key
 
-1. Go to Google AI Studio: <https://aistudio.google.com>
-2. Sign in with your Google account.
-3. In the left sidebar, click **Get API key** -> **Create API key**.
+1. Go to Google AI Studio: <https://aistudio.google.com/app/apikey>
+2. Sign in with your personal Google account.
+3. Click **Create API key**.
 4. Select an existing Google Cloud project or create a new one, then click **Create API key**.
 5. Copy the generated key.
 6. Paste the key into `backend/.env` as `GEMINI_API_KEY`.
@@ -149,8 +138,9 @@ Steps:
 1. Go to Google Cloud Console: <https://console.cloud.google.com>
 2. Create or select a project and enable the **Cloud Vision API** in **Menu** -> **API & Services** -> **Enabled APIs & services**.
 3. Create a service account: **Menu** -> **IAM & Admin** -> **Service Accounts** -> **Create service account**. Fill name/ID and click **Continue**.
-4. Create a key: for this service account, select **Actions** -> **Manage Keys** -> **Add key** -> **Create new key** -> choose **JSON** -> **Create**. A JSON file `credentials.json` will be downloaded. Save it securely into your workspace.
-5. Set `GOOGLE_APPLICATION_CREDENTIALS` to the JSON file path.
+4. Create a key: for this service account, select **Actions** -> **Manage Keys** -> **Add key** -> **Create new key** -> choose **JSON** -> **Create**. 
+5. A JSON file will be downloaded. Copy the JSON file from the Downloads folder to the backend folder in the codespace. Rename the file to be `credentials.json`.
+6. Set `GOOGLE_APPLICATION_CREDENTIALS` to the JSON file path.
 
 Security notes:
 
@@ -158,13 +148,14 @@ Security notes:
 - Restrict the service account to only the Vision API and grant the minimal needed permissions.
 
 ### Running the Application
+
 You can host the server from your personal machine for free, or use a hosting service like a GCP virtual machine or AWS virtual machine, which may have associated costs. 
 
 The difference between these two options, aside from cost, is that when running from your personal machine, your server will shut off whenever your machine does. This is potentially avoidable by using a paid hosting service.
 
 We provide instructions here for hosting from your personal machine. If you would prefer to use a paid hosting service, follow the instructions there for setup.
 
-You can skip to step 3 if ngrok is already installed and configured, or if you are using a paid hosting service.
+   > Notice: You can skip steps 1-2 if ngrok is already installed and configured in your terminal, or if you are using a paid hosting service.
 
 1. **Install ngrok**
    Download ngrok for your system from <https://ngrok.com/download> and make sure `ngrok version` works in your terminal.
@@ -176,7 +167,31 @@ You can skip to step 3 if ngrok is already installed and configured, or if you a
    ngrok config add-authtoken YOUR_NGROK_AUTHTOKEN
    ```
 
-3. **Activate the virtual environment and start the backend server**
+   > Notice: You can skip steps 3-8 by filling the API keys into the prompt in `COPILOT_SETUP_PROMPT.md` and giving it to Copilot (or your coding agent) and let it set up the server and use ngrok for you. After it gives you the forwarding address, you can go to step 9 and type it in the mobile application.
+
+3. **Create the backend `.env` file**
+
+   ```bash
+   cp .env.example .env
+   ```
+
+4. **Fill in the values in `backend/.env`**
+   - `LLM_MODEL`: model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without modifying code.
+   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+   - `GITHUB_TOKEN`
+   - `GITHUB_REPO`
+   - `GOOGLE_APPLICATION_CREDENTIALS`
+
+5. **Set up the backend**
+
+   ```bash
+   cd ../backend
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+6. **Activate the virtual environment and start the backend server**
 
    ```bash
    cd backend
@@ -186,20 +201,31 @@ You can skip to step 3 if ngrok is already installed and configured, or if you a
 
    The server listens on `0.0.0.0:8080` by default.
 
-4. **Start the ngrok tunnel (only if hosting from your personal machine)**
+7. **Open up another terminal or window and start the ngrok tunnel**
+
    ```bash
    ngrok http 8080
    ```
 
-5. **Copy your forwarding address**
+8. **Copy your forwarding address**
    If you are using ngrok, keep the terminal created in step 4 open. ngrok will print a forwarding address, which is the public address your app should connect to. Copy this address.
 
-   If you are using a paid hosting service, your VM should list a public IP address, copy this IP address
+   If you are using a paid hosting service, your VM should list a public IP address, copy this IP address.
 
-5. **Paste the forwarding address into the app**
+9. **Paste the forwarding address into the app**
    Change the prefix of the forwarding address from **https** to **wss** because we are using a websocket. Open ProgramAT app on your mobile device, go to the server address field in Settings, paste the ngrok forwarding address, and tap **Connect**.
 
 ## Troubleshooting
+
+### Installing Dependencies
+
+1. If you are using Windows Powershell and encounter the problem "This error might have occurred since this system does not have Windows Long Path support enabled" when installing LiteLLM, you need to bypass the path length limit. Open PowerShell as Administrator and run:
+
+```bash
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+```
+
+Then install the dependencies again.
 
 ### Forked Repository Settings
 
@@ -209,7 +235,6 @@ Since you are working from a fork of this repository, GitHub-related features ma
 2. Make sure the workflow **Auto-assign to Copilot** is visible in **Actions**. If it is missing, delete and re-upload [`.github/workflows/copilot-assignment.yml`](.github/workflows/copilot-assignment.yml).
 3. Go to **Settings** -> **Secrets and variables** -> **Actions**, click **New repository secret**, create a secret named `COPILOT_PAT`, and set its value to your GitHub personal access token.
 4. If you use `gh auth login`, make sure that token has the required scopes, including `repo`, `workflow`, and `admin:org`.
-
 
 ## Usage
 
@@ -243,13 +268,16 @@ Since you are working from a fork of this repository, GitHub-related features ma
 - **Speech-to-Text input** — voice input for follow-up questions using `@react-native-voice/voice` and OS-level dictation
 
 ## Usage Modes
+
 ### Development Mode (GitHub Integration)
+
 - **PR browser** — List open pull requests, select one, and load its tools
 - **Text input for issues** — Create or update GitHub issues with AI-powered parsing (LiteLLM)
 - **Multi-turn conversations** — The server asks for missing fields until the issue is complete
 - **Copilot session logs** — View AI coding session summaries per PR
 
 ### Production Mode
+
 - Tools are pulled from the `main` branch only
 - The PR browser tab is hidden; users go straight to the tool list
 
@@ -325,7 +353,6 @@ ProgramAT-opensource/
     └── clothing_recognition.py
 ```
 
-
 ## Development
 
 ### Running Tests
@@ -346,14 +373,15 @@ See [tools/MODEL_SETUP.md](tools/MODEL_SETUP.md) and the existing tools for exam
 ### Building for Production
 
 For iOS:
+
 1. Open `ProgramATApp/ios/ProgramATApp.xcworkspace` in Xcode
 2. Select your signing team and provisioning profile
 3. Build for Release
 
-
 ## Technology Stack
 
 ### Mobile App
+
 - **React Native 0.82.1** — Bare (non-Expo) for direct native module access
 - **TypeScript**
 - **react-native-vision-camera** — Camera capture and frame streaming
@@ -363,6 +391,7 @@ For iOS:
 - **AsyncStorage** — Local persistence for settings and sessions
 
 ### Backend
+
 - **Python 3.11** with async `websockets`
 - **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. LiteLLM can route requests to provider backends such as Google Gemini, OpenAI, or Anthropic; switch the active model via `LLM_MODEL` in `backend/.env`.
 - **Google Cloud Vision API** — OCR
@@ -371,6 +400,7 @@ For iOS:
 - **PyGithub** — GitHub issue and PR integration
 
 ## Get involved!!
+
 As an open source project, we welcome community feedback and contributions.
 
 If you are interested in going beyond your fork and contributing to ProgramAT, please start by reading our [Code of Conduct](https://github.com/program-at/ProgramAT-opensource/blob/main/CODE_OF_CONDUCT.md) and [Contribution Guidelines](https://github.com/program-at/ProgramAT-opensource/blob/main/CONTRIBUTING.md).
@@ -381,9 +411,7 @@ Once you have done so, you can request the permissions needed to become a contri
 
 See [LICENSE](LICENSE).
 
-
 ## Contributions
-
 
 - [Ellie Seehorn](https://seehorne.github.io/) (PhD student at University of Michigan)
 - [Yushan Wei](https://github.com/yushanwe) (Undergraduate Student at University of Michigan)
