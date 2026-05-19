@@ -2,7 +2,7 @@
 
 This repository contains code for an AI-powered assistive technology platform, ProgramAT. ProgramAT equips blind or low-vision (BLV) users to create custom camera-based assistive technologies via natural language instructions. BLV users can test their camera-based ATs with input from their iPhone's camera. The system has 3 major components:
 - a mobile app, [installable via TestFlight](https://testflight.apple.com/join/ahpWstQr).
-- a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. Instructions to set a server up will be updated shortly.
+- a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. 
 - ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date, or keeping an eye on when your fork is behind the parent repository in order to sync.
 
 
