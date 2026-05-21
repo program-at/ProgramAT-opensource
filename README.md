@@ -172,6 +172,7 @@ We provide instructions here for hosting from your personal machine. If you woul
 3. **Create the backend `.env` file**
 
    ```bash
+   cd backend
    cp .env.example .env
    ```
 
@@ -185,7 +186,6 @@ We provide instructions here for hosting from your personal machine. If you woul
 5. **Set up the backend**
 
    ```bash
-   cd ../backend
    python3 -m venv .venv (python -m venv .venv for Windows powershell)
    source .venv/bin/activate (.\.venv\Scripts\Activate.ps1 for Windows powershell)
    pip install -r requirements.txt
