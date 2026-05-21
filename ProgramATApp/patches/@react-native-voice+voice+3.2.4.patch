@@ -1,0 +1,56 @@
+diff --git a/node_modules/@react-native-voice/voice/android/build.gradle b/node_modules/@react-native-voice/voice/android/build.gradle
+index 8fce879..f68e6ab 100644
+--- a/node_modules/@react-native-voice/voice/android/build.gradle
++++ b/node_modules/@react-native-voice/voice/android/build.gradle
+@@ -2,7 +2,7 @@ apply plugin: 'com.android.library'
+ 
+ repositories {
+     mavenLocal()
+-    jcenter()
++    mavenCentral()
+     maven {
+         // For developing the library outside the context of the example app, expect `react-native`
+         // to be installed at `./node_modules`.
+@@ -20,6 +20,7 @@ def DEFAULT_TARGET_SDK_VERSION = 28
+ def DEFAULT_SUPPORT_LIB_VERSION = "28.0.0"
+ 
+ android {
++    namespace 'com.wenkesj.voice'
+     compileSdkVersion rootProject.hasProperty('compileSdkVersion') ? rootProject.compileSdkVersion : DEFAULT_COMPILE_SDK_VERSION
+     buildToolsVersion rootProject.hasProperty('buildToolsVersion') ? rootProject.buildToolsVersion : DEFAULT_BUILD_TOOLS_VERSION
+ 
+@@ -40,7 +41,7 @@ android {
+ buildscript {
+     if (project == rootProject) {
+         repositories {
+-            jcenter()
++            mavenCentral()
+         }
+         dependencies {
+             classpath 'com.android.tools.build:gradle:3.3.2'
+@@ -53,7 +54,7 @@ buildscript {
+ 
+ allprojects {
+     repositories {
+-        jcenter()
++        mavenCentral()
+     }
+ }
+ 
+@@ -62,6 +63,5 @@ def supportVersion = rootProject.hasProperty('supportLibVersion') ? rootProject.
+ dependencies {
+     implementation fileTree(dir: 'libs', include: ['*.jar'])
+     testImplementation 'junit:junit:4.12'
+-    implementation "com.android.support:appcompat-v7:${supportVersion}"
+     implementation 'com.facebook.react:react-native:+'
+ }
+diff --git a/node_modules/@react-native-voice/voice/android/src/main/AndroidManifest.xml b/node_modules/@react-native-voice/voice/android/src/main/AndroidManifest.xml
+index 9a75230..0bbc6c3 100644
+--- a/node_modules/@react-native-voice/voice/android/src/main/AndroidManifest.xml
++++ b/node_modules/@react-native-voice/voice/android/src/main/AndroidManifest.xml
+@@ -1,5 +1,4 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+-    package="com.wenkesj.voice"
+     xmlns:tools="http://schemas.android.com/tools">
+ 
+     <uses-sdk tools:overrideLibrary="com.facebook.react" />
