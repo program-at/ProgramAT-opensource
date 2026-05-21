@@ -1,0 +1,21 @@
+[project]
+name = "programat-backend"
+version = "0.1.0"
+description = "ProgramAT WebSocket backend server"
+requires-python = ">=3.12"
+dependencies = [
+    "google-cloud-secret-manager",
+    "google-genai",
+    "google-generativeai>=0.3.0",
+    "litellm",
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "pillow>=10.0.0",
+    "pygithub>=2.1.1",
+    "pytesseract>=0.3.0",
+    "python-dotenv>=1.0.0",
+    "scikit-learn",
+    "scipy",
+    "ultralytics>=8.0.0",
+    "websockets>=12.0",
+]
