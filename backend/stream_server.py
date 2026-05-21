@@ -1,3 +1,4 @@
+#!/usr/bin/env -S uv run python
 """
 WebSocket Server for Camera Frame Streaming
 Runs on GCP VM instance to receive frames from mobile app
