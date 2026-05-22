@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Config, { AppMode } from './config';
 import PRsAndText from './PRsAndText';
@@ -167,14 +167,14 @@ export default function TabNavigator({
             borderTopColor: theme.border 
           }
         ]} 
-        accessibilityRole="tablist">
+        accessibilityRole={Platform.OS === 'ios' ? 'tabbar' as any : 'tablist'}>
         {/* PRs tab - show in development and review mode */}
         {appMode !== 'production' && (
           <TouchableOpacity
             style={[styles.tab, activeTab === 'prs' && styles.activeTab]}
             onPress={() => setActiveTab('prs')}
             accessible={true}
-            accessibilityRole="tab"
+            accessibilityRole={Platform.OS === 'ios' ? 'button' : 'tab'}
             accessibilityLabel="Pull requests and text input"
             accessibilityState={{ selected: activeTab === 'prs' }}>
             <Text style={[styles.tabIcon, { color: activeTab === 'prs' ? theme.tabBarActive : theme.tabBarInactive }, activeTab === 'prs' && styles.activeTabIcon]} importantForAccessibility="no">
@@ -190,7 +190,7 @@ export default function TabNavigator({
           style={[styles.tab, activeTab === 'tools' && styles.activeTab]}
           onPress={() => setActiveTab('tools')}
           accessible={true}
-          accessibilityRole="tab"
+          accessibilityRole={Platform.OS === 'ios' ? 'button' : 'tab'}
           accessibilityLabel="Tools"
           accessibilityState={{ selected: activeTab === 'tools' }}>
           <Text style={[styles.tabIcon, { color: activeTab === 'tools' ? theme.tabBarActive : theme.tabBarInactive }, activeTab === 'tools' && styles.activeTabIcon]} importantForAccessibility="no">
@@ -206,7 +206,7 @@ export default function TabNavigator({
           style={[styles.tab, activeTab === 'chat' && styles.activeTab]}
           onPress={() => setActiveTab('chat')}
           accessible={true}
-          accessibilityRole="tab"
+          accessibilityRole={Platform.OS === 'ios' ? 'button' : 'tab'}
           accessibilityLabel="Chat"
           accessibilityState={{ selected: activeTab === 'chat' }}>
           <Text style={[styles.tabIcon, { color: activeTab === 'chat' ? theme.tabBarActive : theme.tabBarInactive }, activeTab === 'chat' && styles.activeTabIcon]} importantForAccessibility="no">
@@ -222,7 +222,7 @@ export default function TabNavigator({
           style={[styles.tab, activeTab === 'settings' && styles.activeTab]}
           onPress={() => setActiveTab('settings')}
           accessible={true}
-          accessibilityRole="tab"
+          accessibilityRole={Platform.OS === 'ios' ? 'button' : 'tab'}
           accessibilityLabel="Settings"
           accessibilityState={{ selected: activeTab === 'settings' }}>
           <Text style={[styles.tabIcon, { color: activeTab === 'settings' ? theme.tabBarActive : theme.tabBarInactive }, activeTab === 'settings' && styles.activeTabIcon]} importantForAccessibility="no">
