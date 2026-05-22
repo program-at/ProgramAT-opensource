@@ -292,6 +292,29 @@ def _norm_enum(value: Any, allowed, default: str) -> str:
     return default
 
 
+def _opt_bool(value: Any) -> Optional[bool]:
+    """
+    Parse a model-supplied boolean, returning None when it cannot be read.
+
+    A plain bool() is unsafe on model JSON: bool("false") is True, because every
+    non-empty string is truthy in Python - so a model that answered the string
+    "false" would be misread as True. This recognizes the JSON literal and the
+    common string and numeric spellings explicitly; anything else returns None
+    so the caller can fail closed.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ('true', 'yes', '1'):
+            return True
+        if normalized in ('false', 'no', '0'):
+            return False
+    if isinstance(value, (int, float)):
+        return value != 0
+    return None
+
+
 def _rank(level: Any) -> int:
     """Map a low/medium/high level to 1/2/3. Unknown -> 2 (medium)."""
     try:
@@ -325,23 +348,30 @@ def _normalize_structured(data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Coerce the raw detection JSON into a clean, predictable structure.
 
-    Crucially, this derives `capture.usable` defensively: if the model omits it,
-    the capture is treated as usable only when a person is visible and the model
-    did not ask for a retake. This can never produce a false "looks good" - a
-    bad photo always carries framing_guidance per the prompt.
+    Crucially, this derives `capture.usable` defensively and fails closed: a
+    missing person flag, a malformed or empty `capture` block, or any framing
+    guidance all force `usable` false. An empty or junk model response (e.g.
+    `{}`) therefore asks for a retake - it can never be mistaken for a clean
+    "looks good".
     """
     raw_capture = data.get('capture') if isinstance(data.get('capture'), dict) else {}
 
-    person_visible = bool(raw_capture.get('person_visible', True))
+    # Fail closed: a person counts as visible only when the model explicitly
+    # says so. A plain bool() is unsafe here - it would default a missing flag
+    # to True and read the string "false" as truthy.
+    person_visible = _opt_bool(raw_capture.get('person_visible'))
+    if person_visible is None:
+        person_visible = False
     framing_guidance = str(raw_capture.get('framing_guidance', '') or '').strip()
 
-    raw_usable = raw_capture.get('usable')
-    if isinstance(raw_usable, bool):
-        usable = raw_usable
-    else:
+    # Honor an explicit `usable` from the model (the string "false" included);
+    # derive it only when the model omits it. The hard rules below always win:
+    # no visible person, or any framing guidance, forces a retake.
+    usable = _opt_bool(raw_capture.get('usable'))
+    if usable is None:
         usable = person_visible and not framing_guidance
-    if not person_visible:
-        usable = False  # hard rule: no person means nothing to check
+    if not person_visible or framing_guidance:
+        usable = False
 
     capture = {
         'person_visible': person_visible,
@@ -382,13 +412,20 @@ def _normalize_structured(data: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def _vision_completion(model_name, api_key, prompt, image_data_uris, timeout,
-                       temperature, want_json):
+                       temperature, json_object):
     """
     Run one multimodal LiteLLM completion (text + one or more images).
 
-    When want_json is set, JSON mode is requested first; if the provider or
-    LiteLLM version rejects response_format, the call is retried plain (the
-    robust parse_json_object covers the output either way).
+    `json_object` requests the provider's JSON-object mode (`response_format`).
+    Pass it True only when the prompt asks for a JSON OBJECT; the verify prompt
+    asks for a JSON ARRAY and passes False, because object mode fights an
+    array-shaped prompt (some providers wrap or refuse the array) and the robust
+    parse_json_object reads the array directly anyway.
+
+    If the provider or LiteLLM version rejects `response_format` itself, the
+    call is retried once without it. Any other error (auth, quota, network) is
+    re-raised - retrying those would just fail again at double the latency and
+    cost.
     """
     content: List[Dict[str, Any]] = [{'type': 'text', 'text': prompt}]
     for uri in image_data_uris:
@@ -402,12 +439,15 @@ def _vision_completion(model_name, api_key, prompt, image_data_uris, timeout,
         timeout=timeout,
     )
 
-    if want_json:
+    if json_object:
         try:
             return litellm.completion(
                 response_format={'type': 'json_object'}, **base_kwargs)
-        except Exception:
-            pass  # provider/version may reject response_format - retry plain
+        except Exception as exc:
+            # Retry plain only when response_format itself was rejected; an
+            # auth/quota/network error would just fail again, so re-raise it.
+            if 'response_format' not in str(exc).lower():
+                raise
     return litellm.completion(**base_kwargs)
 
 
@@ -439,7 +479,7 @@ def analyze_appearance(image: np.ndarray, api_key: str, model_name: str,
         response = _vision_completion(
             resolve_model_name(model_name), api_key,
             build_detect_prompt(focus), [image_data_uri],
-            timeout=timeout, temperature=DETECT_TEMPERATURE, want_json=True)
+            timeout=timeout, temperature=DETECT_TEMPERATURE, json_object=True)
 
         parsed = parse_json_object(extract_text(response))
         if not isinstance(parsed, dict):
@@ -509,7 +549,7 @@ def verify_findings(image: np.ndarray, findings: List[Dict[str, Any]], api_key: 
         response = _vision_completion(
             resolve_model_name(model_name), api_key,
             build_verify_prompt(findings), [image_data_uri],
-            timeout=timeout, temperature=VERIFY_TEMPERATURE, want_json=True)
+            timeout=timeout, temperature=VERIFY_TEMPERATURE, json_object=False)
 
         results = _extract_verify_results(parse_json_object(extract_text(response)))
         if not results:

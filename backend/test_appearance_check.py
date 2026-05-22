@@ -145,7 +145,21 @@ def test_normalize_structured():
     assert inferred_bad['capture']['usable'] is False, "framing guidance -> not usable"
     no_person = _normalize_structured({'capture': {'person_visible': False, 'usable': True}})
     assert no_person['capture']['usable'] is False, "no person -> never usable"
-    print("  Enums lowercased, junk findings dropped, usable inferred safely")
+
+    # Fail closed: a missing or malformed capture must never read as usable -
+    # that is what would let an empty model response become a false "looks good".
+    for junk in ({}, {'capture': {}}, {'findings': []}):
+        assert _normalize_structured(junk)['capture']['usable'] is False, \
+            f"malformed capture must not be usable: {junk}"
+    # The string "false" must not be misread as truthy (a plain bool() would).
+    str_false = _normalize_structured({'capture': {'person_visible': 'false'}})
+    assert str_false['capture']['person_visible'] is False, '"false" string -> False'
+    assert str_false['capture']['usable'] is False
+    explicit_false = _normalize_structured(
+        {'capture': {'person_visible': True, 'usable': 'false'}})
+    assert explicit_false['capture']['usable'] is False, 'explicit "false" honored'
+
+    print("  Enums lowercased, junk findings dropped, usable fails closed")
     print("  PASS\n")
 
 
