@@ -1,10 +1,10 @@
 # ProgramAT
 
 This repository contains code for an AI-powered assistive technology platform, ProgramAT. ProgramAT equips blind or low-vision (BLV) users to create custom camera-based assistive technologies via natural language instructions. BLV users can test their camera-based ATs with input from their iPhone's camera. The system has 3 major components:
-- a mobile app, [installable via TestFlight](https://testflight.apple.com/join/ahpWstQr).
-- a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task. 
-- ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date, or keeping an eye on when your fork is behind the parent repository in order to sync.
 
+- a mobile app, [installable via TestFlight](https://testflight.apple.com/join/ahpWstQr).
+- a server that runs the computation for the camera-based AT you build using the app. This interfaces with a GitHub repository, and runs the AI models necessary for your task.
+- ProgramAT GitHub repository. This is where your tools will live. It will be a fork of this repository for each individual user. We recommend forking closer to the event date, or keeping an eye on when your fork is behind the parent repository in order to sync.
 
 ## What is the ProgramAT Mobile App?
 
@@ -34,14 +34,12 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
    Once you have done so, it will take you to an interface where you can select the owner and name of the fork. By default, this is your username for owner, and `ProgramAT-opensource` for the repository name. We recommend leaving these defaults intact, but you can change them if you would like.
    Then, click the button that says Create Fork.
    After a few seconds, a copy of the repository will be made in your Github account.
-
 2. **Clone the repository**
 
    ```bash
    git clone https://github.com/your-username/ProgramAT-opensource.git
    cd ProgramAT-opensource
    ```
-
 3. **Get the API keys**
    See the API keys section for a detailed description.
 
@@ -57,7 +55,6 @@ This section requires an iPhone and XCode on Mac system.
    cd ProgramATApp
    npm install
    ```
-
 2. **Install iOS dependencies (iOS only)**
 
    ```bash
@@ -65,7 +62,6 @@ This section requires an iPhone and XCode on Mac system.
    pod install
    cd ..
    ```
-
 3. **Start the React Native development server**
 
    ```bash
@@ -74,11 +70,11 @@ This section requires an iPhone and XCode on Mac system.
    ```
 
    This starts the React Native Metro development server.
-
 4. **Connect your phone**
    Plug your iPhone into your computer while running the development server.
 
    Depending on your setup, you may also need to:
+
    - Trust the computer on your iPhone.
    - Turn on Developer Mode on your iPhone.
    - Open the app through Xcode or the React Native development workflow.
@@ -95,14 +91,16 @@ The backend reads configuration from `backend/.env` automatically when it starts
 
 Use the table below as a quick reference for what each value does.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `LLM_MODEL` | Optional | Model name used by LiteLLM. Update this in `backend/.env` to change which provider/model is active (falls back to `GEMINI_MODEL` if present). |
-| `GEMINI_API_KEY` | Optional | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | For OCR tools | Google Cloud Vision API credentials used by Live OCR |
-| `GITHUB_TOKEN` | For GitHub features | GitHub personal access token with `repo` scope |
-| `GITHUB_REPO` | Yes (to access your own tools) | Target repo in `owner/repo` format |
-| `HOST` / `PORT` | Optional | Server bind address (default `0.0.0.0:8080`) |
+| Variable                           | Required                       | Description                                                                                                                                       |
+| ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LLM_MODEL`                        | Optional                       | Model name used by LiteLLM. Update this in `backend/.env` to change which provider/model is active (falls back to `GEMINI_MODEL` if present).    |
+| `GEMINI_API_KEY`                   | Optional                       | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`. |
+| `GROQ_API_KEY`                     | Optional                       | Provider API key for Groq. Set `LLM_MODEL` to e.g. `groq/llama-3.3-70b-versatile`. Free tier available, no credit card required.                 |
+| `MISTRAL_API_KEY`                  | Optional                       | Provider API key for Mistral AI. Set `LLM_MODEL` to e.g. `mistral/mistral-small-latest`. Free tier available.                                    |
+| `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
+| `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
+| `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |
+| `HOST` / `PORT`                    | Optional                       | Server bind address (default `0.0.0.0:8080`)                                                                                                      |
 
 ### How to Get the Keys
 
@@ -110,7 +108,7 @@ The following keys are required for the application to run, but you can add the 
 
 #### GitHub Token
 
-1. Go to any GitHub page: <https://github.com/settings/tokens>.
+1. Go to any GitHub page: [https://github.com/settings/tokens](https://github.com/settings/tokens).
 2. Click **Tokens(classic)** and click **Generate new token**.
 3. Add a note, choose an expiration, and select scopes to be **repo** and **workflow**.
 4. Click **Generate token**, copy it and save it properly. You won't be able to see it again.
@@ -118,7 +116,7 @@ The following keys are required for the application to run, but you can add the 
 
 #### Gemini API Key
 
-1. Go to Google AI Studio: <https://aistudio.google.com/app/apikey>
+1. Go to Google AI Studio: [https://aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey)
 2. Sign in with your personal Google account.
 3. Click **Create API key**.
 4. Select an existing Google Cloud project or create a new one, then click **Create API key**.
@@ -129,16 +127,34 @@ Billing:
 
 - If you want to increase the rate limit, click **Set up billing** in Google AI Studio and choose other plans for your API key.
 
+#### Groq API Key
+
+1. Go to GroqCloud Console: [https://console.groq.com/keys](https://console.groq.com/keys)
+2. Sign in or create a free account (no credit card required).
+3. Click **Create API Key**, give it a name, and click **Submit**.
+4. Copy the generated key immediately — you won't be able to see it again.
+5. Paste the key into `backend/.env` as `GROQ_API_KEY`.
+6. Set `LLM_MODEL` to a Groq-hosted model, e.g. `groq/llama-3.3-70b-versatile`.
+
+#### Mistral API Key
+
+1. Go to Mistral AI Console: [https://console.mistral.ai/api-keys](https://console.mistral.ai/api-keys)
+2. Sign in or create a free account.
+3. Click **Create new key**, give it a name, and click **Create**.
+4. Copy the generated key immediately — you won't be able to see it again.
+5. Paste the key into `backend/.env` as `MISTRAL_API_KEY`.
+6. Set `LLM_MODEL` to a Mistral model, e.g. `mistral/mistral-small-latest` or `mistral/mistral-medium-latest`.
+
 #### Google Application Credentials
 
 This project uses Google Cloud Vision for higher-quality OCR in `tools/live_ocr.py`. If you want Cloud Vision for better OCR, create a service account and download a JSON key, then set `GOOGLE_APPLICATION_CREDENTIALS` to that file path. If you prefer not to use Cloud Vision, the tool will fall back to local Tesseract if installed (no Google credentials required).
 
 Steps:
 
-1. Go to Google Cloud Console: <https://console.cloud.google.com>
+1. Go to Google Cloud Console: [https://console.cloud.google.com](https://console.cloud.google.com)
 2. Create or select a project and enable the **Cloud Vision API** in **Menu** -> **API & Services** -> **Enabled APIs & services**.
 3. Create a service account: **Menu** -> **IAM & Admin** -> **Service Accounts** -> **Create service account**. Fill name/ID and click **Continue**.
-4. Create a key: for this service account, select **Actions** -> **Manage Keys** -> **Add key** -> **Create new key** -> choose **JSON** -> **Create**. 
+4. Create a key: for this service account, select **Actions** -> **Manage Keys** -> **Add key** -> **Create new key** -> choose **JSON** -> **Create**.
 5. A JSON file will be downloaded. Copy the JSON file from the Downloads folder to the backend folder in the codespace. Rename the file to be `credentials.json`.
 6. Set `GOOGLE_APPLICATION_CREDENTIALS` to the JSON file path.
 
@@ -149,17 +165,16 @@ Security notes:
 
 ### Running the Application
 
-You can host the server from your personal machine for free, or use a hosting service like a GCP virtual machine or AWS virtual machine, which may have associated costs. 
+You can host the server from your personal machine for free, or use a hosting service like a GCP virtual machine or AWS virtual machine, which may have associated costs.
 
 The difference between these two options, aside from cost, is that when running from your personal machine, your server will shut off whenever your machine does. This is potentially avoidable by using a paid hosting service.
 
 We provide instructions here for hosting from your personal machine. If you would prefer to use a paid hosting service, follow the instructions there for setup.
 
-   > Notice: You can skip steps 1-2 if ngrok is already installed and configured in your terminal, or if you are using a paid hosting service.
+> Notice: You can skip steps 1-2 if ngrok is already installed and configured in your terminal, or if you are using a paid hosting service.
 
 1. **Install ngrok**
-   Download ngrok for your system from <https://ngrok.com/download> and make sure `ngrok version` works in your terminal.
-
+   Download ngrok for your system from [https://ngrok.com/download](https://ngrok.com/download) and make sure `ngrok version` works in your terminal.
 2. **Connect ngrok to your account**
    Sign up or log in your account in the downloading page. Go to **Getting started** -> **Your authtoken** -> **Copy** to get your authtoken. Configure it in your terminal.
 
@@ -168,21 +183,20 @@ We provide instructions here for hosting from your personal machine. If you woul
    ```
 
    > Notice: You can skip steps 3-8 by filling the API keys into the prompt in `COPILOT_SETUP_PROMPT.md` and giving it to Copilot (or your coding agent) and let it set up the server and use ngrok for you. After it gives you the forwarding address, you can go to step 9 and type it in the mobile application.
-
+   >
 3. **Create the backend `.env` file**
 
    ```bash
    cd backend
    cp .env.example .env
    ```
-
 4. **Fill in the values in `backend/.env`**
+
    - `LLM_MODEL`: model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without modifying code.
-   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`
    - `GITHUB_TOKEN`
    - `GITHUB_REPO`
    - `GOOGLE_APPLICATION_CREDENTIALS`
-
 5. **Set up the backend**
 
    ```bash
@@ -190,7 +204,6 @@ We provide instructions here for hosting from your personal machine. If you woul
    source .venv/bin/activate (.\.venv\Scripts\Activate.ps1 for Windows powershell)
    pip install -r requirements.txt
    ```
-
 6. **Activate the virtual environment and start the backend server**
 
    ```bash
@@ -198,18 +211,15 @@ We provide instructions here for hosting from your personal machine. If you woul
    ```
 
    The server listens on `0.0.0.0:8080` by default.
-
 7. **Open up another terminal or window and start the ngrok tunnel**
 
    ```bash
    ngrok http 8080
    ```
-
 8. **Copy your forwarding address**
    If you are using ngrok, keep the terminal created in step 4 open. ngrok will print a forwarding address, which is the public address your app should connect to. Copy this address.
 
    If you are using a paid hosting service, your VM should list a public IP address, copy this IP address.
-
 9. **Paste the forwarding address into the app**
    Change the prefix of the forwarding address from **https** to **wss** because we are using a websocket. Open ProgramAT app on your mobile device, go to the server address field in Settings, paste the ngrok forwarding address, and tap **Connect**.
 
@@ -236,21 +246,17 @@ Since you are working from a fork of this repository, GitHub-related features ma
 
 ## Usage
 
-1.  **Select a Tool** — Navigate to the **Tools** tab, browse the available tools, and tap one to select it.
-
+1. **Select a Tool** — Navigate to the **Tools** tab, browse the available tools, and tap one to select it.
 2. **Run** — The Tool Runner opens with a live camera preview. Tap **Run** to execute the tool on single frames, or **Stream** to process frames continuously. Results are spoken aloud via TTS.
-
 3. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by LiteLLM; change the active model with `LLM_MODEL` in `backend/.env`).
-
 4. **Development mode** — Use the **PRs** tab to browse open pull requests, select one to load its tools, and send text updates to GitHub issues.
-
 5. **Tool creation** — To instead create a new tool, from development mode, select the "Create New Issue Instead" button in the PRs tab. Then, type or dictate the tool you would like to make into the text box, then submit. If more information is needed, the app will ask for it: in this case, dictate or type an answer to the request and resubmit, it will be appended to your initial request. Once the request is complete, the app will tell you it has made a new issue successfully. Copilot will automatically be assigned and create a relevant pull request. From there, wait for it to generate, and then run it as described in the earlier usage steps!
+
    * If you prefer to do this from desktop, you can also fill out the issue template titled "Visual Assistive Technology" on the Github website
-  
 6. **Tool iteration** — To update or modify a tool, in development mode, click a relevant PR, and instead of choosing open tools as you would to run a tool, select update issue. Then, type or dictate the change you would like to make and submit. Copilot will automatically be assigned and make the desired changes to the relevant tool.
+
    * If you would prefer to do this from desktop, you can also simply leave a comment on the relevant pull request from the Github website. In this case, you will be responsible for appending `@copilot` to your comment to assign Copilot.
 
- 
 ## Supported Input Modes
 
 - **Streaming mode** — Tools process frames continuously and return real-time audio feedback
@@ -280,27 +286,29 @@ Since you are working from a fork of this repository, GitHub-related features ma
 - The PR browser tab is hidden; users go straight to the tool list
 
 ### Review mode
+
 - Tools are pulled from the main repository server (as opposed to your self-hosted server), specifically PRs people have put up for review
 - You can test tools as you would in development mode, but cannot directly create or edit tools.
-   - If you would like a tool of yours to be visible in review mode, create it locally, then submit a PR!
+  - If you would like a tool of yours to be visible in review mode, create it locally, then submit a PR!
 - You can review tools (approve if they work as intended, request changes otherwise)
-   - Note that for this mode to work properly, you should first [become a contributor](https://github.com/program-at/ProgramAT-opensource/issues/44). These permissions are needed to leave reviews.
+  - Note that for this mode to work properly, you should first [become a contributor](https://github.com/program-at/ProgramAT-opensource/issues/44). These permissions are needed to leave reviews.
 
 ## Built-In Tools
 
-| Tool | Description | Model |
-|------|-------------|-------|
-| **Object Recognition** | Detects and announces objects using YOLO11 + COCO | YOLOv11 |
-| **Live OCR** | Reads visible text aloud in real time | Google Cloud Vision API |
-| **Scene Description** | Generates a spoken description of the scene | LiteLLM Vision |
-| **Camera Aiming** | Guides users to center an object for a well-framed photo | YOLOv11 |
-| **Door Detection** | Detects doors/doorways with clock-face navigation cues | YOLOWorld |
-| **Empty Seat Detection** | Finds unoccupied chairs and gives directional guidance | YOLOv11 |
-| **Clothing Recognition** | Identifies the most prominent clothing item and its features | LiteLLM Vision |
+| Tool                           | Description                                                  | Model                   |
+| ------------------------------ | ------------------------------------------------------------ | ----------------------- |
+| **Object Recognition**         | Detects and announces objects using YOLO11 + COCO            | YOLOv11                 |
+| **Live OCR**                   | Reads visible text aloud in real time                        | Google Cloud Vision API |
+| **Scene Description**          | Generates a spoken description of the scene                  | LiteLLM Vision          |
+| **Camera Aiming**              | Guides users to center an object for a well-framed photo     | YOLOv11                 |
+| **Door Detection**             | Detects doors/doorways with clock-face navigation cues       | YOLOWorld               |
+| **Empty Seat Detection**       | Finds unoccupied chairs and gives directional guidance       | YOLOv11                 |
+| **Clothing Recognition**       | Identifies the most prominent clothing item and its features | LiteLLM Vision          |
 
 New tools can be added by placing a Python file in the `tools/` directory. Each tool exposes a `main(image, input_data)` function and returns an audio-friendly string or dict.
 
 ## Example tool ideas!
+
 You can make a wide variety of tools using ProgramAT! For best performance, we recommend thinking about tools that are camera based, and, for the time being, are stateless (do not need to remember their previous responses/backreference previous frames) and do not require bringing in an outside dataset.
 
 > Want to bring in stateless capabilities? Or ability to use outside datasets? Implement these features and [become a contributor](https://github.com/program-at/ProgramAT-opensource/issues/44) to share them with the community!
@@ -314,7 +322,6 @@ To get your imagination started, here are some ideas for tools people have tried
 - Mail sorter: Describe what important vs. junk mail means to you and get guidance on whether you should open a particular piece of mail.
 - Makeup checker: Take a photo and analyze if there are any issues with your makeup application.
 - Sock matcher: Determine if two socks out of the laundry match
-
 
 ## Project Structure
 
@@ -392,7 +399,7 @@ For iOS:
 ### Backend
 
 - **Python 3.11** with async `websockets`
-- **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. LiteLLM can route requests to provider backends such as Google Gemini, OpenAI, or Anthropic; switch the active model via `LLM_MODEL` in `backend/.env`.
+- **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. LiteLLM can route requests to provider backends such as Google Gemini, OpenAI, Anthropic, Groq, or Mistral; switch the active model via `LLM_MODEL` in `backend/.env`.
 - **Google Cloud Vision API** — OCR
 - **Ultralytics (YOLOv11 / YOLOWorld)** — Object detection
 - **OpenCV / NumPy / Pillow** — Image processing
