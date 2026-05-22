@@ -1,0 +1,74 @@
+name: Claude VAT Implementation
+
+# PREREQUISITES - this workflow will silently fail without these:
+# 1. Secret: Add ANTHROPIC_API_KEY to your repository secrets
+#    (Settings → Secrets and variables → Actions → New repository secret)
+# 2. GitHub App: Install the Claude GitHub App AND link it to your Anthropic account:
+#    a. Install the app on your repo: https://github.com/apps/claude
+#    b. Connect it to your Anthropic account: https://claude.ai/settings → GitHub
+#    Both steps are required — doing only one will cause OIDC token exchange to fail.
+# 3. Trigger: Add the label 'ready-for-claude' to an issue that contains 'Template: VAT'
+#    in its body. The action will not run without both conditions being true.
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write  
+
+jobs:
+  claude-vat:
+    if: >
+      contains(github.event.issue.labels.*.name, 'ready-for-claude') &&
+      contains(github.event.issue.body, 'Template: VAT')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Add implementation note and assign issue creator
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const implementationNote =
+              "\n\nImplementation note: Write the code for this tool inside the tools folder. Open a PR rather than pushing to main.";
+            if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: issue.body + implementationNote
+              });
+            }
+            await github.rest.issues.addAssignees({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              assignees: [issue.user.login]
+            });
+
+      - name: Ask Claude to implement the VAT issue
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Before starting, read the file `.github/copilot-instructions.md` for project conventions and follow them strictly.
+
+            Implement the request described in GitHub issue #${{ github.event.issue.number }}.
+            Repository: ${{ github.repository }}
+            Issue title: ${{ github.event.issue.title }}
+            Issue body: ${{ github.event.issue.body }}
+            Requirements:
+            - Write the code for this tool inside the tools folder.
+            - Follow the existing repository structure and style.
+            - Make the smallest reasonable implementation.
+            - Do not modify unrelated files.
+            - Do not push to main.
+            - Commit changes to a new branch.
+            - Create or prepare a pull request for human review.
+          claude_args: '--allowedTools "Bash(git:*),Bash(find:*),Bash(ls:*),View,GlobTool,GrepTool,Write,Edit" --max-turns 16 --model claude-sonnet-4-5'
