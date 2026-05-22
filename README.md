@@ -235,6 +235,9 @@ New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name
 
 Then install the dependencies again.
 
+### Android build
+If you do a release build for Android, the server will not connect to ws addresses, only wss. If using the ngrok tunnelling, this should not be an issue as wss is default, but may not be default behavior from certain paid hosting services (e.g. a GCP VM).
+
 ### Forked Repository Settings
 
 Since you are working from a fork of this repository, GitHub-related features may need a few repo-level settings that are not always copied over from the upstream project.
