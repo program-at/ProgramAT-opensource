@@ -8,12 +8,17 @@ Run all commands below from this `backend/` directory.
 
 ## Run it
 
+The backend ships a `uv.lock`, so `uv` gives a fast, reproducible install:
+
 ```bash
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env          # then fill in the keys (see README.md)
-python stream_server.py       # serves ws://0.0.0.0:8080
+uv sync                          # creates .venv from the locked dependencies
+cp .env.example .env             # then fill in the keys (see README.md)
+uv run python stream_server.py   # serves ws://0.0.0.0:8080
 ```
+
+`README.md` documents the equivalent pip workflow, which also works:
+`python3 -m venv .venv`, `source .venv/bin/activate`,
+`pip install -r requirements.txt`, then `python stream_server.py`.
 
 `stream_server.py` exits immediately if `GITHUB_TOKEN`, `GITHUB_REPO`, or
 `GEMINI_API_KEY` are missing from `.env`. Stop the server with Ctrl-C.
@@ -39,7 +44,8 @@ contract lives in `tools/CLAUDE.md`.
 ## Gotchas
 
 - **`module_manager.py` runs `pip install` at runtime** and appends new packages to
-  `requirements.txt`. An unexpected `requirements.txt` diff is usually this.
+  `requirements.txt` (not `pyproject.toml` / `uv.lock`). An unexpected
+  `requirements.txt` diff is usually this.
 - **A tool's `print()` output is spoken to the user** — the server captures a tool's
   stdout and prepends it to the TTS text.
 - **Blocking calls stall the event loop.** `pip install` and `cv2.imwrite` run
@@ -47,12 +53,13 @@ contract lives in `tools/CLAUDE.md`.
   async path.
 - **`HOST`/`PORT` are hardcoded** to `0.0.0.0:8080`; the matching `.env` keys are
   ignored.
-- The shipped `.venv` is Python 3.14, but `COPILOT_SETUP_PROMPT.md` recommends 3.11.
-  If you recreate the venv, some deps (torch, opencv) may lack 3.14 wheels.
-  `restart_server.sh` also points at a stale `venv/` path — the real one is `.venv/`.
+- `pyproject.toml` requires Python `>=3.12`; the shipped `.venv` is 3.14. If you
+  recreate the environment, prefer 3.12/3.13 — some deps (torch, opencv) may lack
+  3.14 wheels. `restart_server.sh` points at a stale `venv/` path; the real one
+  is `.venv/`.
 
 ## Tests
 
 There is no test runner configured. The `test_*.py` files are standalone scripts —
-run one directly, e.g. `python test_appearance_check.py`. After changing tool
-execution or a specific tool, run its matching `test_*.py`.
+run one directly, e.g. `uv run python test_appearance_check.py`. After changing
+tool execution or a specific tool, run its matching `test_*.py`.
