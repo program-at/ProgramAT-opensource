@@ -4,7 +4,7 @@
  */
 
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Config, { AppMode } from './config';
 import PRsAndText from './PRsAndText';
@@ -167,7 +167,7 @@ export default function TabNavigator({
             borderTopColor: theme.border 
           }
         ]} 
-        accessibilityRole={Platform.OS === 'ios' ? 'tabbar' : 'tablist'}>
+        accessibilityRole="tablist">
         {/* PRs tab - show in development and review mode */}
         {appMode !== 'production' && (
           <TouchableOpacity
