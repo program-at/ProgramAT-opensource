@@ -33,6 +33,13 @@ target 'ProgramATApp' do
     
     # iOS deployment target and build settings
     installer.pods_project.targets.each do |target|
+      # Work around fmt 11.0.2 consteval evaluation failing under Xcode 26.x clang.
+      # Compiling fmt as C++17 skips the consteval code path entirely (consteval is C++20).
+      if target.name == 'fmt'
+        target.build_configurations.each do |config|
+          config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'
+        end
+      end
       target.build_configurations.each do |config|
         # Ensure iOS deployment target is set correctly for all pods
         if config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'].to_f < 13.0
