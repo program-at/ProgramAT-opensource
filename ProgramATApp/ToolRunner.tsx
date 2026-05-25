@@ -21,6 +21,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import CameraView, { CameraViewHandle } from './CameraView';
 import WebSocketService from './WebSocketService';
+import { getModelPreference } from './ModelPreference';
 import AudioOutputService from './AudioOutputService';
 import BeepService from './BeepService';
 import TextToSpeechService from './TextToSpeechService';
@@ -919,6 +920,7 @@ export default function ToolRunner({
     }
 
     // Send tool execution request to backend with captured frame
+    const modelPref = getModelPreference();
     const message = {
       type: 'run_tool',
       tool_name: selectedTool.name,
@@ -933,6 +935,7 @@ export default function ToolRunner({
       },
       conversation_id: conversationId, // Include conversation ID if in conversation mode
       timestamp: Date.now(),
+      ...(modelPref ? { model: modelPref } : {}),
     };
 
     const ws = WebSocketService.getActiveSocket();
@@ -970,6 +973,7 @@ export default function ToolRunner({
     setIsStreaming(true);
     setToolOutput('Starting stream...');
     
+    const modelPref = getModelPreference();
     const message: any = {
       type: 'start_streaming_tool',
       tool_name: selectedTool.name,
@@ -977,6 +981,7 @@ export default function ToolRunner({
       tool_language: selectedTool.language,
       input: '',
       throttle_ms: 1000, // Process 1 frame per second
+      ...(modelPref ? { model: modelPref } : {}),
     };
 
     // Forward custom GPT / Gemini Live fields if present
