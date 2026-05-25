@@ -7,6 +7,7 @@
  */
 
 import Config from './config';
+import { getModelPreference } from './ModelPreference';
 
 export interface StreamFrame {
   frameNumber: number;
@@ -66,6 +67,12 @@ class WebSocketService {
   private onMessageCallback?: (message: ServerMessage) => void;
   private onErrorCallback?: (error: string) => void;
 
+  // Server capabilities cached from the 'server_capabilities' message — used
+  // by the Settings picker. The user's chosen model lives in ModelPreference
+  // (one store), not here.
+  private defaultModel: string = '';
+  private availableModels: string[] = [];
+
   constructor(serverUrl?: string) {
     if (serverUrl) {
       this.serverUrl = serverUrl;
@@ -93,6 +100,20 @@ class WebSocketService {
       this.disconnect();
       this.connect();
     }
+  }
+
+  getDefaultModel(): string {
+    return this.defaultModel;
+  }
+
+  getAvailableModels(): string[] {
+    return this.availableModels;
+  }
+
+  /** Spread into any outbound message that triggers an LLM call. */
+  private modelField(): { model?: string } {
+    const model = getModelPreference();
+    return model ? { model } : {};
   }
 
   /**
@@ -306,10 +327,10 @@ class WebSocketService {
           this.reconnectAttempts = 0;
           this.frameNumber = 0;
           hasResolved = true;
-          
+
           // Start heartbeat mechanism
           this.startHeartbeat();
-          
+
           if (this.onConnectionChangeCallback) {
             this.onConnectionChangeCallback(true);
           }
@@ -320,19 +341,27 @@ class WebSocketService {
           try {
             const message: ServerMessage = JSON.parse(event.data);
             console.log('Received message from server:', message.type);
-            
+
             // Handle pong responses
             if (message.type === 'pong') {
               this.handlePong();
               return; // Don't forward pong messages to app callbacks
             }
-            
+
+            // Capture model defaults + preset list from server capabilities so
+            // the picker can populate without hardcoding provider strings.
+            if (message.type === 'server_capabilities') {
+              const caps = message.capabilities || {};
+              this.defaultModel = caps.default_model || '';
+              this.availableModels = caps.available_models || [];
+            }
+
             // Extra logging for production_tools messages
             if (message.type === 'production_tools') {
               console.log('[WebSocketService] Production tools received:', message.tools?.length || 0, 'tools');
               console.log('[WebSocketService] Tools:', message.tools);
             }
-            
+
             if (this.onMessageCallback) {
               this.onMessageCallback(message);
             }
@@ -513,7 +542,7 @@ class WebSocketService {
         timestamp: Date.now(),
       };
 
-      this.ws!.send(JSON.stringify(message));
+      this.ws!.send(JSON.stringify({ ...message, ...this.modelField() }));
       return true;
     } catch (error) {
       console.error('Failed to send text:', error);
@@ -537,6 +566,7 @@ class WebSocketService {
           question: question,
           conversation_id: conversationId,  // Send conversation ID instead of image
           timestamp: Date.now(),
+          ...this.modelField(),
         };
 
         console.log('[WebSocket] Sending follow-up question for conversation:', conversationId);
@@ -637,6 +667,7 @@ class WebSocketService {
           height,
           text,
         },
+        ...this.modelField(),
       };
 
       this.ws!.send(JSON.stringify(message));
