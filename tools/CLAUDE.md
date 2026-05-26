@@ -2,7 +2,7 @@
 
 Each `.py` file here is one assistive tool. The backend loads a tool's source,
 `exec()`s it against a single camera frame, and speaks the result to a blind user.
-Tools never import each other and never touch the network or WebSocket layer — they
+Tools never import each other and never touch the app↔backend WebSocket layer — they
 get an image, they return text. (`litellm_utils.py` is a shared helper, not a tool.)
 
 ## The contract
