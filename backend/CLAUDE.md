@@ -37,7 +37,7 @@ uv run python stream_server.py   # serves ws://0.0.0.0:8080
 ## How tools run
 
 The server `exec()`s a tool's source and calls `main(image, input_data)` on it.
-The relevant code is `handle_client` (connection loop), `run_tool` (one-shot), and
+The relevant code is `handle_client` (connection loop), `run_tool` (one-shot) (found inside the handle_client handler), and
 `run_streaming_tools` (per-frame loop) in `stream_server.py`. The tool-authoring
 contract lives in `tools/CLAUDE.md`.
 
