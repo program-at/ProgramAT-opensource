@@ -31,7 +31,14 @@ try:
 except ImportError:
     litellm = None
     LITELLM_AVAILABLE = False
-from litellm_utils import resolve_model_name, resolve_api_key, extract_text, pil_image_to_data_uri
+from litellm_utils import (
+    TaskType,
+    get_model_for_task,
+    resolve_model_name,
+    resolve_api_key,
+    extract_text,
+    pil_image_to_data_uri,
+)
 from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
@@ -2850,9 +2857,9 @@ Return ONLY a valid JSON object:
   "confidence": <0.0 to 1.0>
 }}"""
 
-        active_model = model or LLM_MODEL
+        active_model = get_model_for_task(TaskType.TOOL_MATCHING, model or '')
         response = litellm.completion(
-            model=resolve_model_name(active_model),
+            model=active_model,
             messages=[{'role': 'user', 'content': prompt}],
             api_key=resolve_api_key(active_model),
         )
@@ -3122,9 +3129,9 @@ Return format:
   "missing_fields": ["field1", "field2"]  // Only truly missing/empty important fields. Use [] if all important fields have content.
 }}"""
 
-        active_model = model or LLM_MODEL
+        active_model = get_model_for_task(TaskType.TEMPLATE_FILL, model or '')
         response = litellm.completion(
-            model=resolve_model_name(active_model),
+            model=active_model,
             messages=[{'role': 'user', 'content': prompt}],
             api_key=resolve_api_key(active_model),
         )
@@ -3347,7 +3354,7 @@ async def create_github_issue(text: str):
     """
     # Use the model stashed on `last_text` when the originating message arrived,
     # so this background task respects the client's per-request choice.
-    active_model = last_text.get('model') or LLM_MODEL
+    active_model = last_text.get('model') or ''
     global incomplete_issue, selected_issue
     
     _log_to_all_sessions("INFO", f"create_github_issue called with text: {text}")
@@ -4513,7 +4520,7 @@ async def handle_client(websocket):
 
                 if text_payload:
                     logger.info(f"[DEBUG] Text received: {text_payload[:100]}, current mode: {selected_issue.get('mode')}, issue: {selected_issue.get('number')}")
-                    text_results = process_text(text_payload, model=model_from_message(data))
+                    text_results = process_text(text_payload, model=data.get('model', ''))
                     logger.info(f"[DEBUG] Text processing result: {text_results}, last_text content: {last_text.get('content', '')[:100] if last_text.get('content') else 'None'}")
                     combined_results['text'] = text_results
                     if text_results.get('status') in ('saved', 'received'):
@@ -4995,11 +5002,11 @@ async def handle_client(websocket):
                             # Create prompt for follow-up question
                             prompt = f"You are analyzing this image. The user is asking a follow-up question: {question}\n\nPlease provide a helpful and concise answer based on what you can see in the image."
                             
-                            # Send the follow-up through LiteLLM using the per-request model
-                            active_model = model_from_message(data)
+                            # Send the follow-up through LiteLLM using the task router
+                            active_model = get_model_for_task(TaskType.LIVE_CAMERA_ANALYSIS, data.get('model', ''))
                             try:
                                 response = litellm.completion(
-                                    model=resolve_model_name(active_model),
+                                    model=active_model,
                                     messages=[
                                         {
                                             'role': 'user',

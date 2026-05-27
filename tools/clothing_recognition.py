@@ -24,6 +24,8 @@ import base64
 import io
 from PIL import Image
 from litellm_utils import (
+    TaskType,
+    get_model_for_task,
     resolve_model_name,
     resolve_api_key,
     extract_text,
@@ -322,7 +324,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     
     detail_level = input_data.get('detail_level', 'standard')
     api_key = input_data.get('api_key')
-    model = input_data.get('model', os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-3-flash-preview')))
+    model = get_model_for_task(TaskType.IMAGE_ANALYSIS, input_data.get('model_override', ''))
     
     # Analyze clothing
     result = analyze_clothing(

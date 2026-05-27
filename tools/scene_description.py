@@ -35,6 +35,8 @@ except ImportError:
     print("⚠️  litellm not installed. Install with: pip install litellm")
 
 from litellm_utils import (
+    TaskType,
+    get_model_for_task,
     resolve_model_name,
     resolve_api_key,
     extract_text,
@@ -436,7 +438,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     focus = input_data.get('focus', 'general')
     style = input_data.get('style', 'narrative')
     api_key = input_data.get('api_key')
-    model = input_data.get('model', os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-3-flash-preview')))
+    model = get_model_for_task(TaskType.IMAGE_ANALYSIS, input_data.get('model_override', ''))
     
     # Analyze scene
     result = analyze_scene(

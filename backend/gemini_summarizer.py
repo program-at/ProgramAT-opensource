@@ -4,7 +4,7 @@ Gemini-based summarization for Copilot session logs.
 import os
 import logging
 from typing import List, Dict
-from litellm_utils import resolve_model_name, resolve_api_key, extract_text
+from litellm_utils import TaskType, get_model_for_task, resolve_api_key, extract_text
 
 try:
     import litellm
@@ -29,16 +29,13 @@ def _get_model():
     
     _model_initialized = True
     
-    # Get configuration at runtime (after .env is loaded)
-    model_name = os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.5-flash-lite'))
-    
     if not LITELLM_AVAILABLE:
         logger.warning("litellm not found, summarization will be disabled")
         return None
     
     try:
-        _model = model_name
-        logger.info(f"LiteLLM model initialized: {model_name}")
+        _model = get_model_for_task(TaskType.SUMMARIZATION)
+        logger.info(f"LiteLLM model initialized: {_model}")
         return _model
     except Exception as e:
         logger.error(f"Failed to initialize LiteLLM model: {e}")
@@ -88,7 +85,7 @@ Summary (1-3 sentences describing what was accomplished):"""
     
     try:
         response = litellm.completion(
-            model=resolve_model_name(model, default_model='gemini-2.5-flash-lite'),
+            model=model,
             messages=[{'role': 'user', 'content': prompt}],
             api_key=resolve_api_key(model),
         )
@@ -158,7 +155,7 @@ Summary (one sentence only):"""
     
     try:
         response = litellm.completion(
-            model=resolve_model_name(model, default_model='gemini-2.5-flash-lite'),
+            model=model,
             messages=[{'role': 'user', 'content': prompt}],
             api_key=resolve_api_key(model),
         )

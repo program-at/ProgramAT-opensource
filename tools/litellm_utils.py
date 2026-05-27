@@ -2,10 +2,91 @@
 Shared LiteLLM helper utilities for backend modules.
 """
 
-import os
 import base64
 import io
+import logging
+import os
 from PIL import Image
+
+
+logger = logging.getLogger(__name__)
+
+
+class TaskType:
+    TEMPLATE_FILL = 'TEMPLATE_FILL'
+    TOOL_MATCHING = 'TOOL_MATCHING'
+    PROGRAM_GENERATION = 'PROGRAM_GENERATION'
+    OCR = 'OCR'
+    IMAGE_ANALYSIS = 'IMAGE_ANALYSIS'
+    LIVE_CAMERA_ANALYSIS = 'LIVE_CAMERA_ANALYSIS'
+    PLANNING = 'PLANNING'
+    CODE_GENERATION = 'CODE_GENERATION'
+    OBJECT_DETECTION = 'OBJECT_DETECTION'
+    SUMMARIZATION = 'SUMMARIZATION'
+
+
+class ModelTier:
+    ULTRA_FAST = 'ULTRA_FAST'
+    FAST = 'FAST'
+    BALANCED = 'BALANCED'
+    HIGH_QUALITY = 'HIGH_QUALITY'
+
+
+_TASK_TO_TIER = {
+    TaskType.OBJECT_DETECTION: ModelTier.ULTRA_FAST,
+    TaskType.TEMPLATE_FILL: ModelTier.FAST,
+    TaskType.TOOL_MATCHING: ModelTier.FAST,
+    TaskType.OCR: ModelTier.FAST,
+    TaskType.LIVE_CAMERA_ANALYSIS: ModelTier.FAST,
+    TaskType.SUMMARIZATION: ModelTier.FAST,
+    TaskType.PROGRAM_GENERATION: ModelTier.BALANCED,
+    TaskType.IMAGE_ANALYSIS: ModelTier.BALANCED,
+    TaskType.PLANNING: ModelTier.HIGH_QUALITY,
+    TaskType.CODE_GENERATION: ModelTier.HIGH_QUALITY,
+}
+
+
+def _is_non_llm_model(model_name: str) -> bool:
+    normalized = (model_name or '').strip().lower()
+    return normalized.startswith('yolo') or normalized.endswith('.pt')
+
+
+def _tier_default_model(tier: str) -> str:
+    if tier == ModelTier.ULTRA_FAST:
+        return os.environ.get('ULTRA_FAST_MODEL', 'yolo11n.pt')
+    if tier == ModelTier.FAST:
+        return os.environ.get('FAST_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash'))
+    if tier == ModelTier.BALANCED:
+        return os.environ.get('BALANCED_MODEL', 'claude-3-5-sonnet-20241022')
+    if tier == ModelTier.HIGH_QUALITY:
+        return os.environ.get('HIGH_QUALITY_MODEL', 'gpt-4.1')
+    return os.environ.get('FAST_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash'))
+
+
+def get_task_tier(task_type: str) -> str:
+    return _TASK_TO_TIER.get((task_type or '').strip().upper(), ModelTier.FAST)
+
+
+def get_model_for_task(task_type: str, requested_model: str = '') -> str:
+    """Return the model to use for a task and log the routing decision."""
+    tier = get_task_tier(task_type)
+    override = (requested_model or '').strip()
+
+    if override:
+        if tier == ModelTier.ULTRA_FAST and not _is_non_llm_model(override):
+            model_name = _tier_default_model(tier)
+        else:
+            model_name = override
+    else:
+        model_name = _tier_default_model(tier)
+
+    if _is_non_llm_model(model_name):
+        routed_model = model_name
+    else:
+        routed_model = resolve_model_name(model_name, default_model=model_name)
+
+    logger.info(f"[ModelRouter] Task={task_type} -> {tier} -> {model_name}")
+    return routed_model
 
 
 def resolve_model_name(model_name: str, default_model: str = 'gemini-2.5-flash-lite') -> str:
