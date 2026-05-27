@@ -55,12 +55,12 @@ def _tier_default_model(tier: str) -> str:
     if tier == ModelTier.ULTRA_FAST:
         return os.environ.get('ULTRA_FAST_MODEL', 'yolo11n.pt')
     if tier == ModelTier.FAST:
-        return os.environ.get('FAST_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash'))
+        return os.environ.get('FAST_MODEL', 'groq/llama-3.3-70b-versatile')
     if tier == ModelTier.BALANCED:
         return os.environ.get('BALANCED_MODEL', 'claude-3-5-sonnet-20241022')
     if tier == ModelTier.HIGH_QUALITY:
         return os.environ.get('HIGH_QUALITY_MODEL', 'gpt-4.1')
-    return os.environ.get('FAST_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-2.0-flash'))
+    return os.environ.get('FAST_MODEL', 'groq/llama-3.3-70b-versatile')
 
 
 def get_task_tier(task_type: str) -> str:
@@ -127,13 +127,15 @@ def resolve_api_key(model_name: str, explicit_api_key: str = '') -> str:
     normalized = (model_name or '').lower()
     if normalized.startswith('gemini'):
         return os.environ.get('GEMINI_API_KEY', '')
+    if normalized.startswith('groq'):
+        return os.environ.get('GROQ_API_KEY', '')
     if normalized.startswith('claude'):
         return os.environ.get('ANTHROPIC_API_KEY', '')
     if normalized.startswith('openai') or normalized.startswith('gpt'):
         return os.environ.get('OPENAI_API_KEY', '')
 
-    # Fallback: prefer OPENAI, then GEMINI
-    return os.environ.get('OPENAI_API_KEY', '') or os.environ.get('GEMINI_API_KEY', '')
+    # Fallback: prefer GROQ for FAST, then OPENAI, then GEMINI
+    return os.environ.get('GROQ_API_KEY', '') or os.environ.get('OPENAI_API_KEY', '') or os.environ.get('GEMINI_API_KEY', '')
 
 def extract_text(response) -> str:
     """Extract text content from a LiteLLM response object."""

@@ -350,8 +350,9 @@ PAUSE_DURATION = float(os.environ.get('PAUSE_DURATION', '5.0'))  # seconds to wa
 
 # LiteLLM / Gemini Configuration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-LLM_MODEL = os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-3-flash-preview'))
-GEMINI_MODEL = LLM_MODEL
+DEFAULT_ROUTED_MODEL = get_model_for_task(TaskType.TOOL_MATCHING)
+LLM_MODEL = DEFAULT_ROUTED_MODEL
+GEMINI_MODEL = DEFAULT_ROUTED_MODEL
 
 _AVAILABLE_MODELS_CACHE: list[str] | None = None
 
@@ -382,27 +383,27 @@ def list_available_models() -> list[str]:
                 filtered.append(name)
         # Ensure the configured default is offered even if it doesn't pass filters
         # (e.g. a preview model LiteLLM doesn't know about yet).
-        if LLM_MODEL and LLM_MODEL not in filtered:
-            filtered.insert(0, LLM_MODEL)
+        if DEFAULT_ROUTED_MODEL and DEFAULT_ROUTED_MODEL not in filtered:
+            filtered.insert(0, DEFAULT_ROUTED_MODEL)
         _AVAILABLE_MODELS_CACHE = sorted(set(filtered))
     except Exception as e:
         logger.warning(f"Could not derive available models from LiteLLM: {e}")
-        _AVAILABLE_MODELS_CACHE = [LLM_MODEL] if LLM_MODEL else []
+        _AVAILABLE_MODELS_CACHE = [DEFAULT_ROUTED_MODEL] if DEFAULT_ROUTED_MODEL else []
     return _AVAILABLE_MODELS_CACHE
 
 
 def model_from_message(data: dict) -> str:
     """Pick the LLM model for one request. Strict allowlist; logs and falls
-    back to LLM_MODEL when the client requests an unavailable model."""
+    back to the routed default when the client requests an unavailable model."""
     requested = (data.get('model') or '').strip() if isinstance(data, dict) else ''
     if not requested:
-        return LLM_MODEL
+        return DEFAULT_ROUTED_MODEL
     if requested in list_available_models():
         return requested
     logger.warning(
-        f"Client requested unavailable model '{requested}', falling back to {LLM_MODEL}"
+        f"Client requested unavailable model '{requested}', falling back to {DEFAULT_ROUTED_MODEL}"
     )
-    return LLM_MODEL
+    return DEFAULT_ROUTED_MODEL
 
 # Gemini Live manager for custom-GPT streaming mode
 gemini_live_manager = GeminiLiveManager(GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -3862,7 +3863,7 @@ async def handle_client(websocket):
         # `model` field on each request to override per-call.
         capabilities_payload = {
             **SERVER_CAPABILITIES,
-            'default_model': LLM_MODEL,
+            'default_model': DEFAULT_ROUTED_MODEL,
             'available_models': list_available_models(),
         }
         await websocket.send(json.dumps({
