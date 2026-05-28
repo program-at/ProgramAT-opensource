@@ -13,6 +13,8 @@ import MWDATMockDevice
 @objc(MetaWearablesModule)
 class MetaWearablesModule: NSObject {
 
+    private var mockDevice: (any MockRaybanMeta)?
+
     @objc
     func hello() {
         print("Hello bridge works")
@@ -20,12 +22,34 @@ class MetaWearablesModule: NSObject {
 
     @objc
     func createMockDevice() {
+
+        MockDeviceKit.shared.enable()
+
         let device = MockDeviceKit.shared.pairRaybanMeta()
 
-        if device != nil {
-            print("Mock device created")
-        } else {
-            print("Failed to create mock device")
+        device.powerOn()
+        device.don()
+        device.unfold()
+
+        mockDevice = device
+
+        print("Mock device ready")
+    }
+
+    @objc
+    func useBackCameraFeed() {
+
+        guard let device = mockDevice else {
+            print("No mock device")
+            return
+        }
+
+        Task {
+            await device.services.camera.setCameraFeed(
+                cameraFacing: .back
+            )
+
+            print("Back camera feed configured")
         }
     }
 

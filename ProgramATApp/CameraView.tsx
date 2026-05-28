@@ -53,8 +53,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
 
   const { MetaWearablesModule } = NativeModules as {
     MetaWearablesModule?: {
-      hello?: () => void | Promise<void>;
       createMockDevice?: () => void | Promise<void>;
+      useBackCameraFeed?: () => void | Promise<void>;
     };
   };
 
@@ -286,25 +286,6 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     setError('');
   };
 
-  const handleTestBridge = async () => {
-    try {
-      if (!MetaWearablesModule || typeof MetaWearablesModule.hello !== 'function') {
-        Alert.alert(
-          'Meta Wearables Bridge',
-          'MetaWearablesModule.hello() is not available. The native module may not be registered yet.'
-        );
-        return;
-      }
-
-      await Promise.resolve(MetaWearablesModule.hello());
-      Alert.alert('Meta Wearables Bridge', 'hello() call succeeded');
-      console.log('[CameraView] MetaWearablesModule.hello() succeeded');
-    } catch (err) {
-      console.error('[CameraView] MetaWearablesModule.hello() failed:', err);
-      Alert.alert('Meta Wearables Bridge', 'hello() call failed. Check the native logs for details.');
-    }
-  };
-
   const handleCreateMockDevice = async () => {
     try {
       if (!MetaWearablesModule || typeof MetaWearablesModule.createMockDevice !== 'function') {
@@ -323,6 +304,28 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       Alert.alert(
         'Meta Wearables Bridge',
         'createMockDevice() call failed. Check the native logs for details.'
+      );
+    }
+  };
+
+  const handleUseBackCameraFeed = async () => {
+    try {
+      if (!MetaWearablesModule || typeof MetaWearablesModule.useBackCameraFeed !== 'function') {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'MetaWearablesModule.useBackCameraFeed() is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      await Promise.resolve(MetaWearablesModule.useBackCameraFeed());
+      Alert.alert('Meta Wearables Bridge', 'useBackCameraFeed() call succeeded');
+      console.log('[CameraView] MetaWearablesModule.useBackCameraFeed() succeeded');
+    } catch (err) {
+      console.error('[CameraView] MetaWearablesModule.useBackCameraFeed() failed:', err);
+      Alert.alert(
+        'Meta Wearables Bridge',
+        'useBackCameraFeed() call failed. Check the native logs for details.'
       );
     }
   };
@@ -388,16 +391,6 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         
         <View style={styles.buttonContainer} accessible={false}>
           <TouchableOpacity
-            style={[styles.button, styles.testButton]}
-            onPress={handleTestBridge}
-            accessible={true}
-            accessibilityRole="button"
-            accessibilityLabel="Test Meta Wearables bridge"
-            accessibilityHint="Calls the native MetaWearablesModule hello function">
-            <Text style={styles.buttonText}>Test Bridge</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
             style={[styles.button, styles.mockButton]}
             onPress={handleCreateMockDevice}
             accessible={true}
@@ -405,6 +398,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             accessibilityLabel="Create mock device"
             accessibilityHint="Calls the native MetaWearablesModule create mock device function">
             <Text style={styles.buttonText}>Create Mock Device</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.testButton]}
+            onPress={handleUseBackCameraFeed}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Use back camera"
+            accessibilityHint="Calls the native MetaWearablesModule use back camera feed function">
+            <Text style={styles.buttonText}>Use Back Camera</Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (
