@@ -56,6 +56,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       createMockDevice?: () => void | Promise<void>;
       useBackCameraFeed?: () => void | Promise<void>;
       startMockCameraStream?: () => void | Promise<void>;
+      listDevicesNow?: () => void | Promise<void>;
     };
   };
 
@@ -287,68 +288,54 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     setError('');
   };
 
-  const handleCreateMockDevice = async () => {
+  const handleCombinedMockTest = async () => {
     try {
-      if (!MetaWearablesModule || typeof MetaWearablesModule.createMockDevice !== 'function') {
+      if (!MetaWearablesModule) {
         Alert.alert(
           'Meta Wearables Bridge',
-          'MetaWearablesModule.createMockDevice() is not available. The native module may not be registered yet.'
+          'MetaWearablesModule is not available. The native module may not be registered yet.'
         );
         return;
       }
 
-      await Promise.resolve(MetaWearablesModule.createMockDevice());
-      Alert.alert('Meta Wearables Bridge', 'createMockDevice() call succeeded');
-      console.log('[CameraView] MetaWearablesModule.createMockDevice() succeeded');
-    } catch (err) {
-      console.error('[CameraView] MetaWearablesModule.createMockDevice() failed:', err);
-      Alert.alert(
-        'Meta Wearables Bridge',
-        'createMockDevice() call failed. Check the native logs for details.'
-      );
-    }
-  };
-
-  const handleUseBackCameraFeed = async () => {
-    try {
-      if (!MetaWearablesModule || typeof MetaWearablesModule.useBackCameraFeed !== 'function') {
+      if (typeof MetaWearablesModule.createMockDevice === 'function') {
+        await Promise.resolve(MetaWearablesModule.createMockDevice());
+        console.log('[CameraView] MetaWearablesModule.createMockDevice() succeeded');
+      } else {
         Alert.alert(
           'Meta Wearables Bridge',
-          'MetaWearablesModule.useBackCameraFeed() is not available. The native module may not be registered yet.'
+          'createMockDevice() is not available.'
         );
         return;
       }
 
-      await Promise.resolve(MetaWearablesModule.useBackCameraFeed());
-      Alert.alert('Meta Wearables Bridge', 'useBackCameraFeed() call succeeded');
-      console.log('[CameraView] MetaWearablesModule.useBackCameraFeed() succeeded');
-    } catch (err) {
-      console.error('[CameraView] MetaWearablesModule.useBackCameraFeed() failed:', err);
-      Alert.alert(
-        'Meta Wearables Bridge',
-        'useBackCameraFeed() call failed. Check the native logs for details.'
-      );
-    }
-  };
+      if (typeof MetaWearablesModule.useBackCameraFeed === 'function') {
+        await Promise.resolve(MetaWearablesModule.useBackCameraFeed());
+        console.log('[CameraView] MetaWearablesModule.useBackCameraFeed() succeeded');
+      }
 
-  const handleStartMockCameraStream = async () => {
-    try {
-      if (!MetaWearablesModule || typeof MetaWearablesModule.startMockCameraStream !== 'function') {
+      if (typeof MetaWearablesModule.listDevicesNow === 'function') {
+        await Promise.resolve(MetaWearablesModule.listDevicesNow());
+        console.log('[CameraView] MetaWearablesModule.listDevicesNow() succeeded');
+      }
+
+      if (typeof MetaWearablesModule.startMockCameraStream === 'function') {
+        await Promise.resolve(MetaWearablesModule.startMockCameraStream());
+        console.log('[CameraView] MetaWearablesModule.startMockCameraStream() succeeded');
+      } else {
         Alert.alert(
           'Meta Wearables Bridge',
-          'MetaWearablesModule.startMockCameraStream() is not available. The native module may not be registered yet.'
+          'startMockCameraStream() is not available.'
         );
         return;
       }
 
-      await Promise.resolve(MetaWearablesModule.startMockCameraStream());
-      Alert.alert('Meta Wearables Bridge', 'startMockCameraStream() call succeeded');
-      console.log('[CameraView] MetaWearablesModule.startMockCameraStream() succeeded');
+      Alert.alert('Meta Wearables Bridge', 'mock test flow started');
     } catch (err) {
-      console.error('[CameraView] MetaWearablesModule.startMockCameraStream() failed:', err);
+      console.error('[CameraView] Combined mock test failed:', err);
       Alert.alert(
         'Meta Wearables Bridge',
-        'startMockCameraStream() call failed. Check the native logs for details.'
+        'mock test flow failed. Check the native logs for details.'
       );
     }
   };
@@ -414,33 +401,13 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         
         <View style={styles.buttonContainer} accessible={false}>
           <TouchableOpacity
-            style={[styles.button, styles.mockButton]}
-            onPress={handleCreateMockDevice}
-            accessible={true}
-            accessibilityRole="button"
-            accessibilityLabel="Create mock device"
-            accessibilityHint="Calls the native MetaWearablesModule create mock device function">
-            <Text style={styles.buttonText}>C</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
             style={[styles.button, styles.testButton]}
-            onPress={handleUseBackCameraFeed}
+            onPress={handleCombinedMockTest}
             accessible={true}
             accessibilityRole="button"
-            accessibilityLabel="Use back camera"
-            accessibilityHint="Calls the native MetaWearablesModule use back camera feed function">
-            <Text style={styles.buttonText}>U</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.button, styles.streamButton]}
-            onPress={handleStartMockCameraStream}
-            accessible={true}
-            accessibilityRole="button"
-            accessibilityLabel="Start frame stream"
-            accessibilityHint="Calls the native MetaWearablesModule start mock camera stream function">
-            <Text style={styles.buttonText}>S</Text>
+            accessibilityLabel="Test mock device flow"
+            accessibilityHint="Creates the mock device, switches to back camera, lists devices, and starts the mock stream">
+            <Text style={styles.buttonText}>T</Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (

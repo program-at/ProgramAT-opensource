@@ -127,9 +127,9 @@ class MetaWearablesModule: NSObject {
 
                 print("Stream start requested")
 
-                print("Calling listDevices after stream start")
-                self.listDevices()
-                print("listDevices call finished")
+                print("Calling listDevicesNow after stream start")
+                self.listDevicesNow()
+                print("listDevicesNow call finished")
 
             } catch {
 
@@ -144,6 +144,12 @@ class MetaWearablesModule: NSObject {
 
     @objc
     func listDevices() {
+
+        listDevicesNow()
+    }
+
+    @objc
+    func listDevicesNow() {
 
         let wearables = Wearables.shared
 

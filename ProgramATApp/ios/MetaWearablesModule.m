@@ -15,5 +15,6 @@ RCT_EXTERN_METHOD(createMockDevice)
 RCT_EXTERN_METHOD(useBackCameraFeed)
 RCT_EXTERN_METHOD(startMockCameraStream)
 RCT_EXTERN_METHOD(listDevices)
+RCT_EXTERN_METHOD(listDevicesNow)
 
 @end
