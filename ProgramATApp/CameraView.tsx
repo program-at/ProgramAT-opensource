@@ -16,6 +16,7 @@ import {
   Linking,
   Platform,
   Alert,
+  NativeModules,
 } from 'react-native';
 import {
   Camera,
@@ -49,6 +50,12 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const errorCountRef = useRef<number>(0);
   const lastErrorTime = useRef<number>(0);
   const frameSkipCounterRef = useRef<number>(0);
+
+  const { MetaWearablesModule } = NativeModules as {
+    MetaWearablesModule?: {
+      hello?: () => void | Promise<void>;
+    };
+  };
 
   // Camera permissions
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -278,6 +285,25 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     setError('');
   };
 
+  const handleTestBridge = async () => {
+    try {
+      if (!MetaWearablesModule || typeof MetaWearablesModule.hello !== 'function') {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'MetaWearablesModule.hello() is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      await Promise.resolve(MetaWearablesModule.hello());
+      Alert.alert('Meta Wearables Bridge', 'hello() call succeeded');
+      console.log('[CameraView] MetaWearablesModule.hello() succeeded');
+    } catch (err) {
+      console.error('[CameraView] MetaWearablesModule.hello() failed:', err);
+      Alert.alert('Meta Wearables Bridge', 'hello() call failed. Check the native logs for details.');
+    }
+  };
+
   if (!hasPermission) {
     return (
       <View style={styles.container} accessible={false}>
@@ -338,6 +364,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         </Text>
         
         <View style={styles.buttonContainer} accessible={false}>
+          <TouchableOpacity
+            style={[styles.button, styles.testButton]}
+            onPress={handleTestBridge}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Test Meta Wearables bridge"
+            accessibilityHint="Calls the native MetaWearablesModule hello function">
+            <Text style={styles.buttonText}>Test Bridge</Text>
+          </TouchableOpacity>
+
           {!isCameraActive ? (
             <TouchableOpacity
               style={[styles.button, styles.startButton]}
@@ -437,6 +473,9 @@ const styles = StyleSheet.create({
   },
   startButton: {
     backgroundColor: '#4CAF50',
+  },
+  testButton: {
+    backgroundColor: '#673AB7',
   },
   stopButton: {
     backgroundColor: '#f44336',
