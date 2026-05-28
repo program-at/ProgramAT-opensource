@@ -8,6 +8,7 @@
 import Foundation
 import React
 import MWDATCore
+import MWDATCamera
 import MWDATMockDevice
 
 @objc(MetaWearablesModule)
@@ -165,5 +166,5 @@ class MetaWearablesModule: NSObject {
             }
         }
     }
-    
+
 }
