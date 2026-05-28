@@ -11,5 +11,6 @@
 @interface RCT_EXTERN_MODULE(MetaWearablesModule, NSObject)
 
 RCT_EXTERN_METHOD(hello)
+RCT_EXTERN_METHOD(createMockDevice)
 
 @end

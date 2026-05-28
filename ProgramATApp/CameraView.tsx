@@ -54,6 +54,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const { MetaWearablesModule } = NativeModules as {
     MetaWearablesModule?: {
       hello?: () => void | Promise<void>;
+      createMockDevice?: () => void | Promise<void>;
     };
   };
 
@@ -304,6 +305,28 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
+  const handleCreateMockDevice = async () => {
+    try {
+      if (!MetaWearablesModule || typeof MetaWearablesModule.createMockDevice !== 'function') {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'MetaWearablesModule.createMockDevice() is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      await Promise.resolve(MetaWearablesModule.createMockDevice());
+      Alert.alert('Meta Wearables Bridge', 'createMockDevice() call succeeded');
+      console.log('[CameraView] MetaWearablesModule.createMockDevice() succeeded');
+    } catch (err) {
+      console.error('[CameraView] MetaWearablesModule.createMockDevice() failed:', err);
+      Alert.alert(
+        'Meta Wearables Bridge',
+        'createMockDevice() call failed. Check the native logs for details.'
+      );
+    }
+  };
+
   if (!hasPermission) {
     return (
       <View style={styles.container} accessible={false}>
@@ -372,6 +395,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             accessibilityLabel="Test Meta Wearables bridge"
             accessibilityHint="Calls the native MetaWearablesModule hello function">
             <Text style={styles.buttonText}>Test Bridge</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.mockButton]}
+            onPress={handleCreateMockDevice}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Create mock device"
+            accessibilityHint="Calls the native MetaWearablesModule create mock device function">
+            <Text style={styles.buttonText}>Create Mock Device</Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (
@@ -476,6 +509,9 @@ const styles = StyleSheet.create({
   },
   testButton: {
     backgroundColor: '#673AB7',
+  },
+  mockButton: {
+    backgroundColor: '#009688',
   },
   stopButton: {
     backgroundColor: '#f44336',
