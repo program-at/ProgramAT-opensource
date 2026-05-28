@@ -16,7 +16,7 @@ class MetaWearablesModule: NSObject {
 
     private var mockDevice: (any MockRaybanMeta)?
     private var session: DeviceSession?
-    private var stream: Stream?
+    private var stream: MWDATCamera.Stream?
 
     @objc
     func hello() {
