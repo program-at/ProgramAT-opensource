@@ -127,6 +127,8 @@ class MetaWearablesModule: NSObject {
 
                 print("Stream start requested")
 
+                self.listDevices()
+
             } catch {
 
                 print(
@@ -134,6 +136,23 @@ class MetaWearablesModule: NSObject {
                     error
                 )
 
+            }
+        }
+    }
+
+    @objc
+    func listDevices() {
+
+        Task {
+
+            let wearables = Wearables.shared
+
+            let devices = wearables.devices
+
+            print("DEVICES COUNT:", devices.count)
+
+            for device in devices {
+                print(device)
             }
         }
     }
