@@ -55,6 +55,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     MetaWearablesModule?: {
       createMockDevice?: () => void | Promise<void>;
       useBackCameraFeed?: () => void | Promise<void>;
+      startMockCameraStream?: () => void | Promise<void>;
     };
   };
 
@@ -330,6 +331,28 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
+  const handleStartMockCameraStream = async () => {
+    try {
+      if (!MetaWearablesModule || typeof MetaWearablesModule.startMockCameraStream !== 'function') {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'MetaWearablesModule.startMockCameraStream() is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      await Promise.resolve(MetaWearablesModule.startMockCameraStream());
+      Alert.alert('Meta Wearables Bridge', 'startMockCameraStream() call succeeded');
+      console.log('[CameraView] MetaWearablesModule.startMockCameraStream() succeeded');
+    } catch (err) {
+      console.error('[CameraView] MetaWearablesModule.startMockCameraStream() failed:', err);
+      Alert.alert(
+        'Meta Wearables Bridge',
+        'startMockCameraStream() call failed. Check the native logs for details.'
+      );
+    }
+  };
+
   if (!hasPermission) {
     return (
       <View style={styles.container} accessible={false}>
@@ -397,7 +420,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             accessibilityRole="button"
             accessibilityLabel="Create mock device"
             accessibilityHint="Calls the native MetaWearablesModule create mock device function">
-            <Text style={styles.buttonText}>Create Mock Device</Text>
+            <Text style={styles.buttonText}>C</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -407,7 +430,17 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             accessibilityRole="button"
             accessibilityLabel="Use back camera"
             accessibilityHint="Calls the native MetaWearablesModule use back camera feed function">
-            <Text style={styles.buttonText}>Use Back Camera</Text>
+            <Text style={styles.buttonText}>U</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.streamButton]}
+            onPress={handleStartMockCameraStream}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Start frame stream"
+            accessibilityHint="Calls the native MetaWearablesModule start mock camera stream function">
+            <Text style={styles.buttonText}>S</Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (
