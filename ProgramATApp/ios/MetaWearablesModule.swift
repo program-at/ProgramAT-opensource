@@ -127,7 +127,9 @@ class MetaWearablesModule: NSObject {
 
                 print("Stream start requested")
 
+                print("Calling listDevices after stream start")
                 self.listDevices()
+                print("listDevices call finished")
 
             } catch {
 
@@ -143,17 +145,14 @@ class MetaWearablesModule: NSObject {
     @objc
     func listDevices() {
 
-        Task {
+        let wearables = Wearables.shared
 
-            let wearables = Wearables.shared
+        let devices = wearables.devices
 
-            let devices = wearables.devices
+        NSLog("DEVICES COUNT: %d", devices.count)
 
-            print("DEVICES COUNT:", devices.count)
-
-            for device in devices {
-                print(device)
-            }
+        for device in devices {
+            NSLog("%@", String(describing: device))
         }
     }
 
