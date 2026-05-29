@@ -157,7 +157,7 @@ class MetaWearablesModule: NSObject {
                 print("Stream start requested successfully")
 
                 Task {
-                    try? await Task.sleep(for: .seconds(2))
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
 
                     if let session = self.session {
                         print("SESSION STATE AFTER 2s:", session.state)
