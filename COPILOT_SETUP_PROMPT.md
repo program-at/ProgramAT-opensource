@@ -39,7 +39,7 @@ Your goals:
 7. Install ngrok if missing.
 8. Configure ngrok using the provided NGROK_AUTHTOKEN.
 9. Start the backend server.
-10. Start ngrok forwarding on port 8080.
+10. Start ngrok forwarding on port 8081.
 11. Automatically retrieve the ngrok forwarding URL.
 12. Convert the forwarding URL from:
    https://...

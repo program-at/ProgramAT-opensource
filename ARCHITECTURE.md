@@ -32,7 +32,7 @@ ProgramAT is a **mobile-first assistive technology platform** for blind and visu
 │  └───────────┘  └────────────────────┘  └────────────────────┘  │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
-                               │ WebSocket (ws://server:8080)
+                               │ WebSocket (ws://server:8081)
                                │ Binary / JSON messages
                                │
 ┌──────────────────────────────▼───────────────────────────────────┐
@@ -139,7 +139,7 @@ The app runs in one of two modes configured in `config.ts`:
 - Auto-navigated to from ToolRunner when a Gemini Live conversation produces a conversation ID
 
 #### 8. **WebSocketService.ts** – Network Layer
-- Native WebSocket connection to `ws://server:8080`
+- Native WebSocket connection to `ws://server:8081`
 - 25-second heartbeat ping with 8-second pong timeout and auto-reconnect
 - 15-second connection timeout
 - Single `onMessage` callback dispatched to all registered listeners
@@ -397,7 +397,7 @@ Poll for Copilot PR creation → stream logs to client
 
 ### Backend
 - GCP Compute Engine VM
-- WebSocket server: `ws://<SERVER_IP>:8080`
+- WebSocket server: `ws://<SERVER_IP>:8081`
 - Python 3.11 virtual environment (`venv`)
 - `restart_server.sh` / `clear_frames.sh` utility scripts
 - Logs: per-session files in `backend/user_logs/`; SQLite DB at `backend/copilot_logs.db`
@@ -416,7 +416,7 @@ PAUSE_DURATION=5.0                    # seconds before issue creation
 
 Frontend `config.ts`:
 ```typescript
-export const WEBSOCKET_SERVER_URL = 'ws://<SERVER_IP>:8080';
+export const WEBSOCKET_SERVER_URL = 'ws://<SERVER_IP>:8081';
 export const APP_MODE: AppMode = 'development'; // or 'production'
 ```
 
