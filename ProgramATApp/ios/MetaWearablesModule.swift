@@ -8,7 +8,6 @@
 import Foundation
 import React
 import UIKit
-import CoreImage
 import MWDATCore
 import MWDATCamera
 import MWDATMockDevice
@@ -337,23 +336,10 @@ class MetaWearablesModule: NSObject {
             return
         }
 
-        let sampleBuffer = videoFrame.videoSampleBuffer
-        let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
-
-        guard let pixelBuffer else {
-            print("Failed to get pixel buffer from sample buffer")
+        guard let image = videoFrame.makeUIImage() else {
+            print("Failed to create UIImage from VideoFrame")
             return
         }
-
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let context = CIContext(options: nil)
-
-        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
-            print("Failed to create CGImage from pixel buffer")
-            return
-        }
-
-        let image = UIImage(cgImage: cgImage)
 
         guard let jpegData = image.jpegData(compressionQuality: 0.9) else {
             print("Failed to create JPEG data")
@@ -382,9 +368,10 @@ class MetaWearablesModule: NSObject {
             )?.int64Value ?? Int64(jpegData.count)
 
             print("JPEG saved successfully")
-            print("width:", CVPixelBufferGetWidth(pixelBuffer))
-            print("height:", CVPixelBufferGetHeight(pixelBuffer))
+            print("image width:", image.size.width)
+            print("image height:", image.size.height)
             print("file size:", fileSize)
+            print("saved path:", fileURL.path)
         } catch {
             print("Failed to save JPEG:", error)
         }
