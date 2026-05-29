@@ -8,6 +8,7 @@
 import Foundation
 import React
 import UIKit
+import Photos
 import MWDATCore
 import MWDATCamera
 import MWDATMockDevice
@@ -346,34 +347,41 @@ class MetaWearablesModule: NSObject {
             return
         }
 
-        let documentsDirectory = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        ).first
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
 
-        guard let documentsDirectory else {
-            print("Failed to locate Documents directory")
-            return
-        }
+            guard status == .authorized || status == .limited else {
+                print("Failed to save to photo library: authorization status =", status.rawValue)
+                return
+            }
 
-        let fileURL = documentsDirectory.appendingPathComponent("mock-frame.jpg")
+            var placeholderIdentifier = ""
 
-        do {
-            try jpegData.write(to: fileURL, options: [.atomic])
+            PHPhotoLibrary.shared().performChanges({
 
-            let fileSize = (
-                try? FileManager.default.attributesOfItem(
-                    atPath: fileURL.path
-                )[.size] as? NSNumber
-            )?.int64Value ?? Int64(jpegData.count)
+                let request = PHAssetCreationRequest.forAsset()
+                let options = PHAssetResourceCreationOptions()
+                options.uniformTypeIdentifier = "public.jpeg"
+                request.addResource(with: .photo, data: jpegData, options: options)
+                placeholderIdentifier = request.placeholderForCreatedAsset?.localIdentifier ?? ""
 
-            print("JPEG saved successfully")
-            print("image width:", image.size.width)
-            print("image height:", image.size.height)
-            print("file size:", fileSize)
-            print("saved path:", fileURL.path)
-        } catch {
-            print("Failed to save JPEG:", error)
+            }, completionHandler: { success, error in
+
+                if let error {
+                    print("Failed to save to photo library:", error)
+                    return
+                }
+
+                guard success else {
+                    print("Failed to save to photo library")
+                    return
+                }
+
+                print("JPEG saved successfully")
+                print("image width:", image.size.width)
+                print("image height:", image.size.height)
+                print("jpeg size:", jpegData.count)
+                print("saved path:", placeholderIdentifier)
+            })
         }
     }
 
