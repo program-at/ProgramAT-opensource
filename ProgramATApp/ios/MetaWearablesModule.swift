@@ -7,6 +7,8 @@
 
 import Foundation
 import React
+import UIKit
+import CoreImage
 import MWDATCore
 import MWDATCamera
 import MWDATMockDevice
@@ -25,6 +27,7 @@ class MetaWearablesModule: NSObject {
     private var streamStateToken: Any?
     private var streamErrorToken: Any?
     private var frameToken: Any?
+    private var uploadedTestFrame = false
 
     @objc
     func hello() {
@@ -164,7 +167,12 @@ class MetaWearablesModule: NSObject {
 
                         print("FRAME RECEIVED")
 
-                        self.logFrame(frame)
+                        guard self.uploadedTestFrame == false else {
+                            return
+                        }
+
+                        self.uploadedTestFrame = true
+                        self.processTestFrame(frame)
 
                     }
 
@@ -319,6 +327,66 @@ class MetaWearablesModule: NSObject {
                 )
 
             }
+        }
+    }
+
+    private func processTestFrame(_ frame: Any) {
+
+        guard let videoFrame = frame as? VideoFrame else {
+            print("FRAME TYPE NOT SUPPORTED:", type(of: frame))
+            return
+        }
+
+        let sampleBuffer = videoFrame.videoSampleBuffer
+        let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer)
+
+        guard let pixelBuffer else {
+            print("Failed to get pixel buffer from sample buffer")
+            return
+        }
+
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext(options: nil)
+
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            print("Failed to create CGImage from pixel buffer")
+            return
+        }
+
+        let image = UIImage(cgImage: cgImage)
+
+        guard let jpegData = image.jpegData(compressionQuality: 0.9) else {
+            print("Failed to create JPEG data")
+            return
+        }
+
+        let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first
+
+        guard let documentsDirectory else {
+            print("Failed to locate Documents directory")
+            return
+        }
+
+        let fileURL = documentsDirectory.appendingPathComponent("mock-frame.jpg")
+
+        do {
+            try jpegData.write(to: fileURL, options: [.atomic])
+
+            let fileSize = (
+                try? FileManager.default.attributesOfItem(
+                    atPath: fileURL.path
+                )[.size] as? NSNumber
+            )?.int64Value ?? Int64(jpegData.count)
+
+            print("JPEG saved successfully")
+            print("width:", CVPixelBufferGetWidth(pixelBuffer))
+            print("height:", CVPixelBufferGetHeight(pixelBuffer))
+            print("file size:", fileSize)
+        } catch {
+            print("Failed to save JPEG:", error)
         }
     }
 
