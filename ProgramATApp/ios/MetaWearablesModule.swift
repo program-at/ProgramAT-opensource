@@ -163,6 +163,42 @@ class MetaWearablesModule: NSObject {
     }
 
     @objc
+    func debugWearablesState() {
+
+        let wearables = Wearables.shared
+
+        print("========== DEBUG ==========")
+
+        print(
+            "registrationState:",
+            wearables.registrationState
+        )
+
+        print(
+            "deviceCount:",
+            wearables.devices.count
+        )
+
+        for id in wearables.devices {
+
+            print("device id:", id)
+
+            if let device =
+                wearables.deviceForIdentifier(id)
+            {
+
+                print("device:", device)
+
+            } else {
+
+                print(
+                    "deviceForIdentifier returned nil"
+                )
+            }
+        }
+    }
+
+    @objc
     static func requiresMainQueueSetup() -> Bool {
         return false
     }

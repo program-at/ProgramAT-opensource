@@ -57,6 +57,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       useBackCameraFeed?: () => void | Promise<void>;
       startMockCameraStream?: () => void | Promise<void>;
       listDevicesNow?: () => void | Promise<void>;
+      debugWearablesState?: () => void | Promise<void>;
     };
   };
 
@@ -312,6 +313,11 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       if (typeof MetaWearablesModule.useBackCameraFeed === 'function') {
         await Promise.resolve(MetaWearablesModule.useBackCameraFeed());
         console.log('[CameraView] MetaWearablesModule.useBackCameraFeed() succeeded');
+      }
+
+      if (typeof MetaWearablesModule.debugWearablesState === 'function') {
+        await Promise.resolve(MetaWearablesModule.debugWearablesState());
+        console.log('[CameraView] MetaWearablesModule.debugWearablesState() succeeded');
       }
 
       if (typeof MetaWearablesModule.listDevicesNow === 'function') {
