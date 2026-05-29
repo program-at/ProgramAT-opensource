@@ -15,6 +15,9 @@ import MWDATMockDevice
 class MetaWearablesModule: NSObject {
 
     private var mockDevice: (any MockRaybanMeta)?
+    private var mockDeviceReady = false
+    private var pendingMockStreamStart = false
+    private var mockDeviceRegistrationTask: Task<Void, Never>?
     private var session: DeviceSession?
     private var stream: MWDATCamera.Stream?
     private var sessionStateToken: Any?
@@ -41,7 +44,11 @@ class MetaWearablesModule: NSObject {
 
         mockDevice = device
 
-        print("Mock device ready")
+        mockDeviceReady = false
+
+        observeMockDeviceRegistration()
+
+        print("Mock device created; waiting for registration...")
     }
 
     @objc
@@ -63,6 +70,17 @@ class MetaWearablesModule: NSObject {
 
     @objc
     func startMockCameraStream() {
+
+        guard mockDeviceReady else {
+            pendingMockStreamStart = true
+            print("Mock device not ready yet")
+            return
+        }
+
+        startMockCameraStreamInternal()
+    }
+
+    private func startMockCameraStreamInternal() {
 
         Task {
 
@@ -156,18 +174,6 @@ class MetaWearablesModule: NSObject {
 
                 print("Stream start requested successfully")
 
-                Task {
-                    try? await Task.sleep(nanoseconds: 2_000_000_000)
-
-                    if let session = self.session {
-                        print("SESSION STATE AFTER 2s:", session.state)
-                    }
-
-                    if let stream = self.stream {
-                        print("STREAM STATE AFTER 2s:", stream.state)
-                    }
-                }
-
                 print("Calling listDevicesNow after stream start")
                 self.listDevicesNow()
                 print("listDevicesNow call finished")
@@ -179,6 +185,61 @@ class MetaWearablesModule: NSObject {
                     error
                 )
 
+            }
+        }
+    }
+
+    private func observeMockDeviceRegistration() {
+
+        mockDeviceRegistrationTask?.cancel()
+
+        mockDeviceRegistrationTask = Task { [weak self] in
+
+            guard let self else { return }
+
+            let wearables = Wearables.shared
+
+            print("Waiting for mock device registration...")
+
+            for await deviceIdentifiers in wearables.devicesStream() {
+
+                if Task.isCancelled {
+                    return
+                }
+
+                print("Device count:", deviceIdentifiers.count)
+
+                for deviceIdentifier in deviceIdentifiers {
+
+                    guard let device =
+                        wearables.deviceForIdentifier(deviceIdentifier)
+                    else {
+                        continue
+                    }
+
+                    print(
+                        "Device compatibility:",
+                        device.compatibility()
+                    )
+
+                    guard String(describing: device.compatibility()) == "compatible" else {
+                        continue
+                    }
+
+                    print("Mock device discovered")
+                    print("Device identifier:", deviceIdentifier)
+
+                    self.mockDeviceReady = true
+
+                    self.mockDeviceRegistrationTask?.cancel()
+
+                    if self.pendingMockStreamStart {
+                        self.pendingMockStreamStart = false
+                        self.startMockCameraStream()
+                    }
+
+                    return
+                }
             }
         }
     }
