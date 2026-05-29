@@ -16,6 +16,13 @@ import MWDATMockDevice
 @objc(MetaWearablesModule)
 class MetaWearablesModule: NSObject {
 
+    private var saveFramesToPhotos = false
+    private var saveFramesToDocuments = false
+    private var uploadFramesToBackend = true
+
+    private var frameCount = 0
+    private var didLogFirstFrame = false
+
     private var mockDevice: (any MockRaybanMeta)?
     private var mockDeviceReady = false
     private var pendingMockStreamStart = false
@@ -27,7 +34,6 @@ class MetaWearablesModule: NSObject {
     private var streamStateToken: Any?
     private var streamErrorToken: Any?
     private var frameToken: Any?
-    private var uploadedTestFrame = false
     private var pendingDoorRecognitionTest = false
     private var pendingDoorRecognitionBackendURL: URL?
 
@@ -150,11 +156,19 @@ class MetaWearablesModule: NSObject {
 
                 print("Session start requested")
 
+                self.logConnectedDeviceInfo(
+                    deviceIdentifier: selectedDeviceIdentifier
+                )
+
                 let config = StreamConfiguration(
                     videoCodec: .raw,
-                    resolution: .low,
+                    resolution: .high,
                     frameRate: 24
                 )
+
+                print("Stream resolution:", String(describing: config.resolution))
+                print("Stream frame rate:", config.frameRate)
+                print("Stream codec:", String(describing: config.videoCodec))
 
                 guard let stream = try session.addStream(
                     config: config
@@ -182,15 +196,7 @@ class MetaWearablesModule: NSObject {
 
                 frameToken =
                     stream.videoFramePublisher.listen { frame in
-
-                        print("FRAME RECEIVED")
-
-                        guard self.uploadedTestFrame == false else {
-                            return
-                        }
-
-                        self.uploadedTestFrame = true
-                        self.processTestFrame(frame)
+                        self.handleIncomingFrame(frame)
 
                     }
 
@@ -277,6 +283,72 @@ class MetaWearablesModule: NSObject {
     }
 
     @objc
+    static func requiresMainQueueSetup() -> Bool {
+        return false
+    }
+
+    private func handleIncomingFrame(_ frame: VideoFrame) {
+
+        frameCount += 1
+
+        if didLogFirstFrame == false {
+            didLogFirstFrame = true
+            print("First frame received")
+        } else if frameCount % 30 == 0 {
+            print("Frame count:", frameCount)
+        }
+
+        guard saveFramesToPhotos || saveFramesToDocuments || uploadFramesToBackend else {
+            return
+        }
+
+        guard let jpegData = makeJPEGData(from: frame) else {
+            print("Failed to create JPEG data")
+            return
+        }
+
+        if saveFramesToPhotos || saveFramesToDocuments {
+            saveTestImage(jpegData)
+        }
+
+        if uploadFramesToBackend {
+            uploadTestFrameToBackend(jpegData)
+        }
+    }
+
+    private func makeJPEGData(from videoFrame: VideoFrame) -> Data? {
+
+        guard let image = videoFrame.makeUIImage() else {
+            print("Failed to create UIImage from VideoFrame")
+            return nil
+        }
+
+        return image.jpegData(compressionQuality: 0.9)
+    }
+
+    private func logConnectedDeviceInfo(deviceIdentifier: String) {
+
+        let wearables = Wearables.shared
+
+        guard let device = wearables.deviceForIdentifier(deviceIdentifier) else {
+            print("[Meta] Connected device:")
+            print("id=\(deviceIdentifier)")
+            print("name=<unknown>")
+            print("type=<unknown>")
+            print("linkState=<unknown>")
+            return
+        }
+
+        print("[Meta] Connected device:")
+        print("id=\(deviceIdentifier)")
+        print("name=\(device.nameOrId())")
+        print("type=\(device.deviceType())")
+        print("linkState=\(device.linkState)")
+    }
+
+    // MARK: - Debug / Testing
+
+    @objc
     func listDevicesNow() {
 
         let wearables = Wearables.shared
@@ -319,11 +391,6 @@ class MetaWearablesModule: NSObject {
         }
     }
 
-    @objc
-    static func requiresMainQueueSetup() -> Bool {
-        return false
-    }
-
     private func logFrame(_ frame: Any) {
 
         print("FRAME TYPE:", type(of: frame))
@@ -348,22 +415,19 @@ class MetaWearablesModule: NSObject {
         }
     }
 
-    private func processTestFrame(_ frame: Any) {
 
-        guard let videoFrame = frame as? VideoFrame else {
-            print("FRAME TYPE NOT SUPPORTED:", type(of: frame))
-            return
+    private func saveTestImage(_ jpegData: Data) {
+
+        if saveFramesToPhotos {
+            saveTestImageToPhotos(jpegData)
         }
 
-        guard let image = videoFrame.makeUIImage() else {
-            print("Failed to create UIImage from VideoFrame")
-            return
+        if saveFramesToDocuments {
+            saveTestImageToDocuments(jpegData)
         }
+    }
 
-        guard let jpegData = image.jpegData(compressionQuality: 0.9) else {
-            print("Failed to create JPEG data")
-            return
-        }
+    private func saveTestImageToPhotos(_ jpegData: Data) {
 
         PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
 
@@ -394,17 +458,33 @@ class MetaWearablesModule: NSObject {
                     return
                 }
 
-                print("JPEG saved successfully")
-                print("image width:", image.size.width)
-                print("image height:", image.size.height)
-                print("jpeg size:", jpegData.count)
+                print("JPEG saved successfully to photo library")
                 print("saved path:", placeholderIdentifier)
-
-                if self.pendingDoorRecognitionTest {
-                    self.pendingDoorRecognitionTest = false
-                    self.uploadTestFrameToBackend(jpegData)
-                }
             })
+        }
+    }
+
+    private func saveTestImageToDocuments(_ jpegData: Data) {
+
+        let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first
+
+        guard let documentsDirectory else {
+            print("Failed to locate Documents directory")
+            return
+        }
+
+        let formatter = ISO8601DateFormatter()
+        let filename = "meta-frame-\(formatter.string(from: Date())).jpg"
+        let fileURL = documentsDirectory.appendingPathComponent(filename)
+
+        do {
+            try jpegData.write(to: fileURL, options: .atomic)
+            print("JPEG saved successfully to Documents:", fileURL.lastPathComponent)
+        } catch {
+            print("Failed to save to Documents:", error)
         }
     }
 
@@ -437,6 +517,10 @@ class MetaWearablesModule: NSObject {
             if let data,
                let responseText = String(data: data, encoding: .utf8) {
                 print("Door recognition backend response:", responseText)
+            }
+
+            if self.pendingDoorRecognitionTest {
+                self.pendingDoorRecognitionTest = false
             }
         }.resume()
     }
