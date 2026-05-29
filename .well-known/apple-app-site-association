@@ -1,0 +1,16 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": [
+          "82C3N62J4P.org.reactjs.native.example.ProgramATApp"
+        ],
+        "components": [
+          {
+            "/": "/meta/*"
+          }
+        ]
+      }
+    ]
+  }
+}
