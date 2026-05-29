@@ -169,32 +169,25 @@ class MetaWearablesModule: NSObject {
 
         print("========== DEBUG ==========")
 
-        print(
-            "registrationState:",
-            wearables.registrationState
-        )
+        print("registrationState:", wearables.registrationState)
 
-        print(
-            "deviceCount:",
-            wearables.devices.count
-        )
+        print("deviceCount:", wearables.devices.count)
 
         for id in wearables.devices {
 
             print("device id:", id)
 
-            if let device =
+            guard let device =
                 wearables.deviceForIdentifier(id)
-            {
-
-                print("device:", device)
-
-            } else {
-
-                print(
-                    "deviceForIdentifier returned nil"
-                )
+            else {
+                print("device nil")
+                continue
             }
+
+            print("name:", device.nameOrId())
+            print("linkState:", device.linkState)
+            print("compatibility:", device.compatibility())
+            print("deviceType:", device.deviceType())
         }
     }
 
