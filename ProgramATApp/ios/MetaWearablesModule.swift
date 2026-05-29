@@ -65,9 +65,20 @@ class MetaWearablesModule: NSObject {
 
                 let wearables = Wearables.shared
 
-                let selector = AutoDeviceSelector(
-                    wearables: wearables
+                print("Preparing to create stream session")
+
+                guard let selectedDeviceIdentifier = wearables.devices.first else {
+                    print("No available device identifier found")
+                    return
+                }
+
+                print("selectedDeviceIdentifier:", selectedDeviceIdentifier)
+
+                let selector = SpecificDeviceSelector(
+                    device: selectedDeviceIdentifier
                 )
+
+                print("Using SpecificDeviceSelector for selected device")
 
                 let session = try wearables.createSession(
                     deviceSelector: selector
@@ -75,7 +86,7 @@ class MetaWearablesModule: NSObject {
 
                 self.session = session
 
-                print("Session created")
+                print("Session created successfully")
 
                 let _ = session.statePublisher.listen { state in
                     print("SESSION STATE:", state)
@@ -105,7 +116,7 @@ class MetaWearablesModule: NSObject {
 
                 self.stream = stream
 
-                print("Stream created")
+                print("Stream created successfully")
 
                 let _ = stream.statePublisher.listen { state in
                     print("STREAM STATE:", state)
@@ -125,7 +136,7 @@ class MetaWearablesModule: NSObject {
 
                 await stream.start()
 
-                print("Stream start requested")
+                print("Stream start requested successfully")
 
                 print("Calling listDevicesNow after stream start")
                 self.listDevicesNow()
