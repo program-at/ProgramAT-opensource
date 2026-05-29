@@ -55,6 +55,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     MetaWearablesModule?: {
       createMockDevice?: () => void | Promise<void>;
       useBackCameraFeed?: () => void | Promise<void>;
+      requestDoorRecognitionTest?: (backendURLString: string) => void | Promise<void>;
       startMockCameraStream?: () => void | Promise<void>;
       listDevicesNow?: () => void | Promise<void>;
       debugWearablesState?: () => void | Promise<void>;
@@ -295,6 +296,30 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         Alert.alert(
           'Meta Wearables Bridge',
           'MetaWearablesModule is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      const websocketServerUrl = WebSocketService.getServerUrl().trim();
+      if (!websocketServerUrl) {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'Set the backend server URL in Settings first.'
+        );
+        return;
+      }
+
+      const backendHttpUrl = websocketServerUrl
+        .replace(/^wss:\/\//, 'https://')
+        .replace(/^ws:\/\//, 'http://');
+
+      if (typeof MetaWearablesModule.requestDoorRecognitionTest === 'function') {
+        await Promise.resolve(MetaWearablesModule.requestDoorRecognitionTest(backendHttpUrl));
+        console.log('[CameraView] MetaWearablesModule.requestDoorRecognitionTest() armed');
+      } else {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'requestDoorRecognitionTest() is not available.'
         );
         return;
       }

@@ -3760,6 +3760,23 @@ class AiohttpWebSocketAdapter:
 async def test_door_recognition(request: web.Request):
     print("[MockDevice] Using latest frame")
 
+    raw_body = await request.read()
+
+    if raw_body:
+        nparr = np.frombuffer(raw_body, np.uint8)
+        latest_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if latest_image is not None:
+            last_frame['image'] = latest_image
+            last_frame['timestamp'] = datetime.now()
+            last_frame['base64'] = base64.b64encode(raw_body).decode('utf-8')
+            latest_meta_frame = store_latest_meta_frame(latest_image)
+            if latest_meta_frame is not None:
+                _, latest_path = latest_meta_frame
+                print(f"[MockDevice] Stored latest frame at {latest_path}")
+        else:
+            print("[DoorRecognition] Received body but failed to decode JPEG")
+
     latest_image = get_latest_meta_frame_image()
 
     if latest_image is None:

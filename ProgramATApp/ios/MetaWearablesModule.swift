@@ -28,6 +28,8 @@ class MetaWearablesModule: NSObject {
     private var streamErrorToken: Any?
     private var frameToken: Any?
     private var uploadedTestFrame = false
+    private var pendingDoorRecognitionTest = false
+    private var pendingDoorRecognitionBackendURL: URL?
 
     @objc
     func hello() {
@@ -69,6 +71,22 @@ class MetaWearablesModule: NSObject {
 
             print("Back camera feed configured")
         }
+    }
+
+    @objc
+    func requestDoorRecognitionTest(_ backendURLString: String) {
+
+        let trimmed = backendURLString.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let backendURL = URL(string: trimmed) else {
+            print("Invalid backend URL for door recognition test:", backendURLString)
+            return
+        }
+
+        pendingDoorRecognitionBackendURL = backendURL
+        pendingDoorRecognitionTest = true
+
+        print("Door recognition backend test armed:", backendURL.absoluteString)
     }
 
     @objc
@@ -381,8 +399,46 @@ class MetaWearablesModule: NSObject {
                 print("image height:", image.size.height)
                 print("jpeg size:", jpegData.count)
                 print("saved path:", placeholderIdentifier)
+
+                if self.pendingDoorRecognitionTest {
+                    self.pendingDoorRecognitionTest = false
+                    self.uploadTestFrameToBackend(jpegData)
+                }
             })
         }
+    }
+
+    private func uploadTestFrameToBackend(_ jpegData: Data) {
+
+        guard let backendURL = pendingDoorRecognitionBackendURL else {
+            print("No backend URL set for door recognition test")
+            return
+        }
+
+        let testURL = backendURL.appendingPathComponent("test-door-recognition")
+
+        print("Uploading Meta frame to backend:", testURL.absoluteString)
+
+        var request = URLRequest(url: testURL)
+        request.httpMethod = "POST"
+        request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
+
+        URLSession.shared.uploadTask(with: request, from: jpegData) { data, response, error in
+
+            if let error {
+                print("Failed to upload Meta frame to backend:", error)
+                return
+            }
+
+            if let httpResponse = response as? HTTPURLResponse {
+                print("Door recognition backend status:", httpResponse.statusCode)
+            }
+
+            if let data,
+               let responseText = String(data: data, encoding: .utf8) {
+                print("Door recognition backend response:", responseText)
+            }
+        }.resume()
     }
 
 }
