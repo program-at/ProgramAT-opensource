@@ -17,6 +17,11 @@ class MetaWearablesModule: NSObject {
     private var mockDevice: (any MockRaybanMeta)?
     private var session: DeviceSession?
     private var stream: MWDATCamera.Stream?
+    private var sessionStateToken: Any?
+    private var sessionErrorToken: Any?
+    private var streamStateToken: Any?
+    private var streamErrorToken: Any?
+    private var frameToken: Any?
 
     @objc
     func hello() {
@@ -86,17 +91,23 @@ class MetaWearablesModule: NSObject {
 
                 self.session = session
 
+                print("Session current state immediately after creation:", session.state)
+
                 print("Session created successfully")
 
-                let _ = session.statePublisher.listen { state in
-                    print("SESSION STATE:", state)
-                }
+                sessionStateToken =
+                    session.statePublisher.listen { state in
+                        print("SESSION STATE:", state)
+                    }
 
-                let _ = session.errorPublisher.listen { error in
-                    print("SESSION ERROR:", error)
-                }
+                sessionErrorToken =
+                    session.errorPublisher.listen { error in
+                        print("SESSION ERROR:", error)
+                    }
 
                 try session.start()
+
+                print("Session current state after start():", session.state)
 
                 print("Session start requested")
 
@@ -116,27 +127,46 @@ class MetaWearablesModule: NSObject {
 
                 self.stream = stream
 
+                print("Stream current state immediately after creation:", stream.state)
+
                 print("Stream created successfully")
 
-                let _ = stream.statePublisher.listen { state in
-                    print("STREAM STATE:", state)
-                }
+                streamStateToken =
+                    stream.statePublisher.listen { state in
+                        print("STREAM STATE:", state)
+                    }
 
-                let _ = stream.errorPublisher.listen { error in
-                    print("STREAM ERROR:", error)
-                }
+                streamErrorToken =
+                    stream.errorPublisher.listen { error in
+                        print("STREAM ERROR:", error)
+                    }
 
-                let _ = stream.videoFramePublisher.listen { frame in
+                frameToken =
+                    stream.videoFramePublisher.listen { frame in
 
-                    print("FRAME RECEIVED")
+                        print("FRAME RECEIVED")
 
-                    self.logFrame(frame)
+                        self.logFrame(frame)
 
-                }
+                    }
 
                 await stream.start()
 
+                print("Stream current state after start():", stream.state)
+
                 print("Stream start requested successfully")
+
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+
+                    if let session = self.session {
+                        print("SESSION STATE AFTER 2s:", session.state)
+                    }
+
+                    if let stream = self.stream {
+                        print("STREAM STATE AFTER 2s:", stream.state)
+                    }
+                }
 
                 print("Calling listDevicesNow after stream start")
                 self.listDevicesNow()
