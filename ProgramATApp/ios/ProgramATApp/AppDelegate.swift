@@ -2,6 +2,7 @@ import UIKit
 import React
 import React_RCTAppDelegate
 import ReactAppDependencyProvider
+import MWDATCore
 
 @main
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -14,6 +15,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
+    do {
+      try Wearables.configure()
+      print("Wearables configured")
+    } catch {
+      print("Wearables configure failed: \(error)")
+    }
+
     let delegate = ReactNativeDelegate()
     let factory = RCTReactNativeFactory(delegate: delegate)
     delegate.dependencyProvider = RCTAppDependencyProvider()
@@ -28,6 +36,22 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       in: window,
       launchOptions: launchOptions
     )
+
+    return true
+  }
+
+  func application(
+    _ app: UIApplication,
+    open url: URL,
+    options: [UIApplication.OpenURLOptionsKey : Any] = [:]
+  ) -> Bool {
+    Task {
+      do {
+        _ = try await Wearables.shared.handleUrl(url)
+      } catch {
+        print(error)
+      }
+    }
 
     return true
   }

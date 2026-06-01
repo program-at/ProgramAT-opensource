@@ -44,6 +44,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [physicalDeviceMessage, setPhysicalDeviceMessage] = useState('');
+  const [isPhysicalDeviceLoading, setIsPhysicalDeviceLoading] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const cameraRef = useRef<Camera>(null);
   const frameIntervalRef = useRef<any>(null);
@@ -57,6 +59,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       useBackCameraFeed?: () => void | Promise<void>;
       requestDoorRecognitionTest?: (backendURLString: string) => void | Promise<void>;
       startMockCameraStream?: () => void | Promise<void>;
+      startFirstFrameCapture?: () => Promise<string>;
       listDevicesNow?: () => void | Promise<void>;
       debugWearablesState?: () => void | Promise<void>;
     };
@@ -371,6 +374,33 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
+  const handleConnectPhysicalDevice = async () => {
+    try {
+      if (!MetaWearablesModule) {
+        throw new Error('MetaWearablesModule is not available yet.');
+      }
+
+      if (typeof MetaWearablesModule.startFirstFrameCapture !== 'function') {
+        throw new Error('startFirstFrameCapture() is not available.');
+      }
+
+      setIsPhysicalDeviceLoading(true);
+      setPhysicalDeviceMessage('Connecting to physical device...');
+
+      const savedPath = await Promise.resolve(MetaWearablesModule.startFirstFrameCapture());
+      const message = `Saved frame path: ${savedPath}`;
+
+      setPhysicalDeviceMessage(message);
+      Alert.alert('Meta Wearables Bridge', message);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setPhysicalDeviceMessage(`Error: ${message}`);
+      Alert.alert('Meta Wearables Bridge', message);
+    } finally {
+      setIsPhysicalDeviceLoading(false);
+    }
+  };
+
   if (!hasPermission) {
     return (
       <View style={styles.container} accessible={false}>
@@ -441,6 +471,23 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             <Text style={styles.buttonText}>T</Text>
           </TouchableOpacity>
 
+          <TouchableOpacity
+            style={[styles.button, styles.physicalButton]}
+            onPress={handleConnectPhysicalDevice}
+            disabled={isPhysicalDeviceLoading}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Connect Physical Device"
+            accessibilityHint="Starts the Meta DAT physical device smoke test and saves the first frame locally">
+            {isPhysicalDeviceLoading ? (
+              <ActivityIndicator size="small" color="#fff" accessible={false} />
+            ) : (
+              <Text style={styles.buttonText} numberOfLines={2}>
+                Connect Physical Device
+              </Text>
+            )}
+          </TouchableOpacity>
+
           {!isCameraActive ? (
             <TouchableOpacity
               style={[styles.button, styles.startButton]}
@@ -471,6 +518,22 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       {error !== '' && (
         <View style={styles.errorContainer}>
           <Text style={styles.errorText}>{error}</Text>
+        </View>
+      )}
+
+      {physicalDeviceMessage !== '' && (
+        <View
+          style={[
+            styles.physicalStatusContainer,
+            physicalDeviceMessage.startsWith('Error:') && styles.physicalStatusErrorContainer,
+          ]}>
+          <Text
+            style={[
+              styles.physicalStatusText,
+              physicalDeviceMessage.startsWith('Error:') && styles.physicalStatusErrorText,
+            ]}>
+            {physicalDeviceMessage}
+          </Text>
         </View>
       )}
 
@@ -544,6 +607,9 @@ const styles = StyleSheet.create({
   testButton: {
     backgroundColor: '#673AB7',
   },
+  physicalButton: {
+    backgroundColor: '#00897B',
+  },
   mockButton: {
     backgroundColor: '#009688',
   },
@@ -589,6 +655,23 @@ const styles = StyleSheet.create({
     color: '#c62828',
     fontSize: 12,
     textAlign: 'center',
+  },
+  physicalStatusContainer: {
+    backgroundColor: '#e8f5e9',
+    padding: 8,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  physicalStatusErrorContainer: {
+    backgroundColor: '#ffebee',
+  },
+  physicalStatusText: {
+    color: '#1b5e20',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  physicalStatusErrorText: {
+    color: '#c62828',
   },
   permissionContainer: {
     flex: 1,

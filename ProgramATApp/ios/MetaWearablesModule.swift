@@ -34,6 +34,16 @@ class MetaWearablesModule: NSObject {
     private var streamStateToken: Any?
     private var streamErrorToken: Any?
     private var frameToken: Any?
+    private var physicalRegistrationTask: Task<Void, Never>?
+    private var physicalDevicesTask: Task<Void, Never>?
+    private var physicalSession: DeviceSession?
+    private var physicalStream: MWDATCamera.Stream?
+    private var physicalSessionStateToken: Any?
+    private var physicalSessionErrorToken: Any?
+    private var physicalStreamStateToken: Any?
+    private var physicalStreamErrorToken: Any?
+    private var physicalFrameToken: Any?
+    private var physicalCaptureResolved = false
     private var pendingDoorRecognitionTest = false
     private var pendingDoorRecognitionBackendURL: URL?
 
@@ -221,6 +231,137 @@ class MetaWearablesModule: NSObject {
         }
     }
 
+    @objc
+    func startFirstFrameCapture(
+        _ resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+
+        Task {
+
+            do {
+
+                let wearables = Wearables.shared
+
+                physicalCaptureResolved = false
+
+                print("Starting physical device smoke test")
+                print("registrationState:", wearables.registrationState)
+
+                physicalRegistrationTask?.cancel()
+                physicalRegistrationTask = Task { [weak self] in
+
+                    guard let self else { return }
+
+                    while !Task.isCancelled {
+                        print("registrationState:", wearables.registrationState)
+                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    }
+                }
+
+                physicalDevicesTask?.cancel()
+                physicalDevicesTask = Task { [weak self] in
+
+                    guard let self else { return }
+
+                    for await devices in wearables.devicesStream() {
+
+                        if Task.isCancelled {
+                            return
+                        }
+
+                        print("DEVICES STREAM:", devices)
+                    }
+                }
+
+                let permissionStatus = try await wearables.checkPermissionStatus(.camera)
+                print("Camera permission status:", permissionStatus)
+
+                if String(describing: permissionStatus).lowercased() != "granted" {
+                    let requestedStatus = try await wearables.requestPermission(.camera)
+                    print("Camera permission requested:", requestedStatus)
+
+                    guard String(describing: requestedStatus).lowercased() == "granted" else {
+                        reject(
+                            "camera_permission_denied",
+                            "Camera permission was not granted.",
+                            nil
+                        )
+                        return
+                    }
+                }
+
+                let deviceSelector = AutoDeviceSelector(wearables: wearables)
+                let session = try wearables.createSession(
+                    deviceSelector: deviceSelector
+                )
+
+                physicalSession = session
+
+                physicalSessionStateToken = session.statePublisher.listen { state in
+                    print("PHYSICAL SESSION STATE:", state)
+                }
+
+                physicalSessionErrorToken = session.errorPublisher.listen { error in
+                    print("PHYSICAL SESSION ERROR:", error)
+                }
+
+                try session.start()
+                print("Physical session start requested")
+
+                try await waitForPhysicalSessionStart(session)
+
+                let config = StreamConfiguration(
+                    videoCodec: .raw,
+                    resolution: .low,
+                    frameRate: 15
+                )
+
+                print("Physical stream resolution:", String(describing: config.resolution))
+                print("Physical stream frame rate:", config.frameRate)
+                print("Physical stream codec:", String(describing: config.videoCodec))
+
+                guard let stream = try session.addStream(config: config) else {
+                    reject(
+                        "stream_creation_failed",
+                        "Unable to create a Meta DAT stream.",
+                        nil
+                    )
+                    return
+                }
+
+                physicalStream = stream
+
+                physicalStreamStateToken = stream.statePublisher.listen { state in
+                    print("PHYSICAL STREAM STATE:", state)
+                }
+
+                physicalStreamErrorToken = stream.errorPublisher.listen { error in
+                    print("PHYSICAL STREAM ERROR:", error)
+                }
+
+                physicalFrameToken = stream.videoFramePublisher.listen { [weak self] frame in
+                    self?.handleFirstPhysicalFrame(
+                        frame,
+                        resolve: resolve,
+                        reject: reject
+                    )
+                }
+
+                await stream.start()
+                print("Physical stream start requested")
+
+            } catch {
+                print("startFirstFrameCapture failed:", error)
+                reject(
+                    "start_first_frame_capture_failed",
+                    String(describing: error),
+                    error
+                )
+            }
+        }
+    }
+
     private func observeMockDeviceRegistration() {
 
         mockDeviceRegistrationTask?.cancel()
@@ -344,6 +485,78 @@ class MetaWearablesModule: NSObject {
         print("name=\(device.nameOrId())")
         print("type=\(device.deviceType())")
         print("linkState=\(device.linkState)")
+    }
+
+    private func waitForPhysicalSessionStart(_ session: DeviceSession) async throws {
+
+        for _ in 0..<100 {
+            let stateDescription = String(describing: session.state)
+            print("PHYSICAL SESSION POLL STATE:", stateDescription)
+
+            if stateDescription.lowercased().contains("started") {
+                return
+            }
+
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        throw NSError(
+            domain: "MetaWearablesModule",
+            code: 1001,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the physical session to start."]
+        )
+    }
+
+    private func handleFirstPhysicalFrame(
+        _ frame: VideoFrame,
+        resolve: @escaping RCTPromiseResolveBlock,
+        reject: @escaping RCTPromiseRejectBlock
+    ) {
+
+        guard physicalCaptureResolved == false else {
+            return
+        }
+
+        guard let image = frame.makeUIImage() else {
+            print("Failed to create UIImage from physical frame")
+            return
+        }
+
+        guard let jpegData = image.jpegData(compressionQuality: 0.9) else {
+            print("Failed to convert physical frame to JPEG data")
+            return
+        }
+
+        let documentsDirectory = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        ).first
+
+        guard let documentsDirectory else {
+            reject(
+                "documents_directory_missing",
+                "Failed to locate the Documents directory.",
+                nil
+            )
+            return
+        }
+
+        let fileURL = documentsDirectory.appendingPathComponent("frame.jpg")
+
+        do {
+            try jpegData.write(to: fileURL, options: .atomic)
+            physicalCaptureResolved = true
+            print("FRAME RECEIVED")
+            print("Saved frame path:", fileURL.path)
+            resolve(fileURL.path)
+        } catch {
+            print("Failed to save physical frame:", error)
+            reject(
+                "frame_save_failed",
+                String(describing: error),
+                error
+            )
+        }
     }
 
     // MARK: - Debug / Testing
