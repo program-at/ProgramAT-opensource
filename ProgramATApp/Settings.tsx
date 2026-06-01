@@ -398,7 +398,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
                 }]}
                 value={serverUrl}
                 onChangeText={setServerUrl}
-                placeholder="wss://your-server-ip:8080"
+                placeholder="wss://your-server-ip:8081"
                 placeholderTextColor={theme.inputPlaceholder}
                 autoCapitalize="none"
                 autoCorrect={false}

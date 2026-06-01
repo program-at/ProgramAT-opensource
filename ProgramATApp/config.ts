@@ -18,12 +18,12 @@ export type AppMode = 'development' | 'production' | 'review';
 export const SERVER_CONFIGS: Record<string, { url: string; name: string }> = {
   // Default server (no code needed)
   'default': {
-    url: 'ws://34.144.178.116:8080',
+    url: 'ws://34.144.178.116:8081',
     name: 'Default Server'
   }
 
   // Add additional servers with secret codes
-  // Example: 'mysecret123': { url: 'ws://10.0.0.1:8080', name: 'Dev Server' },
+  // Example: 'mysecret123': { url: 'ws://10.0.0.1:8081', name: 'Dev Server' },
 };
 
 export const Config = {
@@ -39,7 +39,7 @@ export const Config = {
 
   // General/review server URL — used in review mode for tool execution and PR fetching.
   // This is the shared server that hosts the tools being reviewed.
-  REVIEW_SERVER_URL: 'ws://34.162.96.157:8080',
+  REVIEW_SERVER_URL: 'ws://34.162.96.157:8081',
 
   // GitHub repo for the general/review server (owner/repo format).
   // Used in review mode so the user's server can post approve/reject to the correct repo.
