@@ -40,22 +40,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     return true
   }
 
+  func applicationDidBecomeActive(_ application: UIApplication) {
+    print("🚨🚨🚨 APP DID BECOME ACTIVE 🚨🚨🚨")
+  }
+
+  func applicationWillEnterForeground(_ application: UIApplication) {
+    print("🚨🚨🚨 APP WILL ENTER FOREGROUND 🚨🚨🚨")
+  }
+
   func application(
     _ app: UIApplication,
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey : Any] = [:]
   ) -> Bool {
-    print("URL CALLBACK RECEIVED:", url.absoluteString)
+    print("🚨🚨🚨 OPEN URL CALLBACK FIRED 🚨🚨🚨")
+    print("URL =", url.absoluteString)
 
     Task {
       do {
-        print("CALLING HANDLE URL")
+        print("CALLING Wearables.shared.handleUrl()")
         _ = try await Wearables.shared.handleUrl(url)
-        print("HANDLE URL SUCCESS from open url")
+        print("HANDLE URL SUCCESS")
       } catch {
-        print("HANDLE URL FAILED from open url:", error)
-        print("LOCALIZED:", error.localizedDescription)
-        print("MIRROR:", Mirror(reflecting: error))
+        print("HANDLE URL FAILURE")
+        print(error)
+        print(error.localizedDescription)
+        print(Mirror(reflecting: error))
       }
     }
 
@@ -67,7 +77,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     continue userActivity: NSUserActivity,
     restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
   ) -> Bool {
-    print("USER ACTIVITY RECEIVED:", userActivity.activityType)
+    print("🚨🚨🚨 UNIVERSAL LINK CALLBACK FIRED 🚨🚨🚨")
+    print("activityType =", userActivity.activityType)
 
     guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
           let url = userActivity.webpageURL else {
@@ -75,16 +86,18 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       return false
     }
 
-    print("UNIVERSAL LINK CALLBACK RECEIVED:", url.absoluteString)
+    print("WEBPAGE URL =", url.absoluteString)
 
     Task {
       do {
+        print("CALLING handleUrl FROM UNIVERSAL LINK")
         _ = try await Wearables.shared.handleUrl(url)
-        print("HANDLE URL SUCCESS from universal link")
+        print("HANDLE URL SUCCESS FROM UNIVERSAL LINK")
       } catch {
-        print("HANDLE URL FAILED from universal link:", error)
-        print("LOCALIZED:", error.localizedDescription)
-        print("MIRROR:", Mirror(reflecting: error))
+        print("HANDLE URL FAILURE FROM UNIVERSAL LINK")
+        print(error)
+        print(error.localizedDescription)
+        print(Mirror(reflecting: error))
       }
     }
 
