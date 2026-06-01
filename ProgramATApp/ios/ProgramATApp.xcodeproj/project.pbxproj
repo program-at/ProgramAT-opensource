@@ -30,6 +30,7 @@
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ProgramATApp/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ProgramATApp/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9882676676B182EFBB1A613D /* Pods-ProgramATApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ProgramATApp.debug.xcconfig"; path = "Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp.debug.xcconfig"; sourceTree = "<group>"; };
+		AF00EDC02FCE094000DBDEF5 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
 		AF31C7912FC88C2F0067CBB7 /* MetaWearablesModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetaWearablesModule.swift; sourceTree = "<group>"; };
 		AF31C7932FC88D950067CBB7 /* ProgramATApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ProgramATApp-Bridging-Header.h"; sourceTree = "<group>"; };
 		AF31C7942FC88D950067CBB7 /* MetaWearablesModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MetaWearablesModule.m; sourceTree = "<group>"; };
