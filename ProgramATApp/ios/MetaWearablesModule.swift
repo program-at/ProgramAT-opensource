@@ -153,12 +153,12 @@ class MetaWearablesModule: NSObject {
 
                 sessionStateToken =
                     session.statePublisher.listen { state in
-                        print("SESSION STATE:", state)
+                        self.logWearablesState("SESSION STATE", state)
                     }
 
                 sessionErrorToken =
                     session.errorPublisher.listen { error in
-                        print("SESSION ERROR:", error)
+                        self.logWearablesError("SESSION ERROR", error)
                     }
 
                 try session.start()
@@ -197,12 +197,12 @@ class MetaWearablesModule: NSObject {
 
                 streamStateToken =
                     stream.statePublisher.listen { state in
-                        print("STREAM STATE:", state)
+                        self.logWearablesState("STREAM STATE", state)
                     }
 
                 streamErrorToken =
                     stream.errorPublisher.listen { error in
-                        print("STREAM ERROR:", error)
+                        self.logWearablesError("STREAM ERROR", error)
                     }
 
                 frameToken =
@@ -223,10 +223,7 @@ class MetaWearablesModule: NSObject {
 
             } catch {
 
-                print(
-                    "startMockCameraStream failed:",
-                    error
-                )
+                self.logWearablesError("startMockCameraStream failed", error)
 
             }
         }
@@ -247,7 +244,7 @@ class MetaWearablesModule: NSObject {
                 physicalCaptureResolved = false
 
                 print("Starting physical device smoke test")
-                print("registrationState:", wearables.registrationState)
+                self.logWearablesState("registrationState", wearables.registrationState)
 
                 physicalRegistrationTask?.cancel()
                 physicalRegistrationTask = Task { [weak self] in
@@ -255,7 +252,7 @@ class MetaWearablesModule: NSObject {
                     guard let self else { return }
 
                     while !Task.isCancelled {
-                        print("registrationState:", wearables.registrationState)
+                        self.logWearablesState("registrationState", wearables.registrationState)
                         try? await Task.sleep(nanoseconds: 1_000_000_000)
                     }
                 }
@@ -300,11 +297,11 @@ class MetaWearablesModule: NSObject {
                 physicalSession = session
 
                 physicalSessionStateToken = session.statePublisher.listen { state in
-                    print("PHYSICAL SESSION STATE:", state)
+                    self.logWearablesState("PHYSICAL SESSION STATE", state)
                 }
 
                 physicalSessionErrorToken = session.errorPublisher.listen { error in
-                    print("PHYSICAL SESSION ERROR:", error)
+                    self.logWearablesError("PHYSICAL SESSION ERROR", error)
                 }
 
                 try session.start()
@@ -334,11 +331,11 @@ class MetaWearablesModule: NSObject {
                 physicalStream = stream
 
                 physicalStreamStateToken = stream.statePublisher.listen { state in
-                    print("PHYSICAL STREAM STATE:", state)
+                    self.logWearablesState("PHYSICAL STREAM STATE", state)
                 }
 
                 physicalStreamErrorToken = stream.errorPublisher.listen { error in
-                    print("PHYSICAL STREAM ERROR:", error)
+                    self.logWearablesError("PHYSICAL STREAM ERROR", error)
                 }
 
                 physicalFrameToken = stream.videoFramePublisher.listen { [weak self] frame in
@@ -353,7 +350,7 @@ class MetaWearablesModule: NSObject {
                 print("Physical stream start requested")
 
             } catch {
-                print("startFirstFrameCapture failed:", error)
+                self.logWearablesError("startFirstFrameCapture failed", error)
                 reject(
                     "start_first_frame_capture_failed",
                     String(describing: error),
@@ -379,9 +376,7 @@ class MetaWearablesModule: NSObject {
                 try await Wearables.shared.startRegistration()
                 print("startRegistration returned successfully")
             } catch {
-                print("startRegistration failed:", error)
-                print("startRegistration localizedDescription:", error.localizedDescription)
-                print("startRegistration error type:", type(of: error))
+                logWearablesError("startRegistration failed", error)
             }
 
             for await state in wearables.registrationStateStream() {
@@ -389,7 +384,7 @@ class MetaWearablesModule: NSObject {
                     return
                 }
 
-                print("REGISTRATION STATE STREAM:", state)
+                self.logWearablesState("REGISTRATION STATE STREAM", state)
             }
         }
     }
@@ -554,6 +549,39 @@ class MetaWearablesModule: NSObject {
             print("MWDAT.DAMEnabled:", mwdat["DAMEnabled"] ?? "<missing>")
         } else {
             print("MWDAT:", "<missing>")
+        }
+    }
+
+    private func logWearablesState(_ label: String, _ state: Any) {
+
+        print("\(label): STATE = \(String(describing: state))")
+        print("\(label): MIRROR = \(Mirror(reflecting: state))")
+
+        if let rawRepresentable = state as? any RawRepresentable {
+            print("\(label): RAW VALUE = \(String(describing: rawRepresentable.rawValue))")
+        }
+
+        let mirror = Mirror(reflecting: state)
+        if mirror.children.isEmpty == false {
+            for (index, child) in mirror.children.enumerated() {
+                let childLabel = child.label ?? "<unlabeled>"
+                print("\(label): CHILD[\(index)] \(childLabel) = \(String(describing: child.value))")
+            }
+        }
+    }
+
+    private func logWearablesError(_ label: String, _ error: Error) {
+
+        print("\(label): error = \(error)")
+        print("\(label): error.localizedDescription = \(error.localizedDescription)")
+        print("\(label): error.mirror = \(Mirror(reflecting: error))")
+
+        let mirror = Mirror(reflecting: error)
+        if mirror.children.isEmpty == false {
+            for (index, child) in mirror.children.enumerated() {
+                let childLabel = child.label ?? "<unlabeled>"
+                print("\(label): error.child[\(index)] \(childLabel) = \(String(describing: child.value))")
+            }
         }
     }
 
