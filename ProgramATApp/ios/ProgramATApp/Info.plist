@@ -51,7 +51,7 @@
 
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>fb1560563742445764</string>
+				<string>meta1560563742445764</string>
 			</array>
 		</dict>
 	</array>
@@ -60,7 +60,7 @@
 	<key>MWDAT</key>
 	<dict>
 		<key>AppLinkURLScheme</key>
-		<string>https://api.blvi.dev/meta</string>
+		<string>meta1560563742445764</string>
 
 		<key>MetaAppID</key>
 		<string>1560563742445764</string>
