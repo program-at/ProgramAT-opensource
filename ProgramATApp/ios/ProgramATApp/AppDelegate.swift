@@ -51,9 +51,40 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
       do {
         print("CALLING HANDLE URL")
         _ = try await Wearables.shared.handleUrl(url)
-        print("HANDLE URL SUCCESS")
+        print("HANDLE URL SUCCESS from open url")
       } catch {
-        print("HANDLE URL FAILED:", error)
+        print("HANDLE URL FAILED from open url:", error)
+        print("LOCALIZED:", error.localizedDescription)
+        print("MIRROR:", Mirror(reflecting: error))
+      }
+    }
+
+    return true
+  }
+
+  func application(
+    _ application: UIApplication,
+    continue userActivity: NSUserActivity,
+    restorationHandler: @escaping ([UIUserActivityRestoring]?) -> Void
+  ) -> Bool {
+    print("USER ACTIVITY RECEIVED:", userActivity.activityType)
+
+    guard userActivity.activityType == NSUserActivityTypeBrowsingWeb,
+          let url = userActivity.webpageURL else {
+      print("USER ACTIVITY did not contain webpageURL")
+      return false
+    }
+
+    print("UNIVERSAL LINK CALLBACK RECEIVED:", url.absoluteString)
+
+    Task {
+      do {
+        _ = try await Wearables.shared.handleUrl(url)
+        print("HANDLE URL SUCCESS from universal link")
+      } catch {
+        print("HANDLE URL FAILED from universal link:", error)
+        print("LOCALIZED:", error.localizedDescription)
+        print("MIRROR:", Mirror(reflecting: error))
       }
     }
 
