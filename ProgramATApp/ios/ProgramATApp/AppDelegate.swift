@@ -15,6 +15,24 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
   ) -> Bool {
+    print("🚨🚨🚨 DID FINISH LAUNCHING 🚨🚨🚨")
+    print("launchOptions =", String(describing: launchOptions))
+
+    if let url = launchOptions?[.url] as? URL {
+      print("launchOptions.url =", url.absoluteString)
+    }
+
+    if let userActivityDictionary = launchOptions?[.userActivityDictionary] as? [AnyHashable: Any] {
+      print("launchOptions.userActivityDictionary =", userActivityDictionary)
+      for (key, value) in userActivityDictionary {
+        print("launchOptions.userActivityDictionary[\(key)] =", value)
+        if let userActivity = value as? NSUserActivity {
+          print("launchOptions.userActivity.activityType =", userActivity.activityType)
+          print("launchOptions.userActivity.webpageURL =", String(describing: userActivity.webpageURL?.absoluteString))
+        }
+      }
+    }
+
     do {
       try Wearables.configure()
       print("Wearables configured")
