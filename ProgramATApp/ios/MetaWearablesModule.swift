@@ -376,7 +376,7 @@ class MetaWearablesModule: NSObject {
 
             do {
                 print("STARTING REGISTRATION")
-                try Wearables.shared.startRegistration()
+                try await Wearables.shared.startRegistration()
                 print("startRegistration returned successfully")
             } catch {
                 print("startRegistration failed:", error)
