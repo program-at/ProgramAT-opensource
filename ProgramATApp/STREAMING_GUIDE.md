@@ -15,7 +15,7 @@ The WebSocket server URL and other streaming settings are configured in `config.
 
 ```typescript
 export const Config = {
-  WEBSOCKET_SERVER_URL: 'ws://34.144.178.116:8080',
+  WEBSOCKET_SERVER_URL: 'ws://34.144.178.116:8081',
   FRAME_CAPTURE_INTERVAL_MS: 500, // 2 FPS
   FRAME_QUALITY_PRIORITIZATION: 'speed',
   IMAGE_QUALITY: 0.7, // 0.0 - 1.0 (lower = smaller files)
@@ -137,7 +137,7 @@ Ensure your app has the following permissions:
 
 If you cannot connect to the server:
 1. Verify the server is running at the configured URL
-2. Check that port 8080 is open and accessible
+2. Check that port 8081 is open and accessible
 3. Ensure your device has network connectivity
 4. Check firewall settings
 
@@ -170,7 +170,7 @@ python stream_server.py
 ```
 
 The server:
-- Listens on port 8080
+- Listens on port 8081
 - Saves received frames to `received_frames/` directory
 - Logs received text to `received_frames/received_texts.log`
 - Broadcasts statistics every 5 seconds
