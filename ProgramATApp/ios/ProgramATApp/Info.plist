@@ -69,7 +69,7 @@
 		<string>AR|1560563742445764|7b803ce80c9eb5a4a0f406646079b7a2</string>
 
 		<key>TeamID</key>
-		<string>82C3N62J4P</string>
+		<string>$(DEVELOPMENT_TEAM)</string>
 
 		<key>DAMEnabled</key>
 		<true/>
