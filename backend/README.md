@@ -40,7 +40,7 @@ The server uses environment variables for configuration:
 
 - `GEMINI_MODEL`: (legacy) Gemini model name used as a fallback if `LLM_MODEL` isn't set (default: `gemini-3-flash-preview`)
 - `HOST`: Server host (default: `0.0.0.0`)
-- `PORT`: Server port (default: `8080`)
+- `PORT`: Server port (default: `8081`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
 
 ## Usage
@@ -204,7 +204,7 @@ User: "I open the camera and click the photo button. I expected to take a photo 
 
 ### Connection Issues
 
-1. Verify firewall allows connections on port 8080
+1. Verify firewall allows connections on port 8081
 2. Check that client is connecting to correct server IP
 3. Review server logs for connection errors
 
