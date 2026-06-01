@@ -49,6 +49,10 @@
 			<key>CFBundleURLName</key>
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>https://api.blvi.dev/meta</string>
+			</array>
 		</dict>
 	</array>
 
@@ -59,7 +63,7 @@
 		<string>https://api.blvi.dev/meta</string>
 
 		<key>MetaAppID</key>
-		<string>1560563742445764</string>
+		<string>0</string>
 
 		<key>ClientToken</key>
 		<string>AR|1560563742445764|7b803ce80c9eb5a4a0f406646079b7a2</string>
