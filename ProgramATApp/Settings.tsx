@@ -22,6 +22,7 @@ import WebSocketService from './WebSocketService';
 import { getModelPreference, setModelPreference } from './ModelPreference';
 import { useTheme } from './ThemeContext';
 import ModelPickerScreen from './ModelPickerScreen';
+import OnDeviceTest from './ondevice-test';
 
 const SERVER_URL_KEY = '@server_url';
 
@@ -42,6 +43,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
   const [serverDefaultModel, setServerDefaultModel] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showOnDeviceTest, setShowOnDeviceTest] = useState(false);
 
   useEffect(() => {
     setIsConnected(WebSocketService.isConnected());
@@ -204,6 +206,10 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
       }
     }
   };
+
+  if (showOnDeviceTest) {
+    return <OnDeviceTest onBack={() => setShowOnDeviceTest(false)} />;
+  }
 
   if (showModelPicker) {
     return (
@@ -509,6 +515,19 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
             </View>
           </View>
         </View>
+        {/* Developer Tools Section */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]} accessibilityRole="header">Developer Tools</Text>
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: theme.primary }]}
+            onPress={() => setShowOnDeviceTest(true)}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Open on-device test">
+            <Text style={styles.buttonText}>🧪 On-Device Test</Text>
+          </TouchableOpacity>
+        </View>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -777,5 +796,16 @@ const styles = StyleSheet.create({
   chevron: {
     fontSize: 24,
     fontWeight: '400',
+  },
+  button: {
+    borderRadius: 10,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  buttonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
   },
 });
