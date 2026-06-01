@@ -100,7 +100,7 @@ Use the table below as a quick reference for what each value does.
 | `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
 | `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
 | `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |
-| `HOST` / `PORT`                    | Optional                       | Server bind address (default `0.0.0.0:8080`)                                                                                                      |
+| `HOST` / `PORT`                    | Optional                       | Server bind address (default `0.0.0.0:8081`)                                                                                                      |
 
 ### How to Get the Keys
 
@@ -210,11 +210,11 @@ We provide instructions here for hosting from your personal machine. If you woul
    python stream_server.py
    ```
 
-   The server listens on `0.0.0.0:8080` by default.
+   The server listens on `0.0.0.0:8081` by default.
 7. **Open up another terminal or window and start the ngrok tunnel**
 
    ```bash
-   ngrok http 8080
+   ngrok http 8081
    ```
 8. **Copy your forwarding address**
    If you are using ngrok, keep the terminal created in step 4 open. ngrok will print a forwarding address, which is the public address your app should connect to. Copy this address.

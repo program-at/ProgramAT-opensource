@@ -98,7 +98,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8080 #port for listening
+PORT = 8081 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
