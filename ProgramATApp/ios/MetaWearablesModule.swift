@@ -44,6 +44,7 @@ class MetaWearablesModule: NSObject {
     private var physicalStreamErrorToken: Any?
     private var physicalFrameToken: Any?
     private var physicalCaptureResolved = false
+    private var registrationDebugTask: Task<Void, Never>?
     private var pendingDoorRecognitionTest = false
     private var pendingDoorRecognitionBackendURL: URL?
 
@@ -362,6 +363,37 @@ class MetaWearablesModule: NSObject {
         }
     }
 
+    @objc
+    func debugRegistration() {
+
+        let wearables = Wearables.shared
+
+        logDatRuntimeConfig()
+
+        registrationDebugTask?.cancel()
+
+        registrationDebugTask = Task {
+
+            do {
+                print("STARTING REGISTRATION")
+                try Wearables.shared.startRegistration()
+                print("startRegistration returned successfully")
+            } catch {
+                print("startRegistration failed:", error)
+                print("startRegistration localizedDescription:", error.localizedDescription)
+                print("startRegistration error type:", type(of: error))
+            }
+
+            for await state in wearables.registrationStateStream() {
+                if Task.isCancelled {
+                    return
+                }
+
+                print("REGISTRATION STATE STREAM:", state)
+            }
+        }
+    }
+
     private func observeMockDeviceRegistration() {
 
         mockDeviceRegistrationTask?.cancel()
@@ -505,6 +537,24 @@ class MetaWearablesModule: NSObject {
             code: 1001,
             userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the physical session to start."]
         )
+    }
+
+    private func logDatRuntimeConfig() {
+
+        let infoDictionary = Bundle.main.infoDictionary ?? [:]
+
+        print("========== DAT CONFIG ==========")
+        print("CFBundleURLTypes:", infoDictionary["CFBundleURLTypes"] ?? "<missing>")
+
+        if let mwdat = infoDictionary["MWDAT"] as? [String: Any] {
+            print("MWDAT.AppLinkURLScheme:", mwdat["AppLinkURLScheme"] ?? "<missing>")
+            print("MWDAT.MetaAppID:", mwdat["MetaAppID"] ?? "<missing>")
+            print("MWDAT.ClientToken:", mwdat["ClientToken"] ?? "<missing>")
+            print("MWDAT.TeamID:", mwdat["TeamID"] ?? "<missing>")
+            print("MWDAT.DAMEnabled:", mwdat["DAMEnabled"] ?? "<missing>")
+        } else {
+            print("MWDAT:", "<missing>")
+        }
     }
 
     private func handleFirstPhysicalFrame(

@@ -60,6 +60,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       requestDoorRecognitionTest?: (backendURLString: string) => void | Promise<void>;
       startMockCameraStream?: () => void | Promise<void>;
       startFirstFrameCapture?: () => Promise<string>;
+      debugRegistration?: () => void | Promise<void>;
       listDevicesNow?: () => void | Promise<void>;
       debugWearablesState?: () => void | Promise<void>;
     };
@@ -401,6 +402,24 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
+  const handleDebugRegistration = async () => {
+    try {
+      if (!MetaWearablesModule) {
+        throw new Error('MetaWearablesModule is not available yet.');
+      }
+
+      if (typeof MetaWearablesModule.debugRegistration !== 'function') {
+        throw new Error('debugRegistration() is not available.');
+      }
+
+      await Promise.resolve(MetaWearablesModule.debugRegistration());
+      Alert.alert('Meta Wearables Bridge', 'Debug registration started');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    }
+  };
+
   if (!hasPermission) {
     return (
       <View style={styles.container} accessible={false}>
@@ -486,6 +505,18 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
                 Connect Physical Device
               </Text>
             )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.debugButton]}
+            onPress={handleDebugRegistration}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Debug Registration"
+            accessibilityHint="Logs DAT config and registration state without starting camera streaming">
+            <Text style={styles.buttonText} numberOfLines={2}>
+              Debug Registration
+            </Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (
@@ -609,6 +640,9 @@ const styles = StyleSheet.create({
   },
   physicalButton: {
     backgroundColor: '#00897B',
+  },
+  debugButton: {
+    backgroundColor: '#455A64',
   },
   mockButton: {
     backgroundColor: '#009688',

@@ -45,11 +45,15 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     open url: URL,
     options: [UIApplication.OpenURLOptionsKey : Any] = [:]
   ) -> Bool {
+    print("URL CALLBACK RECEIVED:", url.absoluteString)
+
     Task {
       do {
+        print("CALLING HANDLE URL")
         _ = try await Wearables.shared.handleUrl(url)
+        print("HANDLE URL SUCCESS")
       } catch {
-        print(error)
+        print("HANDLE URL FAILED:", error)
       }
     }
 
