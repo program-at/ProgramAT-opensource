@@ -26,7 +26,7 @@ CAPABILITY_PROFILES_PATH = Path(__file__).with_name("capability_profiles.yaml")
 DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
     "models": {
         "gemini_flash": {
-            "model": "gemini/gemini-2.0-flash",
+            "model": "gemini/gemini-3-flash-preview",
             "vision": 4,
             "coding": 3,
             "reasoning": 2,
@@ -34,7 +34,7 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
             "cost": 5,
         },
         "claude": {
-            "model": "anthropic/claude-3-5-sonnet",
+            "model": "anthropic/claude-3-5-sonnet-20241022",
             "vision": 2,
             "coding": 5,
             "reasoning": 5,
