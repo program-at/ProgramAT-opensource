@@ -25,17 +25,8 @@ from google.cloud import secretmanager
 from github import Github
 import os
 from dotenv import load_dotenv
-try:
-    import litellm
-    LITELLM_AVAILABLE = True
-except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
+from model_router import get_selected_model, llm_call
 from litellm_utils import (
-    TaskType,
-    get_model_for_task,
-    resolve_model_name,
-    resolve_api_key,
     extract_text,
     pil_image_to_data_uri,
 )
@@ -350,7 +341,7 @@ PAUSE_DURATION = float(os.environ.get('PAUSE_DURATION', '5.0'))  # seconds to wa
 
 # LiteLLM / Gemini Configuration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-DEFAULT_ROUTED_MODEL = get_model_for_task(TaskType.TOOL_MATCHING)
+DEFAULT_ROUTED_MODEL = get_selected_model('text_parse')
 LLM_MODEL = DEFAULT_ROUTED_MODEL
 GEMINI_MODEL = DEFAULT_ROUTED_MODEL
 
@@ -2858,11 +2849,10 @@ Return ONLY a valid JSON object:
   "confidence": <0.0 to 1.0>
 }}"""
 
-        active_model = get_model_for_task(TaskType.TOOL_MATCHING, model or '')
-        response = litellm.completion(
-            model=active_model,
+        response = llm_call(
+            capability='tool_retrieval',
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=resolve_api_key(active_model),
+            metadata={'requested_model': model or ''},
         )
         ai_response = extract_text(response)
 
@@ -3130,11 +3120,10 @@ Return format:
   "missing_fields": ["field1", "field2"]  // Only truly missing/empty important fields. Use [] if all important fields have content.
 }}"""
 
-        active_model = get_model_for_task(TaskType.TEMPLATE_FILL, model or '')
-        response = litellm.completion(
-            model=active_model,
+        response = llm_call(
+            capability='text_parse',
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=resolve_api_key(active_model),
+            metadata={'requested_model': model or ''},
         )
 
         # Parse the AI response
@@ -5004,25 +4993,17 @@ async def handle_client(websocket):
                             prompt = f"You are analyzing this image. The user is asking a follow-up question: {question}\n\nPlease provide a helpful and concise answer based on what you can see in the image."
                             
                             # Send the follow-up through LiteLLM using the task router
-                            active_model = get_model_for_task(TaskType.LIVE_CAMERA_ANALYSIS, data.get('model', ''))
                             try:
-                                response = litellm.completion(
-                                    model=active_model,
-                                    messages=[
-                                        {
-                                            'role': 'user',
-                                            'content': [
-                                                {'type': 'text', 'text': prompt},
-                                                {'type': 'image_url', 'image_url': {'url': pil_image_to_data_uri(pil_image)}},
-                                            ],
-                                        }
-                                    ],
-                                    api_key=resolve_api_key(active_model),
+                                response = llm_call(
+                                    capability='image_analysis',
+                                    messages=[{'role': 'user', 'content': prompt}],
+                                    images=[pil_image],
+                                    metadata={'requested_model': data.get('model', '')},
                                 )
                                 answer = extract_text(response)
 
                                 logger.info(f"FOLLOW-UP: Generated answer length: {len(answer)}")
-                                logger.info(f"FOLLOW-UP: Successfully used LiteLLM with {active_model} for image+text")
+                                logger.info("FOLLOW-UP: Successfully routed image+text through model_router")
                                 
                                 await websocket.send(json.dumps({
                                     'type': 'follow_up_response',

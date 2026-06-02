@@ -1,0 +1,24 @@
+models:
+  gemini_flash:
+    model: gemini/gemini-2.0-flash
+    vision: 4
+    coding: 3
+    reasoning: 2
+    latency: 5
+    cost: 5
+
+  claude:
+    model: anthropic/claude-3-5-sonnet
+    vision: 2
+    coding: 5
+    reasoning: 5
+    latency: 2
+    cost: 2
+
+  gpt4o:
+    model: openai/gpt-4o
+    vision: 5
+    coding: 4
+    reasoning: 4
+    latency: 3
+    cost: 1

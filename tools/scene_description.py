@@ -26,22 +26,11 @@ import io
 from PIL import Image
 import re
 
-try:
-    import litellm
-    LITELLM_AVAILABLE = True
-except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
-    print("⚠️  litellm not installed. Install with: pip install litellm")
-
 from litellm_utils import (
-    TaskType,
-    get_model_for_task,
-    resolve_model_name,
-    resolve_api_key,
     extract_text,
     pil_image_to_data_uri,
 )
+from model_router import llm_call
 
 # Constants
 GEMINI_CONFIDENCE_SCORE = 0.9
@@ -299,27 +288,6 @@ def analyze_scene(
             'context': dict
         }
     """
-    if not LITELLM_AVAILABLE:
-        return {
-            'success': False,
-            'description': 'LiteLLM not available. Please install litellm package.',
-            'confidence': 0.0,
-            'detail_level': detail_level,
-            'focus': focus
-        }
-    
-    # Get API key
-    api_key = resolve_api_key(model_name, api_key)
-    
-    if not api_key:
-        return {
-            'success': False,
-            'description': 'API key not configured. Please set the matching provider key in the environment.',
-            'confidence': 0.0,
-            'detail_level': detail_level,
-            'focus': focus
-        }
-    
     try:
         # Get scene context
         context = get_scene_context(image)
@@ -333,24 +301,13 @@ def analyze_scene(
         
         # Build prompt
         prompt = build_scene_prompt(detail_level, focus, context)
-
-        model_name = resolve_model_name(model_name)
-
-        print(f"🤖 Using LiteLLM model: {model_name}")
         print(f"📋 Detail level: {detail_level}, Focus: {focus}")
         
-        response = litellm.completion(
-            model=model_name,
-            messages=[
-                {
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': prompt},
-                        {'type': 'image_url', 'image_url': {'url': image_data_uri}},
-                    ],
-                }
-            ],
-            api_key=api_key,
+        response = llm_call(
+            capability='image_analysis',
+            messages=[{'role': 'user', 'content': prompt}],
+            images=[image_data_uri],
+            metadata={'requested_model': model_name, 'api_key': api_key},
         )
         
         # Extract description
@@ -438,7 +395,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     focus = input_data.get('focus', 'general')
     style = input_data.get('style', 'narrative')
     api_key = input_data.get('api_key')
-    model = get_model_for_task(TaskType.IMAGE_ANALYSIS, input_data.get('model_override', ''))
+    model = input_data.get('model_override', '')
     
     # Analyze scene
     result = analyze_scene(

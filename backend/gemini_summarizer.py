@@ -1,45 +1,16 @@
 """
 Gemini-based summarization for Copilot session logs.
 """
-import os
 import logging
 from typing import List, Dict
-from litellm_utils import TaskType, get_model_for_task, resolve_api_key, extract_text
-
-try:
-    import litellm
-    LITELLM_AVAILABLE = True
-except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
+from litellm_utils import extract_text
+from model_router import get_selected_model, llm_call
 
 logger = logging.getLogger(__name__)
 
-# Lazy initialization - cache the resolved model name until first use
-_model = None
-_model_initialized = False
-
-
 def _get_model():
-    """Lazy initialization of LiteLLM model name."""
-    global _model, _model_initialized
-    
-    if _model_initialized:
-        return _model
-    
-    _model_initialized = True
-    
-    if not LITELLM_AVAILABLE:
-        logger.warning("litellm not found, summarization will be disabled")
-        return None
-    
-    try:
-        _model = get_model_for_task(TaskType.SUMMARIZATION)
-        logger.info(f"LiteLLM model initialized: {_model}")
-        return _model
-    except Exception as e:
-        logger.error(f"Failed to initialize LiteLLM model: {e}")
-        return None
+    """Return the routed model for summarization."""
+    return get_selected_model("summarization")
 
 
 async def summarize_entries(entries: List[Dict]) -> str:
@@ -84,10 +55,10 @@ Log entries:
 Summary (1-3 sentences describing what was accomplished):"""
     
     try:
-        response = litellm.completion(
-            model=model,
+        response = llm_call(
+            capability="text_parse",
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=resolve_api_key(model),
+            metadata={'requested_model': model},
         )
         summary = extract_text(response)
         
@@ -154,10 +125,10 @@ Log entries:
 Summary (one sentence only):"""
     
     try:
-        response = litellm.completion(
-            model=model,
+        response = llm_call(
+            capability="text_parse",
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=resolve_api_key(model),
+            metadata={'requested_model': model},
         )
         summary = extract_text(response)
         

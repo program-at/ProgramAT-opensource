@@ -38,22 +38,11 @@ try:
 except ImportError:
     litellm = None
     LITELLM_AVAILABLE = False
-    print("⚠️  litellm not installed. Install with: pip install litellm")
-
-
-# Building block functions from scene_description.py
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
     """
     Resize image efficiently while maintaining aspect ratio.
+    from model_router import llm_call
     
-    Args:
-        image: OpenCV image (numpy array)
-        max_size: Maximum dimensions (width, height)
-    
-    Returns:
-        Resized image if needed, original otherwise
-    """
-    height, width = image.shape[:2]
     max_width, max_height = max_size
     
     # Check if resize needed
@@ -160,25 +149,6 @@ def analyze_clothing(
             'detail_level': str
         }
     """
-    if not LITELLM_AVAILABLE:
-        return {
-            'success': False,
-            'description': 'LiteLLM not available. Please install litellm package.',
-            'confidence': 0.0,
-            'detail_level': detail_level
-        }
-    
-    # Get API key
-    api_key = resolve_api_key(model_name, api_key)
-    
-    if not api_key:
-        return {
-            'success': False,
-            'description': 'API key not configured. Please set the matching provider key in the environment.',
-            'confidence': 0.0,
-            'detail_level': detail_level
-        }
-    
     try:
         # Resize image if needed for efficiency
         processed_image = resize_image_if_needed(image, max_size=(1024, 1024))
@@ -189,24 +159,13 @@ def analyze_clothing(
         
         # Build prompt
         prompt = build_clothing_prompt(detail_level)
-
-        model_name = resolve_model_name(model_name)
-
-        print(f"🤖 Using LiteLLM model: {model_name}")
         print(f"📋 Detail level: {detail_level}")
         
-        response = litellm.completion(
-            model=model_name,
-            messages=[
-                {
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': prompt},
-                        {'type': 'image_url', 'image_url': {'url': image_data_uri}},
-                    ],
-                }
-            ],
-            api_key=api_key,
+        response = llm_call(
+            capability='image_analysis',
+            messages=[{'role': 'user', 'content': prompt}],
+            images=[image_data_uri],
+            metadata={'requested_model': model_name, 'api_key': api_key},
         )
         
         # Extract description
@@ -324,7 +283,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     
     detail_level = input_data.get('detail_level', 'standard')
     api_key = input_data.get('api_key')
-    model = get_model_for_task(TaskType.IMAGE_ANALYSIS, input_data.get('model_override', ''))
+    model = input_data.get('model_override', '')
     
     # Analyze clothing
     result = analyze_clothing(

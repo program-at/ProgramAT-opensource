@@ -1,0 +1,30 @@
+capabilities:
+  text_parse:
+    vision: 0
+    coding: 0
+    reasoning: 1
+    latency: 5
+
+  tool_retrieval:
+    vision: 0
+    coding: 0
+    reasoning: 2
+    latency: 5
+
+  image_analysis:
+    vision: 5
+    coding: 0
+    reasoning: 2
+    latency: 4
+
+  code_generation:
+    vision: 0
+    coding: 5
+    reasoning: 4
+    latency: 2
+
+  code_repair:
+    vision: 0
+    coding: 5
+    reasoning: 5
+    latency: 2
