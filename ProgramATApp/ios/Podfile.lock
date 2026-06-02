@@ -1811,7 +1811,7 @@ PODS:
     - React-RCTFBReactNativeSpec
     - ReactCommon/turbomodule/core
     - SocketRocket
-  - react-native-litert-lm (0.4.0):
+  - react-native-litert-lm (0.4.2):
     - boost
     - DoubleConversion
     - fast_float
@@ -2924,7 +2924,7 @@ SPEC CHECKSUMS:
   React-logger: 500f2fa5697d224e63c33d913c8a4765319e19bf
   React-Mapbuffer: 06d59c448da7e34eb05b3fb2189e12f6a30fec57
   React-microtasksnativemodule: d1ee999dc9052e23f6488b730fa2d383a4ea40e5
-  react-native-litert-lm: deda5f0679bfa85d30dd45b84236e12ce617ed4e
+  react-native-litert-lm: 4782f2dad5fb94ad01e4c66bdb14c902618e1602
   react-native-safe-area-context: befb5404eb8a16fdc07fa2bebab3568ecabcbb8a
   react-native-voice: 908a0eba96c8c3d643e4f98b7232c6557d0a6f9c
   React-NativeModulesApple: 46690a0fe94ec28fc6fc686ec797b911d251ded0
