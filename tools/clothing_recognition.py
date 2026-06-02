@@ -1,47 +1,23 @@
 """
 Clothing Category and Feature Recognition Tool
 
-AI-powered clothing recognition tool that identifies the most prominent clothing 
+AI-powered clothing recognition tool that identifies the most prominent clothing
 item and describes its visual features concisely for blind or low vision users.
-
-Features:
-- Focuses on the biggest/most prominent clothing item in the image
-- Identifies clothing categories (shirts, pants, shoes, dresses, jackets, etc.)
-- Describes colors, patterns, and styles concisely
-- Limited to 15 words for quick, audio-friendly output
-- Uses Google Gemini Vision API for accurate recognition
-
-Audio Output:
-- Returns natural language descriptions suitable for text-to-speech
-- Example: "Red t-shirt with graphic print."
 """
+
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
-from typing import Dict, Optional, Any
-import os
-import base64
-import io
 from PIL import Image
-from litellm_utils import (
-    TaskType,
-    get_model_for_task,
-    resolve_model_name,
-    resolve_api_key,
-    extract_text,
-    pil_image_to_data_uri,
-)
 
-try:
-    import litellm
-    LITELLM_AVAILABLE = True
-except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
+from litellm_utils import extract_text, pil_image_to_data_uri
+from model_router import llm_call
+
+
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
     """
     Resize image efficiently while maintaining aspect ratio.
-    from model_router import llm_call
     
     max_width, max_height = max_size
     

@@ -28,7 +28,6 @@ from dotenv import load_dotenv
 from model_router import get_selected_model, llm_call
 from litellm_utils import (
     extract_text,
-    pil_image_to_data_uri,
 )
 from module_manager import get_module_manager
 import copilot_db
@@ -2810,10 +2809,6 @@ def parse_issue_selection(transcript: str, available_issues: list, model: str = 
     """
     if not available_issues:
         return {'mode': 'create', 'issue_number': None, 'issue_title': None}
-
-    if not LITELLM_AVAILABLE:
-        logger.warning("LiteLLM not available, using simple issue selection fallback")
-        return {'mode': 'create', 'issue_number': None, 'issue_title': None}
     
     try:
         # Build list of available issues for the prompt
@@ -3027,26 +3022,6 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None, model:
     Returns:
         Dictionary with parsed fields including 'missing_fields' list
     """
-    if not LITELLM_AVAILABLE:
-        logger.warning("LiteLLM not available, using simple parsing")
-        existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        return {
-            'type': 'visual AT',
-            'title': transcript[:100],
-            'description': transcript,
-            'problem': '',
-            'solution': '',
-            'implementation_details': '',
-            'example_usage': '',
-            'custom_gpt': '',
-            'gpt_query': '',
-            'alternatives': '',
-            'additional': '',
-            'missing_fields': ['custom_gpt'],
-            'original_prompts': existing_prompts + [f"[{timestamp}] {transcript}"]
-        }
-    
     try:
         # Build context from existing data if this is a follow-up
         context_info = ""
