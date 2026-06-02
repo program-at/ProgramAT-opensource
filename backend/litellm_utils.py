@@ -1,3 +1,8 @@
+import io
+import base64
+from PIL import Image
+
+
 def extract_text(response) -> str:
     """Extract text content from a LiteLLM response object."""
     content = response.choices[0].message.content
