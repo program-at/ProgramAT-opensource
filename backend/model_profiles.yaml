@@ -1,6 +1,6 @@
 models:
   gemini_flash:
-    model: gemini/gemini-2.0-flash
+    model: gemini/gemini-3-flash-preview
     vision: 4
     coding: 3
     reasoning: 2
@@ -8,7 +8,7 @@ models:
     cost: 5
 
   claude:
-    model: anthropic/claude-3-5-sonnet
+    model: anthropic/claude-3-5-sonnet-20241022
     vision: 2
     coding: 5
     reasoning: 5
