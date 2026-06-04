@@ -312,7 +312,18 @@ class MetaWearablesModule: NSObject {
                 self.logPreSessionDiagnostics(wearables)
 
                 let deviceSelector = AutoDeviceSelector(wearables: wearables)
-                print("Creating session with selector: AutoDeviceSelector(wearables:)")
+                print("AutoDeviceSelector.activeDevice (immediately after init):",
+                      String(describing: deviceSelector.activeDevice))
+
+                // AutoDeviceSelector resolves activeDevice asynchronously. If we
+                // call createSession before it has settled it throws
+                // noEligibleDevice even though wearables.devices already holds a
+                // connected, compatible device. Wait for activeDevice to become
+                // non-nil (bounded by a timeout) before creating the session.
+                try await self.waitForActiveDevice(deviceSelector)
+
+                print("Creating session with selector: AutoDeviceSelector(wearables:), activeDevice:",
+                      String(describing: deviceSelector.activeDevice))
                 let session = try wearables.createSession(
                     deviceSelector: deviceSelector
                 )
@@ -532,6 +543,55 @@ class MetaWearablesModule: NSObject {
         print("name=\(device.nameOrId())")
         print("type=\(device.deviceType())")
         print("linkState=\(device.linkState)")
+    }
+
+    /// Waits for `AutoDeviceSelector` to resolve a non-nil `activeDevice`
+    /// before a session is created. Prints every `activeDeviceStream()` update
+    /// and gives up after a short timeout so it can never hang forever.
+    private func waitForActiveDevice(_ selector: AutoDeviceSelector) async throws {
+
+        if let activeDevice = selector.activeDevice {
+            print("AutoDeviceSelector.activeDevice already resolved:", String(describing: activeDevice))
+            return
+        }
+
+        print("AutoDeviceSelector.activeDevice is nil; waiting up to 5s for activeDeviceStream()...")
+
+        let streamTask = Task { () -> Bool in
+
+            for await activeDevice in selector.activeDeviceStream() {
+
+                if Task.isCancelled {
+                    return false
+                }
+
+                print("activeDeviceStream update:", String(describing: activeDevice))
+
+                if activeDevice != nil {
+                    return true
+                }
+            }
+
+            return false
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            streamTask.cancel()
+        }
+
+        let resolved = await streamTask.value
+        timeoutTask.cancel()
+
+        guard resolved else {
+            throw NSError(
+                domain: "MetaWearablesModule",
+                code: 1002,
+                userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for AutoDeviceSelector to resolve an active device."]
+            )
+        }
+
+        print("AutoDeviceSelector.activeDevice resolved:", String(describing: selector.activeDevice))
     }
 
     private func waitForPhysicalSessionStart(_ session: DeviceSession) async throws {
