@@ -61,6 +61,10 @@ class MetaWearablesModule: NSObject {
     private var rayBanStreamErrorToken: Any?
     private var rayBanFrameToken: Any?
     private var latestRayBanImage: UIImage?
+    // True from the moment a Ray-Ban stop is requested until the DeviceSession
+    // reaches STOPPED and resources are released. Guards against creating a new
+    // session before the old one finishes tearing down (sessionAlreadyExists).
+    private var rayBanStopping = false
 
     @objc
     func hello() {
@@ -424,6 +428,26 @@ class MetaWearablesModule: NSObject {
 
             do {
 
+                // Don't create a new session until the previous one has fully
+                // stopped, otherwise the SDK throws sessionAlreadyExists.
+                if self.rayBanStopping {
+                    reject(
+                        "ray_ban_stopping",
+                        "Ray-Ban session is still stopping, please try again",
+                        nil
+                    )
+                    return
+                }
+
+                if self.rayBanSession != nil {
+                    reject(
+                        "ray_ban_already_active",
+                        "Ray-Ban session is already active.",
+                        nil
+                    )
+                    return
+                }
+
                 let wearables = Wearables.shared
 
                 print("Starting Ray-Ban shared-pipeline stream")
@@ -548,13 +572,94 @@ class MetaWearablesModule: NSObject {
         ])
     }
 
-    /// Stops the Ray-Ban shared-pipeline stream. Releases the publisher tokens
-    /// (which unsubscribes the frame/state/error listeners) and drops the
-    /// session/stream references and the cached frame. There is no dedicated
-    /// DAT stop API used elsewhere in this project, so we intentionally rely on
-    /// token/reference release here.
+    /// Fully disconnects from the Ray-Ban camera: stops the stream, stops the
+    /// parent DeviceSession, and — per Meta's lifecycle docs — only releases
+    /// resources once SessionState reaches STOPPED. Resolves when the session
+    /// has stopped (or after a safety timeout) so the app can switch back to
+    /// the phone camera or start another tool without sessionAlreadyExists.
     @objc
-    func stopRayBanStream() {
+    func stopRayBanStream(
+        _ resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+
+        Task {
+
+            print("Ray-Ban stop requested")
+
+            // Idempotent: a stop already in flight will release resources.
+            if self.rayBanStopping {
+                print("Ray-Ban stop already in progress")
+                resolve(true)
+                return
+            }
+
+            guard let session = self.rayBanSession else {
+                // Nothing active — make sure state is clean and return.
+                self.releaseRayBanResources()
+                resolve(true)
+                return
+            }
+
+            self.rayBanStopping = true
+
+            // 1. Stop the stream first (async), if one exists.
+            if let stream = self.rayBanStream {
+                print("Ray-Ban stream stop requested")
+                await stream.stop()
+            }
+
+            // 2. Stop the parent DeviceSession.
+            print("Ray-Ban session stop requested")
+            session.stop()
+
+            // 3. Wait until the session actually reaches STOPPED before we
+            //    release anything (resources must outlive the teardown).
+            let reachedStopped = await self.waitForRayBanSessionStopped(session)
+
+            if reachedStopped {
+                print("Ray-Ban session reached STOPPED")
+            } else {
+                print("Ray-Ban session did not reach STOPPED before timeout; releasing anyway")
+            }
+
+            // 4. Release Ray-Ban resources now that the session has stopped.
+            self.releaseRayBanResources()
+            self.rayBanStopping = false
+
+            resolve(true)
+        }
+    }
+
+    /// Polls the session state until it reports STOPPED (string-matched, the
+    /// same approach used for the "started" wait), logging each state change.
+    /// Returns false if STOPPED isn't reached within the safety timeout.
+    private func waitForRayBanSessionStopped(_ session: DeviceSession) async -> Bool {
+
+        var lastState: String?
+
+        for _ in 0..<50 {  // up to ~5 seconds at 100ms intervals
+
+            let stateDescription = String(describing: session.state)
+
+            if stateDescription != lastState {
+                lastState = stateDescription
+                print("Ray-Ban session state changed:", stateDescription)
+            }
+
+            if stateDescription.lowercased().contains("stopped") {
+                return true
+            }
+
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+
+        return false
+    }
+
+    /// Releases all Ray-Ban session/stream resources and listener tokens.
+    /// Only call this after the session has reached STOPPED.
+    private func releaseRayBanResources() {
 
         self.rayBanFrameToken = nil
         self.rayBanStreamStateToken = nil
@@ -565,7 +670,7 @@ class MetaWearablesModule: NSObject {
         self.rayBanSession = nil
         self.latestRayBanImage = nil
 
-        print("Ray-Ban stream stopped (listeners released)")
+        print("Ray-Ban resources released")
     }
 
     private func handleRayBanFrame(_ frame: VideoFrame) {

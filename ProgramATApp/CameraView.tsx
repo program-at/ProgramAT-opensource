@@ -35,7 +35,7 @@ import { CameraSource } from './CameraSource';
 const { MetaWearablesModule } = NativeModules as {
   MetaWearablesModule?: {
     startRayBanStream?: () => Promise<boolean>;
-    stopRayBanStream?: () => void;
+    stopRayBanStream?: () => Promise<boolean>;
     captureRayBanFrame?: () => Promise<{ base64: string; width: number; height: number }>;
   };
 };
@@ -114,7 +114,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         frameIntervalRef.current = null;
       }
       if (cameraSourceRef.current === CameraSource.RayBan) {
-        MetaWearablesModule?.stopRayBanStream?.();
+        // Fire-and-forget on unmount; native still tears down to STOPPED.
+        MetaWearablesModule?.stopRayBanStream?.().catch(() => {});
       }
     };
   }, []);
@@ -368,11 +369,23 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
-  const stopCamera = () => {
+  const stopCamera = async () => {
     stopFrameStreaming();
+
+    // For Ray-Ban, Stop is a full disconnect: wait for the native session to
+    // reach STOPPED and release before we let the source switch back to phone.
     if (cameraSourceRef.current === CameraSource.RayBan) {
-      MetaWearablesModule?.stopRayBanStream?.();
+      setIsLoading(true);
+      setError('');
+      try {
+        await MetaWearablesModule?.stopRayBanStream?.();
+      } catch (err) {
+        console.warn('[CameraView] stopRayBanStream failed:', err);
+      } finally {
+        setIsLoading(false);
+      }
     }
+
     cameraSourceRef.current = CameraSource.Phone;
     setCameraSource(CameraSource.Phone);
     setIsCameraActive(false);
