@@ -12,6 +12,13 @@
 		761780ED2CA45674006654EE /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 761780EC2CA45674006654EE /* AppDelegate.swift */; };
 		76B008EA40ACF7CAAC882B03 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */; };
 		81AB9BB82411601600AC10FF /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */; };
+		AF31C7882FC88BAA0067CBB7 /* MWDATCamera in Frameworks */ = {isa = PBXBuildFile; productRef = AF31C7872FC88BAA0067CBB7 /* MWDATCamera */; };
+		AF31C78A2FC88BAA0067CBB7 /* MWDATCore in Frameworks */ = {isa = PBXBuildFile; productRef = AF31C7892FC88BAA0067CBB7 /* MWDATCore */; };
+		AF31C78C2FC88BAA0067CBB7 /* MWDATDisplay in Frameworks */ = {isa = PBXBuildFile; productRef = AF31C78B2FC88BAA0067CBB7 /* MWDATDisplay */; };
+		AF31C78E2FC88BAA0067CBB7 /* MWDATMockDevice in Frameworks */ = {isa = PBXBuildFile; productRef = AF31C78D2FC88BAA0067CBB7 /* MWDATMockDevice */; };
+		AF31C7902FC88BAA0067CBB7 /* MWDATMockDeviceTestClient in Frameworks */ = {isa = PBXBuildFile; productRef = AF31C78F2FC88BAA0067CBB7 /* MWDATMockDeviceTestClient */; };
+		AF31C7952FC88D950067CBB7 /* MetaWearablesModule.m in Sources */ = {isa = PBXBuildFile; fileRef = AF31C7942FC88D950067CBB7 /* MetaWearablesModule.m */; };
+		AFF2B5EF2FC890FC0033041B /* MetaWearablesModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF31C7912FC88C2F0067CBB7 /* MetaWearablesModule.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -19,10 +26,15 @@
 		13B07F961A680F5B00A75B9A /* ProgramATApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProgramATApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = ProgramATApp/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = ProgramATApp/Info.plist; sourceTree = "<group>"; };
+		A7C9E0E92FD0000000000001 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = ProgramATApp/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ProgramATApp/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ProgramATApp/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9882676676B182EFBB1A613D /* Pods-ProgramATApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ProgramATApp.debug.xcconfig"; path = "Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp.debug.xcconfig"; sourceTree = "<group>"; };
+		AF00EDC02FCE094000DBDEF5 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
+		AF31C7912FC88C2F0067CBB7 /* MetaWearablesModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetaWearablesModule.swift; sourceTree = "<group>"; };
+		AF31C7932FC88D950067CBB7 /* ProgramATApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ProgramATApp-Bridging-Header.h"; sourceTree = "<group>"; };
+		AF31C7942FC88D950067CBB7 /* MetaWearablesModule.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = MetaWearablesModule.m; sourceTree = "<group>"; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		FCA54BDBA6FB2AB46DDD0B58 /* libPods-ProgramATApp.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-ProgramATApp.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -33,6 +45,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				2F23323C8D39F15FC29F92CF /* libPods-ProgramATApp.a in Frameworks */,
+				AF31C7902FC88BAA0067CBB7 /* MWDATMockDeviceTestClient in Frameworks */,
+				AF31C78A2FC88BAA0067CBB7 /* MWDATCore in Frameworks */,
+				AF31C7882FC88BAA0067CBB7 /* MWDATCamera in Frameworks */,
+				AF31C78E2FC88BAA0067CBB7 /* MWDATMockDevice in Frameworks */,
+				AF31C78C2FC88BAA0067CBB7 /* MWDATDisplay in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -42,9 +59,11 @@
 		13B07FAE1A68108700A75B9A /* ProgramATApp */ = {
 			isa = PBXGroup;
 			children = (
+				AF00EDC02FCE094000DBDEF5 /* ProgramATApp.entitlements */,
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				761780EC2CA45674006654EE /* AppDelegate.swift */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
+				A7C9E0E92FD0000000000001 /* ProgramATApp.entitlements */,
 				81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */,
 				13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */,
 			);
@@ -70,11 +89,14 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				AF31C7912FC88C2F0067CBB7 /* MetaWearablesModule.swift */,
+				AF31C7942FC88D950067CBB7 /* MetaWearablesModule.m */,
 				13B07FAE1A68108700A75B9A /* ProgramATApp */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
 				BBD78D7AC51CEA395F1C20DB /* Pods */,
+				AF31C7932FC88D950067CBB7 /* ProgramATApp-Bridging-Header.h */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -131,7 +153,7 @@
 				LastUpgradeCheck = 1210;
 				TargetAttributes = {
 					13B07F861A680F5B00A75B9A = {
-						LastSwiftMigration = 1120;
+						LastSwiftMigration = 1630;
 					};
 				};
 			};
@@ -144,6 +166,9 @@
 				Base,
 			);
 			mainGroup = 83CBB9F61A601CBA00E9B192;
+			packageReferences = (
+				AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */,
+			);
 			productRefGroup = 83CBBA001A601CBA00E9B192 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -213,9 +238,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-resources-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -230,9 +259,13 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
+			inputPaths = (
+			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -247,6 +280,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				761780ED2CA45674006654EE /* AppDelegate.swift in Sources */,
+				AFF2B5EF2FC890FC0033041B /* MetaWearablesModule.swift in Sources */,
+				AF31C7952FC88D950067CBB7 /* MetaWearablesModule.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -260,12 +295,14 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 82C3N62J4P;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = ProgramATApp/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -280,6 +317,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = ProgramATApp;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_OBJC_BRIDGING_HEADER = "ProgramATApp-Bridging-Header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
@@ -293,11 +331,13 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 82C3N62J4P;
 				INFOPLIST_FILE = ProgramATApp/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -312,6 +352,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = "org.reactjs.native.example.$(PRODUCT_NAME:rfc1034identifier)";
 				PRODUCT_NAME = ProgramATApp;
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				SWIFT_OBJC_BRIDGING_HEADER = "ProgramATApp-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
 				VERSIONING_SYSTEM = "apple-generic";
 			};
@@ -483,6 +524,45 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/meta-wearables-dat-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.7.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AF31C7872FC88BAA0067CBB7 /* MWDATCamera */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCamera;
+		};
+		AF31C7892FC88BAA0067CBB7 /* MWDATCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATCore;
+		};
+		AF31C78B2FC88BAA0067CBB7 /* MWDATDisplay */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATDisplay;
+		};
+		AF31C78D2FC88BAA0067CBB7 /* MWDATMockDevice */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDevice;
+		};
+		AF31C78F2FC88BAA0067CBB7 /* MWDATMockDeviceTestClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF31C7862FC88BAA0067CBB7 /* XCRemoteSwiftPackageReference "meta-wearables-dat-ios" */;
+			productName = MWDATMockDeviceTestClient;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 83CBB9F71A601CBA00E9B192 /* Project object */;
 }
