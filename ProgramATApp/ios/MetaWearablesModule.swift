@@ -657,7 +657,7 @@ class MetaWearablesModule: NSObject {
     /// Logs everything DAT knows right before we ask `AutoDeviceSelector` to
     /// pick a device, including which device the selector is likely to choose
     /// and why each candidate does/doesn't qualify.
-    private func logPreSessionDiagnostics(_ wearables: Wearables) {
+    private func logPreSessionDiagnostics(_ wearables: any WearablesInterface) {
 
         print("========== PRE-SESSION DIAGNOSTICS ==========")
         print("selector: AutoDeviceSelector(wearables:)")
