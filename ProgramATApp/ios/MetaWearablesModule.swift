@@ -799,6 +799,13 @@ class MetaWearablesModule: NSObject {
             physicalCaptureResolved = true
             print("FRAME RECEIVED")
             print("Saved frame path:", fileURL.path)
+
+            // Also save a copy to the user's Photos library (Camera Roll). This
+            // requests Photos permission if needed and logs success/failure plus
+            // the returned local identifier. The Documents copy above is kept so
+            // the resolved file path stays valid for internal use.
+            self.saveTestImageToPhotos(jpegData)
+
             resolve(fileURL.path)
         } catch {
             print("Failed to save physical frame:", error)

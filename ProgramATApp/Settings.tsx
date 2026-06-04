@@ -14,6 +14,8 @@ import {
   Alert,
   Switch,
   TextInput,
+  ActivityIndicator,
+  NativeModules,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -42,6 +44,23 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
   const [serverDefaultModel, setServerDefaultModel] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
+
+  // Loading state for the physical-device smoke test button.
+  const [isPhysicalDeviceLoading, setIsPhysicalDeviceLoading] = useState(false);
+
+  // Meta / Ray-Ban DAT debug bridge (native iOS module).
+  const { MetaWearablesModule } = NativeModules as {
+    MetaWearablesModule?: {
+      createMockDevice?: () => void | Promise<void>;
+      useBackCameraFeed?: () => void | Promise<void>;
+      requestDoorRecognitionTest?: (backendURLString: string) => void | Promise<void>;
+      startMockCameraStream?: () => void | Promise<void>;
+      startFirstFrameCapture?: () => Promise<string>;
+      debugRegistration?: () => void | Promise<void>;
+      listDevicesNow?: () => void | Promise<void>;
+      debugWearablesState?: () => void | Promise<void>;
+    };
+  };
 
   useEffect(() => {
     setIsConnected(WebSocketService.isConnected());
@@ -202,6 +221,159 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
       } finally {
         setIsConnecting(false);
       }
+    }
+  };
+
+  // --- Meta / Ray-Ban DAT debug handlers (moved here from the Tools screen) ---
+
+  const handleCombinedMockTest = async () => {
+    try {
+      if (!MetaWearablesModule) {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'MetaWearablesModule is not available. The native module may not be registered yet.'
+        );
+        return;
+      }
+
+      const websocketServerUrl = WebSocketService.getServerUrl().trim();
+      if (!websocketServerUrl) {
+        Alert.alert(
+          'Meta Wearables Bridge',
+          'Set the backend server URL above first.'
+        );
+        return;
+      }
+
+      const backendHttpUrl = websocketServerUrl
+        .replace(/^wss:\/\//, 'https://')
+        .replace(/^ws:\/\//, 'http://');
+
+      if (typeof MetaWearablesModule.requestDoorRecognitionTest === 'function') {
+        await Promise.resolve(MetaWearablesModule.requestDoorRecognitionTest(backendHttpUrl));
+        console.log('[Settings] MetaWearablesModule.requestDoorRecognitionTest() armed');
+      } else {
+        Alert.alert('Meta Wearables Bridge', 'requestDoorRecognitionTest() is not available.');
+        return;
+      }
+
+      if (typeof MetaWearablesModule.createMockDevice === 'function') {
+        await Promise.resolve(MetaWearablesModule.createMockDevice());
+        console.log('[Settings] MetaWearablesModule.createMockDevice() succeeded');
+      } else {
+        Alert.alert('Meta Wearables Bridge', 'createMockDevice() is not available.');
+        return;
+      }
+
+      // Aliased to avoid the eslint react-hooks/rules-of-hooks false positive
+      // on the `use`-prefixed native method name.
+      const backCameraFeed = MetaWearablesModule.useBackCameraFeed;
+      if (typeof backCameraFeed === 'function') {
+        await Promise.resolve(backCameraFeed.call(MetaWearablesModule));
+        console.log('[Settings] MetaWearablesModule.useBackCameraFeed() succeeded');
+      }
+
+      if (typeof MetaWearablesModule.debugWearablesState === 'function') {
+        await Promise.resolve(MetaWearablesModule.debugWearablesState());
+        console.log('[Settings] MetaWearablesModule.debugWearablesState() succeeded');
+      }
+
+      if (typeof MetaWearablesModule.listDevicesNow === 'function') {
+        await Promise.resolve(MetaWearablesModule.listDevicesNow());
+        console.log('[Settings] MetaWearablesModule.listDevicesNow() succeeded');
+      }
+
+      if (typeof MetaWearablesModule.startMockCameraStream === 'function') {
+        await Promise.resolve(MetaWearablesModule.startMockCameraStream());
+        console.log('[Settings] MetaWearablesModule.startMockCameraStream() succeeded');
+      } else {
+        Alert.alert('Meta Wearables Bridge', 'startMockCameraStream() is not available.');
+        return;
+      }
+
+      Alert.alert('Meta Wearables Bridge', 'mock test flow started');
+    } catch (err) {
+      console.error('[Settings] Combined mock test failed:', err);
+      Alert.alert(
+        'Meta Wearables Bridge',
+        'mock test flow failed. Check the native logs for details.'
+      );
+    }
+  };
+
+  // Bundle: physical device smoke test. Arms the door-recognition backend URL
+  // (so captured frames can be uploaded), then runs startFirstFrameCapture().
+  const handlePhysicalSmokeTest = async () => {
+    try {
+      if (!MetaWearablesModule) {
+        throw new Error('MetaWearablesModule is not available yet.');
+      }
+
+      if (typeof MetaWearablesModule.startFirstFrameCapture !== 'function') {
+        throw new Error('startFirstFrameCapture() is not available.');
+      }
+
+      const websocketServerUrl = WebSocketService.getServerUrl().trim();
+      if (websocketServerUrl &&
+          typeof MetaWearablesModule.requestDoorRecognitionTest === 'function') {
+        const backendHttpUrl = websocketServerUrl
+          .replace(/^wss:\/\//, 'https://')
+          .replace(/^ws:\/\//, 'http://');
+        await Promise.resolve(MetaWearablesModule.requestDoorRecognitionTest(backendHttpUrl));
+        console.log('[Settings] MetaWearablesModule.requestDoorRecognitionTest() armed');
+      }
+
+      setIsPhysicalDeviceLoading(true);
+
+      const savedPath = await Promise.resolve(MetaWearablesModule.startFirstFrameCapture());
+      Alert.alert('Meta Wearables Bridge', `Saved frame to Photos. Path: ${savedPath}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    } finally {
+      setIsPhysicalDeviceLoading(false);
+    }
+  };
+
+  const handleUseBackCameraFeed = async () => {
+    try {
+      // Aliased to avoid the eslint react-hooks/rules-of-hooks false positive
+      // on the `use`-prefixed native method name.
+      const backCameraFeed = MetaWearablesModule?.useBackCameraFeed;
+      if (typeof backCameraFeed !== 'function') {
+        throw new Error('useBackCameraFeed() is not available.');
+      }
+      await Promise.resolve(backCameraFeed.call(MetaWearablesModule));
+      console.log('[Settings] MetaWearablesModule.useBackCameraFeed() succeeded');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    }
+  };
+
+  const handleStartMockCameraStream = async () => {
+    try {
+      if (typeof MetaWearablesModule?.startMockCameraStream !== 'function') {
+        throw new Error('startMockCameraStream() is not available.');
+      }
+      await Promise.resolve(MetaWearablesModule.startMockCameraStream());
+      console.log('[Settings] MetaWearablesModule.startMockCameraStream() succeeded');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    }
+  };
+
+  const handleListDevices = async () => {
+    try {
+      if (typeof MetaWearablesModule?.listDevicesNow !== 'function') {
+        throw new Error('listDevicesNow() is not available.');
+      }
+      await Promise.resolve(MetaWearablesModule.listDevicesNow());
+      console.log('[Settings] MetaWearablesModule.listDevicesNow() succeeded');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
     }
   };
 
@@ -480,6 +652,72 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
             </View>
             <Text style={[styles.chevron, { color: theme.textSecondary }]}>›</Text>
           </Pressable>
+        </View>
+
+        {/* Meta / Ray-Ban Debug Section */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]} accessibilityRole="header">Meta / Ray-Ban Debug</Text>
+
+          <View style={[styles.settingCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[styles.settingDescription, styles.debugDescription, { color: theme.textSecondary }]}>
+              Developer tools for testing the Meta Ray-Ban DAT bridge. Captured physical-device frames are saved to your Photos library.
+            </Text>
+
+            <TouchableOpacity
+              style={[styles.debugButton, { backgroundColor: theme.primary }]}
+              onPress={handlePhysicalSmokeTest}
+              disabled={isPhysicalDeviceLoading}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Connect physical device"
+              accessibilityHint="Starts the Meta DAT physical device smoke test and saves the first frame to Photos">
+              {isPhysicalDeviceLoading ? (
+                <ActivityIndicator size="small" color="#fff" accessible={false} />
+              ) : (
+                <Text style={styles.debugButtonText}>Connect Physical Device (P)</Text>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.debugButton, { backgroundColor: theme.info }]}
+              onPress={handleUseBackCameraFeed}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Use back camera feed"
+              accessibilityHint="Switches the mock device to its back camera feed">
+              <Text style={styles.debugButtonText}>Back Camera (B)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.debugButton, { backgroundColor: theme.info }]}
+              onPress={handleStartMockCameraStream}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Start mock camera stream"
+              accessibilityHint="Starts the mock device camera stream">
+              <Text style={styles.debugButtonText}>Mock Camera (M)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.debugButton, { backgroundColor: theme.info }]}
+              onPress={handleListDevices}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="List devices"
+              accessibilityHint="Logs all currently known Meta DAT devices to the native console">
+              <Text style={styles.debugButtonText}>List Devices (D)</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.debugButton, styles.debugButtonLast, { backgroundColor: theme.textSecondary }]}
+              onPress={handleCombinedMockTest}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Run mock device test flow"
+              accessibilityHint="Creates the mock device, switches to back camera, lists devices, and starts the mock stream">
+              <Text style={styles.debugButtonText}>Mock Test Flow (T)</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {/* App Info Section */}
@@ -777,5 +1015,23 @@ const styles = StyleSheet.create({
   chevron: {
     fontSize: 24,
     fontWeight: '400',
+  },
+  debugButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  debugButtonLast: {
+    marginBottom: 0,
+  },
+  debugButtonText: {
+    color: '#fff',
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  debugDescription: {
+    marginBottom: 12,
   },
 });
