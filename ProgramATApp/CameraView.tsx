@@ -375,7 +375,9 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
-  const handleConnectPhysicalDevice = async () => {
+  // Bundle: physical device smoke test. Arms the door-recognition backend URL
+  // (so captured frames can be uploaded), then runs startFirstFrameCapture().
+  const handlePhysicalSmokeTest = async () => {
     try {
       if (!MetaWearablesModule) {
         throw new Error('MetaWearablesModule is not available yet.');
@@ -383,6 +385,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
 
       if (typeof MetaWearablesModule.startFirstFrameCapture !== 'function') {
         throw new Error('startFirstFrameCapture() is not available.');
+      }
+
+      const websocketServerUrl = WebSocketService.getServerUrl().trim();
+      if (websocketServerUrl &&
+          typeof MetaWearablesModule.requestDoorRecognitionTest === 'function') {
+        const backendHttpUrl = websocketServerUrl
+          .replace(/^wss:\/\//, 'https://')
+          .replace(/^ws:\/\//, 'http://');
+        await Promise.resolve(MetaWearablesModule.requestDoorRecognitionTest(backendHttpUrl));
+        console.log('[CameraView] MetaWearablesModule.requestDoorRecognitionTest() armed');
       }
 
       setIsPhysicalDeviceLoading(true);
@@ -402,18 +414,42 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
-  const handleDebugRegistration = async () => {
+  const handleUseBackCameraFeed = async () => {
     try {
-      if (!MetaWearablesModule) {
-        throw new Error('MetaWearablesModule is not available yet.');
+      // Aliased to avoid the eslint react-hooks/rules-of-hooks false positive
+      // on the `use`-prefixed native method name.
+      const backCameraFeed = MetaWearablesModule?.useBackCameraFeed;
+      if (typeof backCameraFeed !== 'function') {
+        throw new Error('useBackCameraFeed() is not available.');
       }
+      await Promise.resolve(backCameraFeed.call(MetaWearablesModule));
+      console.log('[CameraView] MetaWearablesModule.useBackCameraFeed() succeeded');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    }
+  };
 
-      if (typeof MetaWearablesModule.debugRegistration !== 'function') {
-        throw new Error('debugRegistration() is not available.');
+  const handleStartMockCameraStream = async () => {
+    try {
+      if (typeof MetaWearablesModule?.startMockCameraStream !== 'function') {
+        throw new Error('startMockCameraStream() is not available.');
       }
+      await Promise.resolve(MetaWearablesModule.startMockCameraStream());
+      console.log('[CameraView] MetaWearablesModule.startMockCameraStream() succeeded');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      Alert.alert('Meta Wearables Bridge', message);
+    }
+  };
 
-      await Promise.resolve(MetaWearablesModule.debugRegistration());
-      Alert.alert('Meta Wearables Bridge', 'Debug registration started');
+  const handleListDevices = async () => {
+    try {
+      if (typeof MetaWearablesModule?.listDevicesNow !== 'function') {
+        throw new Error('listDevicesNow() is not available.');
+      }
+      await Promise.resolve(MetaWearablesModule.listDevicesNow());
+      console.log('[CameraView] MetaWearablesModule.listDevicesNow() succeeded');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       Alert.alert('Meta Wearables Bridge', message);
@@ -481,7 +517,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         
         <View style={styles.buttonContainer} accessible={false}>
           <TouchableOpacity
-            style={[styles.button, styles.testButton]}
+            style={[styles.button, styles.compactButton, styles.testButton]}
             onPress={handleCombinedMockTest}
             accessible={true}
             accessibilityRole="button"
@@ -491,8 +527,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.button, styles.physicalButton]}
-            onPress={handleConnectPhysicalDevice}
+            style={[styles.button, styles.compactButton, styles.physicalButton]}
+            onPress={handlePhysicalSmokeTest}
             disabled={isPhysicalDeviceLoading}
             accessible={true}
             accessibilityRole="button"
@@ -501,22 +537,38 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
             {isPhysicalDeviceLoading ? (
               <ActivityIndicator size="small" color="#fff" accessible={false} />
             ) : (
-              <Text style={styles.buttonText} numberOfLines={2}>
-                Connect Physical Device
-              </Text>
+              <Text style={styles.buttonText}>P</Text>
             )}
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.button, styles.debugButton]}
-            onPress={handleDebugRegistration}
+            style={[styles.button, styles.compactButton, styles.mockButton]}
+            onPress={handleUseBackCameraFeed}
             accessible={true}
             accessibilityRole="button"
-            accessibilityLabel="Debug Registration"
-            accessibilityHint="Logs DAT config and registration state without starting camera streaming">
-            <Text style={styles.buttonText} numberOfLines={2}>
-              Debug Registration
-            </Text>
+            accessibilityLabel="Use Back Camera Feed"
+            accessibilityHint="Switches the mock device to its back camera feed">
+            <Text style={styles.buttonText}>B</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.compactButton, styles.mockButton]}
+            onPress={handleStartMockCameraStream}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="Start Mock Camera Stream"
+            accessibilityHint="Starts the mock device camera stream">
+            <Text style={styles.buttonText}>M</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.button, styles.compactButton, styles.debugButton]}
+            onPress={handleListDevices}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel="List Devices"
+            accessibilityHint="Logs all currently known Meta DAT devices to the native console">
+            <Text style={styles.buttonText}>D</Text>
           </TouchableOpacity>
 
           {!isCameraActive ? (
@@ -631,6 +683,10 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     minWidth: 60,
     alignItems: 'center',
+  },
+  compactButton: {
+    paddingHorizontal: 10,
+    minWidth: 36,
   },
   startButton: {
     backgroundColor: '#4CAF50',

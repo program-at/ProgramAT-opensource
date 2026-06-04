@@ -244,16 +244,29 @@ class MetaWearablesModule: NSObject {
                 physicalCaptureResolved = false
 
                 print("Starting physical device smoke test")
-                self.logWearablesState("registrationState", wearables.registrationState)
+                self.logRegistrationState("registrationState", wearables.registrationState)
 
                 physicalRegistrationTask?.cancel()
                 physicalRegistrationTask = Task { [weak self] in
 
                     guard let self else { return }
 
-                    while !Task.isCancelled {
-                        self.logWearablesState("registrationState", wearables.registrationState)
-                        try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    var lastRawValue: String?
+
+                    for await state in wearables.registrationStateStream() {
+
+                        if Task.isCancelled {
+                            return
+                        }
+
+                        let rawValue = (state as? any RawRepresentable)
+                            .map { String(describing: $0.rawValue) }
+
+                        // Only log when the state actually changes.
+                        if rawValue != lastRawValue {
+                            lastRawValue = rawValue
+                            self.logRegistrationState("registrationState changed", state)
+                        }
                     }
                 }
 
@@ -268,7 +281,11 @@ class MetaWearablesModule: NSObject {
                             return
                         }
 
-                        print("DEVICES STREAM:", devices)
+                        print("DEVICES STREAM count:", devices.count)
+
+                        for deviceIdentifier in devices {
+                            self.logDeviceDetails("devicesStream", deviceIdentifier)
+                        }
                     }
                 }
 
@@ -289,7 +306,13 @@ class MetaWearablesModule: NSObject {
                     }
                 }
 
+                // Diagnostics: dump every device DAT knows about and explain
+                // which one AutoDeviceSelector is likely to pick (or why none
+                // qualify) right before we attempt to create the session.
+                self.logPreSessionDiagnostics(wearables)
+
                 let deviceSelector = AutoDeviceSelector(wearables: wearables)
+                print("Creating session with selector: AutoDeviceSelector(wearables:)")
                 let session = try wearables.createSession(
                     deviceSelector: deviceSelector
                 )
@@ -384,7 +407,7 @@ class MetaWearablesModule: NSObject {
                     return
                 }
 
-                self.logWearablesState("REGISTRATION STATE STREAM", state)
+                self.logRegistrationState("REGISTRATION STATE STREAM", state)
             }
         }
     }
@@ -411,16 +434,13 @@ class MetaWearablesModule: NSObject {
 
                 for deviceIdentifier in deviceIdentifiers {
 
+                    self.logDeviceDetails("mock devicesStream", deviceIdentifier)
+
                     guard let device =
                         wearables.deviceForIdentifier(deviceIdentifier)
                     else {
                         continue
                     }
-
-                    print(
-                        "Device compatibility:",
-                        device.compatibility()
-                    )
 
                     guard String(describing: device.compatibility()) == "compatible" else {
                         continue
@@ -573,6 +593,7 @@ class MetaWearablesModule: NSObject {
     private func logWearablesError(_ label: String, _ error: Error) {
 
         print("\(label): error = \(error)")
+        print("\(label): String(describing:) = \(String(describing: error))")
         print("\(label): error.localizedDescription = \(error.localizedDescription)")
         print("\(label): error.mirror = \(Mirror(reflecting: error))")
 
@@ -583,6 +604,98 @@ class MetaWearablesModule: NSObject {
                 print("\(label): error.child[\(index)] \(childLabel) = \(String(describing: child.value))")
             }
         }
+    }
+
+    /// Standardized, detailed dump of a single DAT device. Used everywhere
+    /// `devicesStream()` (or `wearables.devices`) is observed so we can see
+    /// exactly what DAT considers eligible for a session.
+    private func logDeviceDetails(_ context: String, _ deviceIdentifier: String) {
+
+        let wearables = Wearables.shared
+
+        print("========== DEVICE ==========")
+        print("context: \(context)")
+        print("id: \(deviceIdentifier)")
+
+        guard let device = wearables.deviceForIdentifier(deviceIdentifier) else {
+            print("type: <device lookup failed>")
+            print("linkState: <unknown>")
+            print("compatibility: <unknown>")
+            print("displayName: <unknown>")
+            print("============================")
+            return
+        }
+
+        print("type: \(String(describing: device.deviceType()))")
+        print("linkState: \(String(describing: device.linkState))")
+        print("compatibility: \(String(describing: device.compatibility()))")
+        print("displayName: \(device.nameOrId())")
+
+        let mirror = Mirror(reflecting: device)
+        for child in mirror.children {
+            if let childLabel = child.label {
+                print("prop \(childLabel): \(String(describing: child.value))")
+            }
+        }
+
+        print("============================")
+    }
+
+    /// Logs a registration state alongside its raw value so the numeric
+    /// `registrationState` (e.g. 3 == registered) is always visible.
+    private func logRegistrationState(_ label: String, _ state: Any) {
+
+        print("\(label): state = \(String(describing: state))")
+
+        if let rawRepresentable = state as? any RawRepresentable {
+            print("\(label): rawValue = \(String(describing: rawRepresentable.rawValue))")
+        } else {
+            print("\(label): rawValue = <not RawRepresentable>")
+        }
+    }
+
+    /// Logs everything DAT knows right before we ask `AutoDeviceSelector` to
+    /// pick a device, including which device the selector is likely to choose
+    /// and why each candidate does/doesn't qualify.
+    private func logPreSessionDiagnostics(_ wearables: Wearables) {
+
+        print("========== PRE-SESSION DIAGNOSTICS ==========")
+        print("selector: AutoDeviceSelector(wearables:)")
+
+        logRegistrationState("registrationState", wearables.registrationState)
+
+        let deviceIds = wearables.devices
+        print("available device count: \(deviceIds.count)")
+
+        var likelySelectedId: String?
+
+        for deviceId in deviceIds {
+
+            logDeviceDetails("pre-session", deviceId)
+
+            guard let device = wearables.deviceForIdentifier(deviceId) else {
+                print("MATCH \(deviceId): device lookup failed -> NOT eligible")
+                continue
+            }
+
+            let compatibility = String(describing: device.compatibility())
+            let linkState = String(describing: device.linkState)
+            let isCompatible = compatibility.lowercased() == "compatible"
+
+            print("MATCH \(deviceId): compatibility=\(compatibility) linkState=\(linkState) compatible=\(isCompatible)")
+
+            if isCompatible && likelySelectedId == nil {
+                likelySelectedId = deviceId
+            }
+        }
+
+        if let likelySelectedId {
+            print("AutoDeviceSelector would likely select: \(likelySelectedId)")
+        } else {
+            print("AutoDeviceSelector would find NO eligible device (none compatible)")
+        }
+
+        print("=============================================")
     }
 
     private func handleFirstPhysicalFrame(
