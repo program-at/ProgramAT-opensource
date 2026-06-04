@@ -274,6 +274,61 @@ Since you are working from a fork of this repository, GitHub-related features ma
 - **Rich audio output** — tools can return speech, beeps, haptic vibration, earcons, and more via the AudioOutputService
 - **Speech-to-Text input** — voice input for follow-up questions using `@react-native-voice/voice` and OS-level dictation
 
+## Meta Ray-Ban Integration (iOS)
+
+ProgramAT can use **Meta Ray-Ban** glasses as a camera source instead of the phone
+camera. Streaming tools use the glasses' live frames and take-photo tools use a
+captured frame; results are spoken back through the same audio path as the phone
+camera. This integration is **iOS-only** and built on Meta's Device Access Toolkit
+(DAT).
+
+### Setup (developers)
+
+- **SDK** — The Meta Wearables DAT SDK is added as a Swift Package
+  (`https://github.com/facebook/meta-wearables-dat-ios`), providing the `MWDATCore`
+  and `MWDATCamera` modules. Xcode resolves it automatically on build via
+  `ProgramATApp.xcworkspace`.
+- **Info.plist** — The `ios/ProgramATApp/Info.plist` must contain:
+  - An `MWDAT` dictionary with your `MetaAppID`, `ClientToken`, `TeamID`,
+    `AppLinkURLScheme`, and `DAMEnabled` — obtained when you register your app in the
+    Meta developer console (DAT).
+  - A matching `CFBundleURLSchemes` entry for the `AppLinkURLScheme` (so Meta AI can
+    redirect back to the app after authorization).
+  - `NSCameraUsageDescription` and `NSBluetoothAlwaysUsageDescription` permission
+    strings.
+- **Build** — Start Metro and the backend as usual (see *Running the Application*).
+  Native module changes require a full `npm run ios` rebuild, not just a Metro
+  reload.
+
+### First-time setup (users)
+
+1. Install the **Meta AI** app and pair your Meta Ray-Ban glasses with it.
+2. Open **ProgramAT** and go to the **Settings** tab.
+3. Tap **Register Device** and complete the Meta AI authorization flow.
+4. Grant the requested camera and Bluetooth permissions.
+
+Registration is a one-time step — its state is persisted by the Meta SDK, so you do
+not need to register again when switching tools or camera sources.
+
+### Normal usage
+
+1. Open the **Tools** tab and select a tool.
+2. In the camera view, choose **Phone** or **Ray-Ban** as the camera source.
+3. Use the tool normally:
+   - Streaming tools use live Ray-Ban frames.
+   - Take-photo tools use a captured Ray-Ban frame.
+   - Results are spoken back through the existing audio output path.
+
+### Stopping / switching
+
+- Press **Stop** before switching tools or camera sources.
+- Leaving the Tool Runner (Back to Tools, or switching tabs) also stops the active
+  stream and releases the Ray-Ban session automatically.
+- Switching tools or sources does **not** require re-registration.
+
+> **Re-registration** is only needed if you unpair the glasses in Meta AI, reinstall
+> the app, or the Meta authorization is revoked or expires.
+
 ## Usage Modes
 
 ### Development Mode (GitHub Integration)
