@@ -48,6 +48,20 @@ class MetaWearablesModule: NSObject {
     private var pendingDoorRecognitionTest = false
     private var pendingDoorRecognitionBackendURL: URL?
 
+    // Ray-Ban shared-pipeline streaming. This powers the Tools camera when the
+    // user selects "Meta Ray-Ban" as their camera source. It is independent of
+    // the debug `startFirstFrameCapture` path: instead of saving/uploading, it
+    // continuously stores the most recent frame so JS can poll it and feed it
+    // through the same WebSocket frame pipeline the phone camera uses.
+    private var rayBanSession: DeviceSession?
+    private var rayBanStream: MWDATCamera.Stream?
+    private var rayBanSessionStateToken: Any?
+    private var rayBanSessionErrorToken: Any?
+    private var rayBanStreamStateToken: Any?
+    private var rayBanStreamErrorToken: Any?
+    private var rayBanFrameToken: Any?
+    private var latestRayBanImage: UIImage?
+
     @objc
     func hello() {
         print("Hello bridge works")
@@ -392,6 +406,176 @@ class MetaWearablesModule: NSObject {
                 )
             }
         }
+    }
+
+    // MARK: - Ray-Ban shared camera pipeline
+
+    /// Starts a continuous Ray-Ban camera stream for use as a general camera
+    /// source by the Tools pipeline. Each decoded frame is stored as the latest
+    /// frame; JS polls `captureRayBanFrame` to feed it through the normal
+    /// WebSocket frame pipeline. Resolves once the stream start is requested.
+    @objc
+    func startRayBanStream(
+        _ resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+
+        Task {
+
+            do {
+
+                let wearables = Wearables.shared
+
+                print("Starting Ray-Ban shared-pipeline stream")
+                self.logRegistrationState("registrationState", wearables.registrationState)
+
+                let permissionStatus = try await wearables.checkPermissionStatus(.camera)
+                print("Camera permission status:", permissionStatus)
+
+                if String(describing: permissionStatus).lowercased() != "granted" {
+                    let requestedStatus = try await wearables.requestPermission(.camera)
+                    print("Camera permission requested:", requestedStatus)
+
+                    guard String(describing: requestedStatus).lowercased() == "granted" else {
+                        reject(
+                            "camera_permission_denied",
+                            "Camera permission was not granted.",
+                            nil
+                        )
+                        return
+                    }
+                }
+
+                self.logPreSessionDiagnostics(wearables)
+
+                let deviceSelector = AutoDeviceSelector(wearables: wearables)
+                try await self.waitForActiveDevice(deviceSelector)
+
+                let session = try wearables.createSession(deviceSelector: deviceSelector)
+                self.rayBanSession = session
+
+                self.rayBanSessionStateToken = session.statePublisher.listen { state in
+                    self.logWearablesState("RAYBAN SESSION STATE", state)
+                }
+
+                self.rayBanSessionErrorToken = session.errorPublisher.listen { error in
+                    self.logWearablesError("RAYBAN SESSION ERROR", error)
+                }
+
+                try session.start()
+                print("Ray-Ban session start requested")
+
+                try await self.waitForPhysicalSessionStart(session)
+
+                let config = StreamConfiguration(
+                    videoCodec: .raw,
+                    resolution: .low,
+                    frameRate: 15
+                )
+
+                guard let stream = try session.addStream(config: config) else {
+                    reject(
+                        "stream_creation_failed",
+                        "Unable to create a Meta DAT stream.",
+                        nil
+                    )
+                    return
+                }
+
+                self.rayBanStream = stream
+
+                self.rayBanStreamStateToken = stream.statePublisher.listen { state in
+                    self.logWearablesState("RAYBAN STREAM STATE", state)
+                }
+
+                self.rayBanStreamErrorToken = stream.errorPublisher.listen { error in
+                    self.logWearablesError("RAYBAN STREAM ERROR", error)
+                }
+
+                self.rayBanFrameToken = stream.videoFramePublisher.listen { [weak self] frame in
+                    self?.handleRayBanFrame(frame)
+                }
+
+                await stream.start()
+                print("Ray-Ban stream start requested")
+
+                resolve(true)
+
+            } catch {
+                self.logWearablesError("startRayBanStream failed", error)
+                reject(
+                    "start_ray_ban_stream_failed",
+                    String(describing: error),
+                    error
+                )
+            }
+        }
+    }
+
+    /// Returns the most recent Ray-Ban frame as a JPEG data URI plus its
+    /// dimensions, in the exact shape CameraView's phone path returns so tools
+    /// cannot tell the two sources apart.
+    @objc
+    func captureRayBanFrame(
+        _ resolve: @escaping RCTPromiseResolveBlock,
+        rejecter reject: @escaping RCTPromiseRejectBlock
+    ) {
+
+        guard let image = self.latestRayBanImage else {
+            reject(
+                "no_ray_ban_frame",
+                "No Ray-Ban frame is available yet.",
+                nil
+            )
+            return
+        }
+
+        guard let jpegData = image.jpegData(compressionQuality: 0.8) else {
+            reject(
+                "ray_ban_frame_encode_failed",
+                "Failed to encode the latest Ray-Ban frame.",
+                nil
+            )
+            return
+        }
+
+        let base64 = jpegData.base64EncodedString()
+
+        resolve([
+            "base64": "data:image/jpeg;base64,\(base64)",
+            "width": Int(image.size.width),
+            "height": Int(image.size.height),
+        ])
+    }
+
+    /// Stops the Ray-Ban shared-pipeline stream. Releases the publisher tokens
+    /// (which unsubscribes the frame/state/error listeners) and drops the
+    /// session/stream references and the cached frame. There is no dedicated
+    /// DAT stop API used elsewhere in this project, so we intentionally rely on
+    /// token/reference release here.
+    @objc
+    func stopRayBanStream() {
+
+        self.rayBanFrameToken = nil
+        self.rayBanStreamStateToken = nil
+        self.rayBanStreamErrorToken = nil
+        self.rayBanSessionStateToken = nil
+        self.rayBanSessionErrorToken = nil
+        self.rayBanStream = nil
+        self.rayBanSession = nil
+        self.latestRayBanImage = nil
+
+        print("Ray-Ban stream stopped (listeners released)")
+    }
+
+    private func handleRayBanFrame(_ frame: VideoFrame) {
+
+        guard let image = frame.makeUIImage() else {
+            print("Failed to create UIImage from Ray-Ban frame")
+            return
+        }
+
+        self.latestRayBanImage = image
     }
 
     @objc
