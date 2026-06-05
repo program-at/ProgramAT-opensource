@@ -500,6 +500,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
             'exec_globals_base': {
                 '__builtins__': __builtins__,
                 '__file__': str(Path(__file__).parent.parent / 'tools' / 'dynamic_tool.py'),
+                'llm_call': llm_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -2090,6 +2091,48 @@ def get_local_tools_for_pr_merge() -> list:
     
     logger.info(f"Found {len(local_tools)} local tools for PR merging")
     return local_tools
+
+
+def resolve_tool_code_for_execution(tool_name: str, tool_path: str = '', client_tool_code: str = '') -> str:
+    """Prefer the server's current local tool code over stale client-sent code."""
+    candidates = []
+
+    raw_path = (tool_path or '').strip()
+    if raw_path:
+        path_name = Path(raw_path).name
+        if path_name.endswith('.py'):
+            candidates.append(TOOLS_DIR / path_name)
+
+    raw_name = (tool_name or '').strip()
+    if raw_name:
+        safe_name = Path(raw_name).name
+        candidates.append(TOOLS_DIR / (safe_name if safe_name.endswith('.py') else f'{safe_name}.py'))
+
+    seen = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+
+        try:
+            candidate.relative_to(TOOLS_DIR.resolve())
+        except ValueError:
+            continue
+
+        if candidate.exists() and candidate.is_file():
+            try:
+                server_tool_code = candidate.read_text(encoding='utf-8')
+                if client_tool_code and client_tool_code != server_tool_code:
+                    logger.info(
+                        f"[RUN_TOOL] Using server-local tool code for {tool_name} from {candidate}; "
+                        "client-sent code was stale or different"
+                    )
+                return server_tool_code
+            except Exception as e:
+                logger.warning(f"Failed to read local tool {candidate}: {e}")
+
+    return client_tool_code or ''
 
 
 def fetch_pr_tools_from_github(pr, repo) -> list:
@@ -3984,11 +4027,19 @@ async def handle_client(websocket):
                     
                     custom_gpt = data.get('custom_gpt', False)
                     gpt_query = data.get('gpt_query', '')
+                    tool_name = data.get('tool_name', 'unknown')
+                    tool_path = data.get('tool_path', '')
+                    tool_code = resolve_tool_code_for_execution(
+                        tool_name=tool_name,
+                        tool_path=tool_path,
+                        client_tool_code=data.get('tool_code', ''),
+                    )
                     
                     active_streaming_tools[client_id] = {
                         'tool': {
-                            'name': data.get('tool_name', 'unknown'),
-                            'code': data.get('tool_code', ''),
+                            'name': tool_name,
+                            'path': tool_path,
+                            'code': tool_code,
                             'language': data.get('tool_language', 'python'),
                             'input': data.get('input', ''),
                         },
@@ -4680,7 +4731,12 @@ async def handle_client(websocket):
                 if data.get('type') == 'run_tool':
                     logger.info(f"Client {client_id} requested tool execution: {data.get('tool_name')}")
                     tool_name = data.get('tool_name', 'unknown')
-                    tool_code = data.get('tool_code', '')
+                    tool_path = data.get('tool_path', '')
+                    tool_code = resolve_tool_code_for_execution(
+                        tool_name=tool_name,
+                        tool_path=tool_path,
+                        client_tool_code=data.get('tool_code', ''),
+                    )
                     tool_language = data.get('tool_language', 'python')
                     tool_input = data.get('input', '')
                     frame_data = data.get('frame', None)  # Get optional frame data
@@ -4799,6 +4855,8 @@ async def handle_client(websocket):
                             # Create a sandboxed execution environment with image data
                             exec_globals = {
                                 '__builtins__': __builtins__,
+                                '__file__': str(TOOLS_DIR / f'{Path(tool_name).name}.py'),
+                                'llm_call': llm_call,
                                 'input_data': parsed_input,  # Use parsed input (dict or string)
                                 'image': frame_image,  # OpenCV image (numpy array)
                                 'image_base64': frame_base64,  # Base64 string

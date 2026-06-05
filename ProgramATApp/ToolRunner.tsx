@@ -973,6 +973,7 @@ export default function ToolRunner({
     const message: any = {
       type: 'start_streaming_tool',
       tool_name: selectedTool.name,
+      tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
