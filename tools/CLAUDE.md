@@ -38,6 +38,8 @@ def main(image, input_data=None):
   per frame makes streaming unusable. `door_detection.py` shows the pattern.
 - **Streaming etiquette:** when run per frame, return `""` when nothing changed, or
   the user hears the same thing every ~500ms. Streaming output is capped at ~15 words.
+- **LLM calls:** use `from model_router import llm_call` and pass a capability
+  such as `image_analysis`. Do not hardcode provider/model names in tools.
 - **Imports:** `import litellm_utils` bare (the server makes `tools/` the import
   root). Wrap optional dependencies in `try/except ImportError` — missing pip
   packages are auto-installed by the backend.
@@ -56,6 +58,6 @@ def main(image, input_data=None):
 1. Create `tools/your_tool.py` with `main(image, input_data)`.
 2. Write a `backend/test_<tool>.py` script and verify with `python test_<tool>.py`.
 3. Default models: YOLO11 + COCO for common objects, YOLOWorld for novel objects,
-   Google Cloud Vision for OCR, Gemini (`gemini-3-flash-preview`) for general vision.
+   Google Cloud Vision for OCR, and semantic LLM routing through `llm_call`.
 4. `MODEL_SETUP.md` covers model files; `.github/copilot-instructions.md` has the
    full tool-generation spec. `CONTRIBUTING.md` has the PR and review process.

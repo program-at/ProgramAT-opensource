@@ -243,7 +243,7 @@ AudioOutputService.speak()     setToolOutput() → UI text
 
 #### 6. **gemini_summarizer.py** – Log Summarizer
 - Summarizes batches of Copilot log entries into 1–3 sentence TTS-friendly strings
-- Uses `gemini-2.5-flash-lite` (configurable via `GEMINI_MODEL` env var)
+- Uses `llm_call("summarization", ...)`; the semantic router currently selects `gemini/gemini-2.5-flash-lite`
 - Called periodically while a Copilot session is streaming
 
 #### 7. **GitHub Integration** (in `stream_server.py`)
@@ -409,7 +409,7 @@ Backend `.env` (or GCP Secret Manager):
 GITHUB_TOKEN=<GitHub PAT>
 GITHUB_REPO=owner/repo
 GEMINI_API_KEY=<Google AI API key>
-GEMINI_MODEL=gemini-2.5-flash-lite    # or gemini-2.5-flash, etc.
+ROUTING_MODE=semantic                 # optional; semantic is the default
 GCP_PROJECT=<project-id>              # for Secret Manager fallback
 PAUSE_DURATION=5.0                    # seconds before issue creation
 ```

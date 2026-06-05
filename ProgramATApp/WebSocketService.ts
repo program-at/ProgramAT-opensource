@@ -7,7 +7,6 @@
  */
 
 import Config from './config';
-import { getModelPreference } from './ModelPreference';
 
 export interface StreamFrame {
   frameNumber: number;
@@ -67,11 +66,8 @@ class WebSocketService {
   private onMessageCallback?: (message: ServerMessage) => void;
   private onErrorCallback?: (error: string) => void;
 
-  // Server capabilities cached from the 'server_capabilities' message — used
-  // by the Settings picker. The user's chosen model lives in ModelPreference
-  // (one store), not here.
+  // Server capabilities cached from the 'server_capabilities' message.
   private defaultModel: string = '';
-  private availableModels: string[] = [];
 
   constructor(serverUrl?: string) {
     if (serverUrl) {
@@ -104,16 +100,6 @@ class WebSocketService {
 
   getDefaultModel(): string {
     return this.defaultModel;
-  }
-
-  getAvailableModels(): string[] {
-    return this.availableModels;
-  }
-
-  /** Spread into any outbound message that triggers an LLM call. */
-  private modelField(): { model?: string } {
-    const model = getModelPreference();
-    return model ? { model } : {};
   }
 
   /**
@@ -348,12 +334,10 @@ class WebSocketService {
               return; // Don't forward pong messages to app callbacks
             }
 
-            // Capture model defaults + preset list from server capabilities so
-            // the picker can populate without hardcoding provider strings.
+            // Capture routing status from server capabilities for Settings.
             if (message.type === 'server_capabilities') {
               const caps = message.capabilities || {};
-              this.defaultModel = caps.default_model || '';
-              this.availableModels = caps.available_models || [];
+              this.defaultModel = caps.model_routing ? 'Semantic routing' : caps.default_model || '';
             }
 
             // Extra logging for production_tools messages
@@ -542,7 +526,7 @@ class WebSocketService {
         timestamp: Date.now(),
       };
 
-      this.ws!.send(JSON.stringify({ ...message, ...this.modelField() }));
+      this.ws!.send(JSON.stringify(message));
       return true;
     } catch (error) {
       console.error('Failed to send text:', error);
@@ -566,7 +550,6 @@ class WebSocketService {
           question: question,
           conversation_id: conversationId,  // Send conversation ID instead of image
           timestamp: Date.now(),
-          ...this.modelField(),
         };
 
         console.log('[WebSocket] Sending follow-up question for conversation:', conversationId);
@@ -667,7 +650,6 @@ class WebSocketService {
           height,
           text,
         },
-        ...this.modelField(),
       };
 
       this.ws!.send(JSON.stringify(message));
