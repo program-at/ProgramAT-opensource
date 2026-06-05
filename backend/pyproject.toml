@@ -14,6 +14,7 @@ dependencies = [
     "pygithub>=2.1.1",
     "pytesseract>=0.3.0",
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0.0",
     "scikit-learn",
     "scipy",
     "ultralytics>=8.0.0",

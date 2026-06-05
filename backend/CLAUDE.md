@@ -30,7 +30,8 @@ uv run python stream_server.py   # serves ws://0.0.0.0:8081
 - `gemini_summarizer.py` — summarizes Copilot session logs for screen readers.
 - `copilot_db.py` — SQLite store for Copilot session data.
 - `module_manager.py` — installs missing pip packages for tools at runtime.
-- `litellm_utils.py` — shared LLM helpers (model-name and API-key resolution).
+- `model_router.py` — single entry point for LiteLLM calls and semantic model routing.
+- `litellm_utils.py` — shared response/image helpers.
 
 `ARCHITECTURE.md` (repo root) explains how these fit together.
 

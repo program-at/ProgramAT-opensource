@@ -265,7 +265,6 @@ def analyze_scene(
     api_key: Optional[str] = None,
     detail_level: str = 'standard',
     focus: str = 'general',
-    model_name: str = 'gemini-3-flash-preview'
 ) -> Dict[str, Any]:
     """
     Core function that performs AI-powered scene analysis using Gemini.
@@ -275,7 +274,6 @@ def analyze_scene(
         api_key: Gemini API key (uses env var if not provided)
         detail_level: 'brief', 'standard', or 'detailed'
         focus: 'general', 'people', 'objects', 'text', or 'navigation'
-        model_name: Gemini model to use
     
     Returns:
         Dictionary with analysis results:
@@ -307,7 +305,7 @@ def analyze_scene(
             capability='image_analysis',
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
-            metadata={'requested_model': model_name, 'api_key': api_key},
+            metadata={'api_key': api_key},
         )
         
         # Extract description
@@ -350,7 +348,6 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
             - 'focus': 'general', 'people', 'objects', 'text', or 'navigation' (default: 'general')
             - 'style': 'narrative' or 'concise' (default: 'narrative')
             - 'api_key': Optional API key override
-            - 'model': Optional Gemini model override
     
     Returns:
         For simple string return (audio-friendly):
@@ -395,15 +392,12 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     focus = input_data.get('focus', 'general')
     style = input_data.get('style', 'narrative')
     api_key = input_data.get('api_key')
-    model = input_data.get('model_override', '')
-    
     # Analyze scene
     result = analyze_scene(
         image=image,
         api_key=api_key,
         detail_level=detail_level,
         focus=focus,
-        model_name=model
     )
     
     # Format description for audio

@@ -93,10 +93,10 @@ Use the table below as a quick reference for what each value does.
 
 | Variable                           | Required                       | Description                                                                                                                                       |
 | ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LLM_MODEL`                        | Optional                       | Model name used by LiteLLM. Update this in `backend/.env` to change which provider/model is active (falls back to `GEMINI_MODEL` if present).    |
+| `ROUTING_MODE`                     | Optional                       | Model routing mode. Defaults to `semantic`, which routes each request directly to the closest model profile in `backend/model_profiles.yaml`; legacy options are `fixed` and `score`. |
 | `GEMINI_API_KEY`                   | Optional                       | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`. |
-| `GROQ_API_KEY`                     | Optional                       | Provider API key for Groq. Set `LLM_MODEL` to e.g. `groq/llama-3.3-70b-versatile`. Free tier available, no credit card required.                 |
-| `MISTRAL_API_KEY`                  | Optional                       | Provider API key for Mistral AI. Set `LLM_MODEL` to e.g. `mistral/mistral-small-latest`. Free tier available.                                    |
+| `GROQ_API_KEY`                     | Optional                       | Provider API key for Groq. Add Groq models to `backend/model_profiles.yaml` if you want semantic routing to select them. Free tier available, no credit card required. |
+| `MISTRAL_API_KEY`                  | Optional                       | Provider API key for Mistral AI. Add Mistral models to `backend/model_profiles.yaml` if you want semantic routing to select them. Free tier available. |
 | `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
 | `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
 | `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |
@@ -134,7 +134,7 @@ Billing:
 3. Click **Create API Key**, give it a name, and click **Submit**.
 4. Copy the generated key immediately — you won't be able to see it again.
 5. Paste the key into `backend/.env` as `GROQ_API_KEY`.
-6. Set `LLM_MODEL` to a Groq-hosted model, e.g. `groq/llama-3.3-70b-versatile`.
+6. Add the Groq-hosted model to `backend/model_profiles.yaml` with `routes` that describe when it should be selected.
 
 #### Mistral API Key
 
@@ -143,7 +143,7 @@ Billing:
 3. Click **Create new key**, give it a name, and click **Create**.
 4. Copy the generated key immediately — you won't be able to see it again.
 5. Paste the key into `backend/.env` as `MISTRAL_API_KEY`.
-6. Set `LLM_MODEL` to a Mistral model, e.g. `mistral/mistral-small-latest` or `mistral/mistral-medium-latest`.
+6. Add the Mistral model to `backend/model_profiles.yaml` with `routes` that describe when it should be selected.
 
 #### Google Application Credentials
 
@@ -192,7 +192,7 @@ We provide instructions here for hosting from your personal machine. If you woul
    ```
 4. **Fill in the values in `backend/.env`**
 
-   - `LLM_MODEL`: model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without modifying code.
+   - `ROUTING_MODE`: model routing mode. Leave unset for semantic model routing, or set `fixed` / `score` to use the legacy routing behavior.
    - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`
    - `GITHUB_TOKEN`
    - `GITHUB_REPO`
@@ -251,7 +251,7 @@ Since you are working from a fork of this repository, GitHub-related features ma
 
 1. **Select a Tool** — Navigate to the **Tools** tab, browse the available tools, and tap one to select it.
 2. **Run** — The Tool Runner opens with a live camera preview. Tap **Run** to execute the tool on single frames, or **Stream** to process frames continuously. Results are spoken aloud via TTS.
-3. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by LiteLLM; change the active model with `LLM_MODEL` in `backend/.env`).
+3. **Chat** — After a tool run, tap **Chat** to ask follow-up questions about the result (powered by LiteLLM and semantic model routing).
 4. **Development mode** — Use the **PRs** tab to browse open pull requests, select one to load its tools, and send text updates to GitHub issues.
 5. **Tool creation** — To instead create a new tool, from development mode, select the "Create New Issue Instead" button in the PRs tab. Then, type or dictate the tool you would like to make into the text box, then submit. If more information is needed, the app will ask for it: in this case, dictate or type an answer to the request and resubmit, it will be appended to your initial request. Once the request is complete, the app will tell you it has made a new issue successfully. Copilot will automatically be assigned and create a relevant pull request. From there, wait for it to generate, and then run it as described in the earlier usage steps!
 
@@ -457,7 +457,7 @@ For iOS:
 ### Backend
 
 - **Python 3.11** with async `websockets`
-- **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. LiteLLM can route requests to provider backends such as Google Gemini, OpenAI, Anthropic, Groq, or Mistral; switch the active model via `LLM_MODEL` in `backend/.env`.
+- **LiteLLM (configurable providers)** — Model runtime used for AI parsing, scene description, and clothing recognition. The backend selects among model profiles with semantic routing by default; edit `backend/model_profiles.yaml` to describe which tasks each model should handle.
 - **Google Cloud Vision API** — OCR
 - **Ultralytics (YOLOv11 / YOLOWorld)** — Object detection
 - **OpenCV / NumPy / Pillow** — Image processing

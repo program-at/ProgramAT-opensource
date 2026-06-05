@@ -4,13 +4,9 @@ Gemini-based summarization for Copilot session logs.
 import logging
 from typing import List, Dict
 from litellm_utils import extract_text
-from model_router import get_selected_model, llm_call
+from model_router import llm_call
 
 logger = logging.getLogger(__name__)
-
-def _get_model():
-    """Return the routed model for summarization."""
-    return get_selected_model("summarization")
 
 
 async def summarize_entries(entries: List[Dict]) -> str:
@@ -23,11 +19,6 @@ async def summarize_entries(entries: List[Dict]) -> str:
     Returns:
         A concise summary suitable for text-to-speech
     """
-    model = _get_model()
-    if not model:
-        logger.warning("LiteLLM model not available, returning placeholder summary")
-        return "Copilot is processing..."
-    
     if not entries:
         return "Copilot is processing..."
     
@@ -56,9 +47,8 @@ Summary (1-3 sentences describing what was accomplished):"""
     
     try:
         response = llm_call(
-            capability="text_parse",
+            capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
-            metadata={'requested_model': model},
         )
         summary = extract_text(response)
         
@@ -94,11 +84,6 @@ def summarize_entries_sync(entries: List[Dict]) -> str:
     Returns:
         A concise summary suitable for text-to-speech
     """
-    model = _get_model()
-    if not model:
-        logger.warning("LiteLLM model not available, returning placeholder summary")
-        return "Copilot is processing..."
-    
     # Filter out code entries
     non_code_entries = [e for e in entries if not e.get('is_code', False)]
     
@@ -126,9 +111,8 @@ Summary (one sentence only):"""
     
     try:
         response = llm_call(
-            capability="text_parse",
+            capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
-            metadata={'requested_model': model},
         )
         summary = extract_text(response)
         

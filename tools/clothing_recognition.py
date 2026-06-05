@@ -18,9 +18,10 @@ from model_router import llm_call
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
     """
     Resize image efficiently while maintaining aspect ratio.
-    
+    """
     max_width, max_height = max_size
-    
+    height, width = image.shape[:2]
+
     # Check if resize needed
     if width <= max_width and height <= max_height:
         return image
@@ -105,7 +106,6 @@ def analyze_clothing(
     image: np.ndarray,
     api_key: Optional[str] = None,
     detail_level: str = 'standard',
-    model_name: str = 'gemini-3-flash-preview'
 ) -> Dict[str, Any]:
     """
     Core function that performs AI-powered clothing analysis using Gemini.
@@ -114,7 +114,6 @@ def analyze_clothing(
         image: OpenCV image (numpy array in BGR format)
         api_key: Gemini API key (uses env var if not provided)
         detail_level: 'brief', 'standard', or 'detailed'
-        model_name: Gemini model to use
     
     Returns:
         Dictionary with analysis results:
@@ -141,7 +140,7 @@ def analyze_clothing(
             capability='image_analysis',
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
-            metadata={'requested_model': model_name, 'api_key': api_key},
+            metadata={'api_key': api_key},
         )
         
         # Extract description
@@ -215,7 +214,6 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
         input_data: Optional configuration dictionary:
             - 'detail_level': 'brief', 'standard', or 'detailed' (default: 'standard')
             - 'api_key': Optional API key override
-            - 'model': Optional Gemini model override
     
     Returns:
         Dictionary with analysis results and audio configuration:
@@ -259,14 +257,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     
     detail_level = input_data.get('detail_level', 'standard')
     api_key = input_data.get('api_key')
-    model = input_data.get('model_override', '')
-    
     # Analyze clothing
     result = analyze_clothing(
         image=image,
         api_key=api_key,
         detail_level=detail_level,
-        model_name=model
     )
     
     # Format and return description
