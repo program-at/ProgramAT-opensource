@@ -16,6 +16,8 @@ import {
   Linking,
   Platform,
   Alert,
+  AccessibilityInfo,
+  NativeModules,
 } from 'react-native';
 import {
   Camera,
@@ -26,6 +28,17 @@ import RNFS from 'react-native-fs';
 import WebSocketService from './WebSocketService';
 import Config from './config';
 import BeepService from './BeepService';
+import { CameraSource } from './CameraSource';
+
+// Native bridge for the Meta Ray-Ban camera source. Only the shared-pipeline
+// methods are used here; the low-level debug methods live in Settings.
+const { MetaWearablesModule } = NativeModules as {
+  MetaWearablesModule?: {
+    startRayBanStream?: () => Promise<boolean>;
+    stopRayBanStream?: () => Promise<boolean>;
+    captureRayBanFrame?: () => Promise<{ base64: string; width: number; height: number }>;
+  };
+};
 
 interface CameraViewProps {
   onFrameCapture?: (frame: any) => void;
@@ -44,11 +57,14 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [cameraSource, setCameraSource] = useState<CameraSource>(CameraSource.Phone);
   const cameraRef = useRef<Camera>(null);
   const frameIntervalRef = useRef<any>(null);
   const errorCountRef = useRef<number>(0);
   const lastErrorTime = useRef<number>(0);
   const frameSkipCounterRef = useRef<number>(0);
+  // Mirror of cameraSource so interval/handle closures read the live value.
+  const cameraSourceRef = useRef<CameraSource>(CameraSource.Phone);
 
   // Camera permissions
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -90,14 +106,35 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   }, [hasPermission]);
 
   useEffect(() => {
-    // Clean up frame capture interval on unmount
+    // Clean up frame capture interval on unmount, and stop the Ray-Ban stream
+    // if it was the active source so the glasses don't keep streaming.
     return () => {
       if (frameIntervalRef.current) {
         clearInterval(frameIntervalRef.current);
         frameIntervalRef.current = null;
       }
+      if (cameraSourceRef.current === CameraSource.RayBan) {
+        // Fire-and-forget on unmount; native still tears down to STOPPED.
+        MetaWearablesModule?.stopRayBanStream?.().catch(() => {});
+      }
     };
   }, []);
+
+  // Fetch the most recent Ray-Ban frame from the native module. Returns the
+  // same { base64, width, height } shape as the phone capture path so callers
+  // (and the tools downstream) cannot tell the sources apart.
+  const captureRayBanFrameJS = async (): Promise<{ base64: string; width: number; height: number } | null> => {
+    try {
+      const frame = await MetaWearablesModule?.captureRayBanFrame?.();
+      if (!frame || !frame.base64) {
+        return null;
+      }
+      return { base64: frame.base64, width: frame.width, height: frame.height };
+    } catch (err) {
+      console.warn('[CameraView] captureRayBanFrame failed:', err);
+      return null;
+    }
+  };
 
   // Loading sound effect for camera operations
   useEffect(() => {
@@ -110,8 +147,18 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   // Expose captureFrame method to parent components
   useImperativeHandle(ref, () => ({
     captureFrame: async () => {
-      if (!cameraRef.current || !isCameraActive) {
+      if (!isCameraActive) {
         console.warn('[CameraView] Cannot capture frame: camera not active');
+        return null;
+      }
+
+      // Ray-Ban source: return the most recent frame from the glasses.
+      if (cameraSourceRef.current === CameraSource.RayBan) {
+        return await captureRayBanFrameJS();
+      }
+
+      if (!cameraRef.current) {
+        console.warn('[CameraView] Cannot capture frame: phone camera not ready');
         return null;
       }
 
@@ -179,13 +226,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       ? WebSocketService.isReviewConnected()
       : WebSocketService.isConnected();
 
-    if (!cameraRef.current || !connected) {
+    const isRayBan = cameraSourceRef.current === CameraSource.RayBan;
+
+    // Phone source needs a live camera ref; Ray-Ban frames come from native.
+    if ((!isRayBan && !cameraRef.current) || !connected) {
       return;
     }
 
     // Increment frame skip counter
     frameSkipCounterRef.current += 1;
-    
+
     // Only process every 3rd frame to reduce API calls and prevent disconnects
     if (frameSkipCounterRef.current % 3 !== 0) {
       console.log(`[CameraView] Skipping frame ${frameSkipCounterRef.current} (only sending every 3rd frame)`);
@@ -193,20 +243,40 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
 
     try {
-      const photo = await cameraRef.current.takePhoto({
-        enableShutterSound: false,
-      });
+      // Acquire the frame from the active source, then send it through the
+      // identical WebSocket path so downstream tools are source-agnostic.
+      let base64WithPrefix: string;
+      let width: number;
+      let height: number;
+      let phoneFrame: any = null;
 
-      // Read the file and convert to base64 using react-native-fs
-      const base64Image = await RNFS.readFile(photo.path, 'base64');
-      
-      // Add data URL prefix to match server expectations
-      const base64WithPrefix = `data:image/jpeg;base64,${base64Image}`;
+      if (isRayBan) {
+        const frame = await captureRayBanFrameJS();
+        if (!frame) {
+          return;
+        }
+        base64WithPrefix = frame.base64;
+        width = frame.width;
+        height = frame.height;
+      } else {
+        const photo = await cameraRef.current!.takePhoto({
+          enableShutterSound: false,
+        });
+
+        // Read the file and convert to base64 using react-native-fs
+        const base64Image = await RNFS.readFile(photo.path, 'base64');
+
+        // Add data URL prefix to match server expectations
+        base64WithPrefix = `data:image/jpeg;base64,${base64Image}`;
+        width = photo.width;
+        height = photo.height;
+        phoneFrame = photo;
+      }
 
       // Send to server — route to review server when in review mode
       const sent = inReviewMode
-        ? WebSocketService.sendFrameToReview(base64WithPrefix, photo.width, photo.height)
-        : WebSocketService.sendFrame(base64WithPrefix, photo.width, photo.height);
+        ? WebSocketService.sendFrameToReview(base64WithPrefix, width, height)
+        : WebSocketService.sendFrame(base64WithPrefix, width, height);
 
       if (sent) {
         setFrameCount(prev => prev + 1);
@@ -216,8 +286,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
           errorCountRef.current = 0;
           setError('');
         }
-        if (onFrameCapture) {
-          onFrameCapture(photo);
+        if (onFrameCapture && phoneFrame) {
+          onFrameCapture(phoneFrame);
         }
       }
     } catch (err) {
@@ -263,6 +333,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         return;
       }
 
+      cameraSourceRef.current = CameraSource.Phone;
+      setCameraSource(CameraSource.Phone);
       setIsCameraActive(true);
       setIsLoading(false);
     } catch (err) {
@@ -272,8 +344,50 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     }
   };
 
-  const stopCamera = () => {
+  // Start the Meta Ray-Ban glasses as the active camera source. Once started,
+  // the rest of the pipeline (streaming + take photo) is identical to phone.
+  const startRayBanCamera = async () => {
+    try {
+      setError('');
+      setIsLoading(true);
+
+      if (typeof MetaWearablesModule?.startRayBanStream !== 'function') {
+        throw new Error('Meta Ray-Ban camera is not available on this build.');
+      }
+
+      await MetaWearablesModule.startRayBanStream();
+
+      cameraSourceRef.current = CameraSource.RayBan;
+      setCameraSource(CameraSource.RayBan);
+      setIsCameraActive(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(`Failed to start Meta Ray-Ban: ${message}`);
+      AccessibilityInfo.announceForAccessibility(`Failed to start Meta Ray-Ban. ${message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const stopCamera = async () => {
     stopFrameStreaming();
+
+    // For Ray-Ban, Stop is a full disconnect: wait for the native session to
+    // reach STOPPED and release before we let the source switch back to phone.
+    if (cameraSourceRef.current === CameraSource.RayBan) {
+      setIsLoading(true);
+      setError('');
+      try {
+        await MetaWearablesModule?.stopRayBanStream?.();
+      } catch (err) {
+        console.warn('[CameraView] stopRayBanStream failed:', err);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    cameraSourceRef.current = CameraSource.Phone;
+    setCameraSource(CameraSource.Phone);
     setIsCameraActive(false);
     setError('');
   };
@@ -339,26 +453,42 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         
         <View style={styles.buttonContainer} accessible={false}>
           {!isCameraActive ? (
-            <TouchableOpacity
-              style={[styles.button, styles.startButton]}
-              onPress={startCamera}
-              disabled={isLoading}
-              accessible={true}
-              accessibilityRole="button"
-              accessibilityLabel="Start camera">
-              {isLoading ? (
-                <ActivityIndicator size="small" color="#fff" accessible={false} />
-              ) : (
-                <Text style={styles.buttonText}>Start</Text>
-              )}
-            </TouchableOpacity>
+            isLoading ? (
+              <ActivityIndicator
+                size="small"
+                color="#2196F3"
+                accessible={true}
+                accessibilityLabel="Connecting to camera" />
+            ) : (
+              <>
+                <TouchableOpacity
+                  style={[styles.button, styles.compactButton, styles.startButton]}
+                  onPress={startCamera}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel="Start Phone Camera"
+                  accessibilityHint="Use the phone's back camera as the source for this tool">
+                  <Text style={styles.buttonText}>Phone</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.button, styles.compactButton, styles.rayBanButton]}
+                  onPress={startRayBanCamera}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel="Start Meta Ray-Ban"
+                  accessibilityHint="Use your Meta Ray-Ban glasses as the source for this tool">
+                  <Text style={styles.buttonText}>Ray-Ban</Text>
+                </TouchableOpacity>
+              </>
+            )
           ) : (
             <TouchableOpacity
               style={[styles.button, styles.stopButton]}
               onPress={stopCamera}
               accessible={true}
               accessibilityRole="button"
-              accessibilityLabel="Stop camera">
+              accessibilityLabel={cameraSource === CameraSource.RayBan ? 'Stop Meta Ray-Ban camera' : 'Stop phone camera'}>
               <Text style={styles.buttonText}>Stop</Text>
             </TouchableOpacity>
           )}
@@ -373,30 +503,47 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
 
       <View style={styles.cameraContainer} accessible={false}>
         {isCameraActive ? (
-          <Camera
-            ref={cameraRef}
-            style={styles.camera}
-            device={device}
-            isActive={isCameraActive}
-            photo={true}
-            video={true}
-            accessible={true}
-            accessibilityLabel="Camera preview"
-            accessibilityHint="Live camera feed displaying what the camera sees"
-          />
+          cameraSource === CameraSource.Phone ? (
+            <Camera
+              ref={cameraRef}
+              style={styles.camera}
+              device={device}
+              isActive={isCameraActive}
+              photo={true}
+              video={true}
+              accessible={true}
+              accessibilityLabel="Camera preview"
+              accessibilityHint="Live camera feed displaying what the camera sees"
+            />
+          ) : (
+            <View style={styles.cameraPlaceholder}>
+              <Text
+                style={styles.placeholderText}
+                accessible={true}
+                accessibilityRole="text">
+                Meta Ray-Ban camera active
+              </Text>
+              <Text
+                style={styles.placeholderSubtext}
+                accessible={true}
+                accessibilityRole="text">
+                Frames stream from your glasses to this tool
+              </Text>
+            </View>
+          )
         ) : (
           <View style={styles.cameraPlaceholder}>
-            <Text 
+            <Text
               style={styles.placeholderText}
               accessible={true}
               accessibilityRole="text">
               Camera preview will appear here
             </Text>
-            <Text 
+            <Text
               style={styles.placeholderSubtext}
               accessible={true}
               accessibilityRole="text">
-              Press "Start Camera" to begin
+              Choose "Phone" or "Ray-Ban" to begin
             </Text>
           </View>
         )}
@@ -435,8 +582,27 @@ const styles = StyleSheet.create({
     minWidth: 60,
     alignItems: 'center',
   },
+  compactButton: {
+    paddingHorizontal: 10,
+    minWidth: 36,
+  },
   startButton: {
     backgroundColor: '#4CAF50',
+  },
+  rayBanButton: {
+    backgroundColor: '#00897B',
+  },
+  testButton: {
+    backgroundColor: '#673AB7',
+  },
+  physicalButton: {
+    backgroundColor: '#00897B',
+  },
+  debugButton: {
+    backgroundColor: '#455A64',
+  },
+  mockButton: {
+    backgroundColor: '#009688',
   },
   stopButton: {
     backgroundColor: '#f44336',
@@ -480,6 +646,23 @@ const styles = StyleSheet.create({
     color: '#c62828',
     fontSize: 12,
     textAlign: 'center',
+  },
+  physicalStatusContainer: {
+    backgroundColor: '#e8f5e9',
+    padding: 8,
+    borderRadius: 6,
+    marginBottom: 6,
+  },
+  physicalStatusErrorContainer: {
+    backgroundColor: '#ffebee',
+  },
+  physicalStatusText: {
+    color: '#1b5e20',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  physicalStatusErrorText: {
+    color: '#c62828',
   },
   permissionContainer: {
     flex: 1,

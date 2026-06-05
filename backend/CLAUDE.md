@@ -13,7 +13,7 @@ The backend ships a `uv.lock`, so `uv` gives a fast, reproducible install:
 ```bash
 uv sync                          # creates .venv from the locked dependencies
 cp .env.example .env             # then fill in the keys (see README.md)
-uv run python stream_server.py   # serves ws://0.0.0.0:8080
+uv run python stream_server.py   # serves ws://0.0.0.0:8081
 ```
 
 `README.md` documents the equivalent pip workflow, which also works:
@@ -51,7 +51,7 @@ contract lives in `tools/CLAUDE.md`.
 - **Blocking calls stall the event loop.** `pip install` and `cv2.imwrite` run
   synchronously; DB and LLM work is offloaded to executors. Keep new I/O off the
   async path.
-- **`HOST`/`PORT` are hardcoded** to `0.0.0.0:8080`; the matching `.env` keys are
+- **`HOST`/`PORT` are hardcoded** to `0.0.0.0:8081`; the matching `.env` keys are
   ignored.
 - `pyproject.toml` requires Python `>=3.12`; the shipped `.venv` is 3.14. If you
   recreate the environment, prefer 3.12/3.13 — some deps (torch, opencv) may lack

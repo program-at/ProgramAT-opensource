@@ -16,11 +16,13 @@ import json
 import base64
 import io
 import logging
+import sys
 from datetime import datetime
 from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+from aiohttp import web, WSMsgType
 from google.cloud import secretmanager
 from github import Github
 import os
@@ -36,6 +38,12 @@ from gemini_live import GeminiLiveManager
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+
+TOOLS_DIR = Path(__file__).resolve().parent.parent / 'tools'
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from door_detection import main as door_recognition_main
 
 # Load .env from the backend directory (if present)
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
@@ -95,7 +103,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8080 #port for listening
+PORT = 8081 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -437,7 +445,15 @@ selected_issue = {'number': None, 'title': None, 'mode': 'create'}  # mode can b
 issue_cache = {'issues': [], 'last_fetch': None, 'cache_duration': 300}  # Cache for 5 minutes
 
 # Store the last received frame for tool execution
-last_frame = {'image': None, 'timestamp': None, 'base64': None}
+last_frame = {
+    'image': None,
+    'timestamp': None,
+    'base64': None,
+    'jpeg_bytes': None,
+    'jpeg_path': None,
+}
+
+LATEST_META_FRAME_FILENAME = 'latest_meta_frame.jpg'
 
 # Active streaming tools - tracks which tools are running continuously per client
 # Format: {client_id: {'tool': {...}, 'last_run': timestamp, 'throttle_ms': 1000}}
@@ -3614,6 +3630,163 @@ def decode_frame(base64_data: str) -> np.ndarray:
         return None
 
 
+def store_latest_meta_frame(img: np.ndarray) -> tuple[bytes, Path] | None:
+    """Encode and persist the latest Meta frame as a JPEG."""
+    if img is None or img.size == 0:
+        return None
+
+    success, encoded = cv2.imencode(
+        '.jpg',
+        img,
+        [int(cv2.IMWRITE_JPEG_QUALITY), 90],
+    )
+
+    if not success:
+        logger.error("Failed to encode latest Meta frame as JPEG")
+        return None
+
+    jpeg_bytes = encoded.tobytes()
+    latest_path = FRAMES_DIR / LATEST_META_FRAME_FILENAME
+
+    try:
+        latest_path.write_bytes(jpeg_bytes)
+    except Exception as e:
+        logger.error(f"Failed to write latest Meta frame JPEG: {e}")
+        return None
+
+    last_frame['jpeg_bytes'] = jpeg_bytes
+    last_frame['jpeg_path'] = str(latest_path)
+
+    return jpeg_bytes, latest_path
+
+
+def get_latest_meta_frame_image() -> np.ndarray | None:
+    """Load the most recently stored Meta JPEG as an OpenCV image."""
+    jpeg_bytes = last_frame.get('jpeg_bytes')
+    jpeg_path_value = last_frame.get('jpeg_path')
+
+    if not jpeg_bytes and jpeg_path_value:
+        jpeg_path = Path(jpeg_path_value)
+        if jpeg_path.exists():
+            try:
+                jpeg_bytes = jpeg_path.read_bytes()
+            except Exception as e:
+                logger.error(f"Failed to read latest Meta frame JPEG: {e}")
+                return None
+
+    if not jpeg_bytes:
+        return None
+
+    nparr = np.frombuffer(jpeg_bytes, np.uint8)
+    return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+
+def format_door_detection_result(result) -> str:
+    if isinstance(result, dict):
+        for key in ('text', 'result', 'message'):
+            value = result.get(key)
+            if value:
+                return str(value)
+        return str(result)
+
+    return str(result)
+
+
+class AiohttpWebSocketAdapter:
+    def __init__(self, request: web.Request, websocket: web.WebSocketResponse):
+        self.request = request
+        self._request = request
+        self._websocket = websocket
+        peername = request.transport.get_extra_info('peername') if request.transport else None
+        if isinstance(peername, tuple) and len(peername) >= 2:
+            self.remote_address = (peername[0], peername[1])
+        else:
+            self.remote_address = (request.remote or 'unknown', 0)
+
+    async def send(self, data):
+        if isinstance(data, bytes):
+            await self._websocket.send_bytes(data)
+        else:
+            await self._websocket.send_str(str(data))
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        while True:
+            message = await self._websocket.receive()
+
+            if message.type == WSMsgType.TEXT:
+                return message.data
+
+            if message.type == WSMsgType.BINARY:
+                return message.data
+
+            if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                raise StopAsyncIteration
+
+    async def close(self):
+        await self._websocket.close()
+
+
+async def test_door_recognition(request: web.Request):
+    print("[MockDevice] Using latest frame")
+
+    raw_body = await request.read()
+
+    if raw_body:
+        nparr = np.frombuffer(raw_body, np.uint8)
+        latest_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if latest_image is not None:
+            last_frame['image'] = latest_image
+            last_frame['timestamp'] = datetime.now()
+            last_frame['base64'] = base64.b64encode(raw_body).decode('utf-8')
+            latest_meta_frame = store_latest_meta_frame(latest_image)
+            if latest_meta_frame is not None:
+                _, latest_path = latest_meta_frame
+                print(f"[MockDevice] Stored latest frame at {latest_path}")
+        else:
+            print("[DoorRecognition] Received body but failed to decode JPEG")
+
+    latest_image = get_latest_meta_frame_image()
+
+    if latest_image is None:
+        print("[DoorRecognition] No latest Meta frame available")
+        return web.json_response(
+            {
+                'status': 'error',
+                'error': 'No latest Meta frame available yet',
+            },
+            status=404,
+        )
+
+    print("[DoorRecognition] Running")
+
+    try:
+        result = await asyncio.to_thread(door_recognition_main, latest_image, {})
+        result_text = format_door_detection_result(result)
+        print(f"[DoorRecognition] {result_text}")
+
+        return web.json_response(
+            {
+                'status': 'success',
+                'result': result_text,
+                'saved_path': last_frame.get('jpeg_path'),
+            }
+        )
+    except Exception as e:
+        logger.error(f"Door recognition test failed: {e}", exc_info=True)
+        print(f"[DoorRecognition] Error: {e}")
+        return web.json_response(
+            {
+                'status': 'error',
+                'error': str(e),
+            },
+            status=500,
+        )
+
+
 # New helper to process/save incoming text
 def process_text(text_payload, model: str = None) -> dict:
     """
@@ -3762,6 +3935,11 @@ def process_frame(frame_data: dict) -> dict:
                 last_frame['image'] = img
                 last_frame['timestamp'] = now
                 last_frame['base64'] = base64_data
+
+                latest_meta_frame = store_latest_meta_frame(img)
+                if latest_meta_frame is not None:
+                    _, latest_path = latest_meta_frame
+                    results['latest_meta_frame'] = str(latest_path)
 
                 # Note: Streaming tools will be run in handle_client after process_frame returns
 
@@ -5084,6 +5262,25 @@ async def handle_client(websocket):
         logger.info(f"Cleaned up client: {client_id}")
 
 
+async def websocket_handler(request: web.Request):
+    websocket = web.WebSocketResponse(
+        max_msg_size=20 * 1024 * 1024,
+        heartbeat=20,
+        autoping=True,
+    )
+    await websocket.prepare(request)
+
+    adapter = AiohttpWebSocketAdapter(request, websocket)
+
+    try:
+        await handle_client(adapter)
+    finally:
+        if not websocket.closed:
+            await websocket.close()
+
+    return websocket
+
+
 async def broadcast_stats():
     """
     Periodically broadcast server statistics to all clients
@@ -5106,7 +5303,14 @@ async def broadcast_stats():
                 })
                 
                 # Send to all connected clients
-                websockets.broadcast(connected_clients, message)
+                send_tasks = []
+                for client in list(connected_clients):
+                    send = getattr(client, 'send', None)
+                    if callable(send):
+                        send_tasks.append(send(message))
+
+                if send_tasks:
+                    await asyncio.gather(*send_tasks, return_exceptions=True)
     except Exception as e:
         logger.error(f"Error in broadcast_stats: {e}", exc_info=True)
 
@@ -5275,33 +5479,34 @@ async def capture_session_logs_background(session_id: str, pr_number: int):
 
 async def main():
     """
-    Start the WebSocket server
+    Start the backend server
     """
-    logger.info(f"Starting WebSocket server on {HOST}:{PORT}")
+    logger.info(f"Starting backend server on {HOST}:{PORT}")
     logger.info(f"Frame saving: {'enabled' if SAVE_FRAMES else 'disabled'}")
     logger.info(f"GitHub issue creation: {'enabled' if GITHUB_TOKEN else 'disabled'}")
-    
-    # Start server with increased message size limit (20MB to handle large base64 images)
-    # Default is 1MB which may be too small for high-quality photos
-    async with websockets.serve(
-        handle_client, 
-        HOST, 
-        PORT,
-        max_size=20 * 1024 * 1024,  # 20MB max message size
-        ping_interval=20,  # Send ping every 20 seconds
-        ping_timeout=10    # Wait 10 seconds for pong response
-    ):
-        logger.info("Server started successfully")
-        logger.info(f"Clients can connect to: wss://your-ngrok-link")
-        logger.info(f"Max message size: 20MB")
-        
-        # Start background tasks independently for resilience
-        asyncio.create_task(broadcast_stats())
-        asyncio.create_task(monitor_text_pause())
-        # Background Copilot monitoring disabled - we poll specific PRs when user comments with @copilot
-        
-        # Keep server running
-        await asyncio.Future()  # Run forever
+
+    app = web.Application(client_max_size=20 * 1024 * 1024)
+    app.router.add_get('/', websocket_handler)
+    app.router.add_get('/ws', websocket_handler)
+    app.router.add_post('/test-door-recognition', test_door_recognition)
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, HOST, PORT)
+    await site.start()
+
+    logger.info("Server started successfully")
+    logger.info(f"Clients can connect to: wss://your-ngrok-link")
+    logger.info("Test endpoint: POST /test-door-recognition")
+    logger.info(f"Max message size: 20MB")
+
+    # Start background tasks independently for resilience
+    asyncio.create_task(broadcast_stats())
+    asyncio.create_task(monitor_text_pause())
+    # Background Copilot monitoring disabled - we poll specific PRs when user comments with @copilot
+
+    # Keep server running
+    await asyncio.Future()  # Run forever
 
 
 if __name__ == "__main__":
