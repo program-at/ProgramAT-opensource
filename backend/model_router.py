@@ -1,4 +1,4 @@
-"""Central capability-based routing for all LLM interactions."""
+"""Central semantic routing for all LLM interactions."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import base64
 import io
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -27,14 +28,45 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
     "models": {
         "gemini_flash": {
             "model": "gemini/gemini-3-flash-preview",
+            "description": "Fast balanced general model for lightweight multimodal work and conversational follow-up.",
+            "routes": [
+                "quick conversational follow-up without heavy reasoning",
+                "general text and image assistance",
+                "lightweight multimodal analysis when speed matters",
+                "fallback for short assistant responses",
+            ],
             "vision": 4,
             "coding": 3,
             "reasoning": 2,
             "latency": 5,
             "cost": 5,
         },
+        "gemini_flash_lite": {
+            "model": "gemini/gemini-2.5-flash-lite",
+            "description": "Lowest-latency Gemini model for simple text parsing, JSON extraction, issue selection, and concise summaries.",
+            "routes": [
+                "parse voice transcripts into structured JSON",
+                "extract fields from short user requests",
+                "choose or retrieve an issue or tool from a list",
+                "summarize logs concisely for text to speech",
+                "classify simple commands with minimal latency",
+            ],
+            "vision": 2,
+            "coding": 2,
+            "reasoning": 2,
+            "latency": 5,
+            "cost": 5,
+        },
         "claude": {
             "model": "anthropic/claude-3-5-sonnet-20241022",
+            "description": "Strong coding and reasoning model for generating, modifying, debugging, and explaining code.",
+            "routes": [
+                "generate code for a new assistive technology tool",
+                "repair bugs or failing tests in Python or TypeScript",
+                "refactor backend or mobile app code",
+                "reason through implementation tradeoffs",
+                "write detailed code explanations",
+            ],
             "vision": 2,
             "coding": 5,
             "reasoning": 5,
@@ -43,6 +75,14 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
         },
         "gpt4o": {
             "model": "openai/gpt-4o",
+            "description": "Vision-first multimodal model for image understanding and visual question answering.",
+            "routes": [
+                "answer questions about an image",
+                "describe a camera frame or scene",
+                "identify objects, clothing, text, layout, or spatial relationships in an image",
+                "analyze visual accessibility context",
+                "combine image input with a user follow-up question",
+            ],
             "vision": 5,
             "coding": 4,
             "reasoning": 4,
@@ -63,21 +103,31 @@ DEFAULT_CAPABILITY_PROFILES: Dict[str, Any] = {
 }
 
 CAPABILITY_TO_PROFILE = {
-    "text_parse": "gemini_flash",
-    "tool_retrieval": "gemini_flash",
+    "text_parse": "gemini_flash_lite",
+    "tool_retrieval": "gemini_flash_lite",
     "image_analysis": "gpt4o",
     "code_generation": "claude",
     "code_repair": "claude",
-    "summarization": "gemini_flash",
+    "summarization": "gemini_flash_lite",
+}
+
+CAPABILITY_ROUTE_HINTS = {
+    "text_parse": "parse transcript structured json extract fields",
+    "tool_retrieval": "retrieve choose select issue tool from list",
+    "image_analysis": "image visual camera frame scene question",
+    "code_generation": "generate code implement feature",
+    "code_repair": "repair bug fix tests debug code",
+    "summarization": "summarize summarization concise log summary",
 }
 
 _MODEL_PROFILES: Dict[str, Any] | None = None
 _CAPABILITY_PROFILES: Dict[str, Any] | None = None
-ROUTING_MODE = os.environ.get("ROUTING_MODE", "fixed").strip().lower()
+ROUTING_MODE = os.environ.get("ROUTING_MODE", "semantic").strip().lower()
+ROUTING_MIN_SCORE = float(os.environ.get("ROUTING_MIN_SCORE", "0.0") or 0.0)
 
 
 def _routing_mode() -> str:
-    return ROUTING_MODE if ROUTING_MODE in {"fixed", "score"} else "fixed"
+    return ROUTING_MODE if ROUTING_MODE in {"semantic", "fixed", "score"} else "semantic"
 
 
 def _parse_scalar(raw_value: str) -> Any:
@@ -102,9 +152,19 @@ def _load_simple_yaml(path: Path, fallback: Dict[str, Any]) -> Dict[str, Any]:
         return fallback
 
     try:
+        try:
+            import yaml
+
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict) and loaded:
+                return loaded
+        except ImportError:
+            pass
+
         parsed: Dict[str, Any] = {}
         section_data: Optional[Dict[str, Any]] = None
         item_data: Optional[Dict[str, Any]] = None
+        current_list: Optional[List[Any]] = None
 
         for raw_line in path.read_text(encoding="utf-8").splitlines():
             line = raw_line.rstrip()
@@ -116,15 +176,27 @@ def _load_simple_yaml(path: Path, fallback: Dict[str, Any]) -> Dict[str, Any]:
             if indent == 0 and stripped.endswith(":"):
                 section_data = parsed.setdefault(stripped[:-1].strip(), {})
                 item_data = None
+                current_list = None
                 continue
 
             if indent == 2 and stripped.endswith(":") and section_data is not None:
                 item_data = section_data.setdefault(stripped[:-1].strip(), {})
+                current_list = None
+                continue
+
+            if indent >= 4 and stripped.endswith(":") and item_data is not None:
+                key = stripped[:-1].strip()
+                current_list = item_data.setdefault(key, [])
+                continue
+
+            if indent >= 6 and stripped.startswith("- ") and current_list is not None:
+                current_list.append(_parse_scalar(stripped[2:]))
                 continue
 
             if indent >= 4 and ":" in stripped and item_data is not None:
                 key, raw_value = stripped.split(":", 1)
                 item_data[key.strip()] = _parse_scalar(raw_value)
+                current_list = None
 
         return parsed or fallback
     except Exception as exc:
@@ -185,6 +257,112 @@ def _resolve_explicit_profile(metadata: Dict[str, Any] | None) -> Optional[str]:
     return None
 
 
+def _text_parts_from_content(content: Any) -> List[str]:
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return parts
+    return []
+
+
+def _route_query_from_messages(
+    capability: str,
+    messages: Optional[List[Dict[str, Any]]] = None,
+    images: Optional[Iterable[Any]] = None,
+    metadata: Dict[str, Any] | None = None,
+) -> str:
+    if isinstance(metadata, dict):
+        explicit = metadata.get("route_text") or metadata.get("routing_text")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+
+    capability_key = str(capability or "").strip().lower()
+    parts = [capability_key.replace("_", " "), CAPABILITY_ROUTE_HINTS.get(capability_key, "")]
+    for message in messages or []:
+        parts.extend(_text_parts_from_content(message.get("content")))
+
+    if images is not None and list(images):
+        parts.append("image input visual question scene camera frame")
+
+    compact = " ".join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+    return compact[:6000]
+
+
+def _model_route_text(profile_name: str, profile_data: Dict[str, Any]) -> str:
+    parts = [profile_name.replace("_", " ")]
+    description = profile_data.get("description")
+    if isinstance(description, str):
+        parts.append(description)
+
+    for key in ("routes", "utterances", "examples", "tasks"):
+        values = profile_data.get(key)
+        if isinstance(values, list):
+            parts.extend(str(value) for value in values if str(value).strip())
+        elif isinstance(values, str):
+            parts.append(values)
+
+    return " ".join(parts)
+
+
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _fallback_similarity(query: str, route_text: str) -> float:
+    query_tokens = _tokenize(query)
+    route_tokens = _tokenize(route_text)
+    if not query_tokens or not route_tokens:
+        return 0.0
+    return len(query_tokens & route_tokens) / len(query_tokens | route_tokens)
+
+
+def _semantic_scores(query_text: str, models: Dict[str, Any]) -> Dict[str, float]:
+    route_docs = {
+        profile_name: _model_route_text(profile_name, profile_data)
+        for profile_name, profile_data in models.items()
+        if isinstance(profile_data, dict)
+    }
+    if not query_text.strip() or not route_docs:
+        return {}
+
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+
+        profile_names = list(route_docs.keys())
+        docs = [query_text] + [route_docs[name] for name in profile_names]
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words="english")
+        matrix = vectorizer.fit_transform(docs)
+        similarities = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
+        return {profile_name: float(score) for profile_name, score in zip(profile_names, similarities)}
+    except Exception as exc:
+        logger.debug(f"Semantic router falling back to token overlap: {exc}")
+        return {
+            profile_name: _fallback_similarity(query_text, route_text)
+            for profile_name, route_text in route_docs.items()
+        }
+
+
+def _select_semantic_profile(query_text: str, capability_key: str) -> tuple[str, Dict[str, float]]:
+    models = _model_profiles().get("models", {})
+    scores = _semantic_scores(query_text, models)
+    if not scores:
+        return CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash"), {}
+
+    selected_profile = max(scores, key=scores.get)
+    if scores[selected_profile] < ROUTING_MIN_SCORE:
+        selected_profile = CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
+    return selected_profile, scores
+
+
 def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> Dict[str, Any]:
     models = _model_profiles().get("models", {})
     capabilities = _capability_profiles().get("capabilities", {})
@@ -192,11 +370,18 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
     capability_key = (capability or "").strip().lower()
     routing_mode = _routing_mode()
     capability_profile = capabilities.get(capability_key, {})
+    explicit_profile = _resolve_explicit_profile(metadata)
 
-    if routing_mode == "score" and capability_profile:
+    if explicit_profile:
+        selected_profile = explicit_profile
+        scoreboard = None
+    elif routing_mode == "semantic":
+        route_text = _route_query_from_messages(capability_key, metadata=metadata)
+        selected_profile, scoreboard = _select_semantic_profile(route_text, capability_key)
+    elif routing_mode == "score" and capability_profile:
         selected_profile, scoreboard = _select_scored_profile(capability_key)
     else:
-        selected_profile = _resolve_explicit_profile(metadata) or CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
+        selected_profile = CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
         scoreboard = None
 
     profile_data = models.get(selected_profile, {})
@@ -208,7 +393,7 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
         selected_model = str(profile_data.get("model", "gemini/gemini-2.0-flash")).strip()
         routing_mode = "fixed"
 
-    if routing_mode == "score" and scoreboard is not None:
+    if routing_mode in {"semantic", "score"} and scoreboard is not None:
         _log_scoreboard(capability_key, scoreboard, selected_profile)
 
     return {
@@ -269,16 +454,12 @@ def _log_scoreboard(capability_key: str, scoreboard: Dict[str, float], selected_
     if not scoreboard:
         return
 
-    lines = ["[ROUTER SCORE]", f"capability={capability_key}"]
+    lines = ["[ROUTER SCOREBOARD]", f"capability={capability_key}"]
     for profile_name in _model_profiles().get("models", {}).keys():
         if profile_name in scoreboard:
             lines.append(f"{profile_name}={scoreboard[profile_name]:.1f}")
     lines.append(f"selected={selected_profile}")
     logger.info("\n".join(lines))
-
-
-def get_selected_model(capability: str, metadata: Dict[str, Any] | None = None) -> str:
-    return get_route_info(capability, metadata)["selected_model"]
 
 
 def _resolve_api_key(model_name: str, metadata: Dict[str, Any] | None = None) -> str:
@@ -357,11 +538,14 @@ def llm_call(
     images: Optional[Iterable[Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ):
-    """Route a request through the fixed capability map and call LiteLLM."""
+    """Route a request through model-level semantic routes and call LiteLLM."""
     if not LITELLM_AVAILABLE:
         raise ImportError("litellm is not available")
 
-    route_info = get_route_info(capability, metadata)
+    image_items = list(images or [])
+    route_metadata = dict(metadata or {})
+    route_metadata.setdefault("route_text", _route_query_from_messages(capability, messages, image_items, route_metadata))
+    route_info = get_route_info(capability, route_metadata)
     selected_profile = route_info["selected_profile"]
     selected_model = route_info["selected_model"]
     provider = route_info["provider"]
@@ -376,7 +560,7 @@ def llm_call(
             if key in metadata and metadata[key] is not None:
                 completion_kwargs[key] = metadata[key]
 
-    payload = _merge_messages(messages, images)
+    payload = _merge_messages(messages, image_items)
     api_key = _resolve_api_key(selected_model, metadata)
 
     try:
@@ -625,7 +809,6 @@ class GeminiLiveManager:
 __all__ = [
     "llm_call",
     "get_route_info",
-    "get_selected_model",
     "GeminiLiveSession",
     "GeminiLiveManager",
     "GEMINI_IMAGE_MAX_DIM",

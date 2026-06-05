@@ -27,7 +27,7 @@ from google.cloud import secretmanager
 from github import Github
 import os
 from dotenv import load_dotenv
-from model_router import get_selected_model, llm_call
+from model_router import llm_call
 from litellm_utils import (
     extract_text,
 )
@@ -348,60 +348,6 @@ PAUSE_DURATION = float(os.environ.get('PAUSE_DURATION', '5.0'))  # seconds to wa
 
 # LiteLLM / Gemini Configuration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
-DEFAULT_ROUTED_MODEL = get_selected_model('text_parse')
-LLM_MODEL = DEFAULT_ROUTED_MODEL
-GEMINI_MODEL = DEFAULT_ROUTED_MODEL
-
-_AVAILABLE_MODELS_CACHE: list[str] | None = None
-
-
-def list_available_models() -> list[str]:
-    """Models the server can actually serve, derived from configured API keys.
-
-    Filters LiteLLM's known-models registry to chat-capable models that also
-    support vision (the follow-up handler sends images), then keeps only those
-    whose provider env keys are present.
-
-    Cached for the lifetime of the process — restart the server to pick up
-    newly-set API keys or LiteLLM version bumps.
-    """
-    global _AVAILABLE_MODELS_CACHE
-    if _AVAILABLE_MODELS_CACHE is not None:
-        return _AVAILABLE_MODELS_CACHE
-    try:
-        from litellm.utils import get_valid_models, get_model_info
-        valid = get_valid_models(check_provider_endpoint=False)
-        filtered = []
-        for name in valid:
-            try:
-                info = get_model_info(name)
-            except Exception:
-                continue
-            if info.get('mode') == 'chat' and info.get('supports_vision'):
-                filtered.append(name)
-        # Ensure the configured default is offered even if it doesn't pass filters
-        # (e.g. a preview model LiteLLM doesn't know about yet).
-        if DEFAULT_ROUTED_MODEL and DEFAULT_ROUTED_MODEL not in filtered:
-            filtered.insert(0, DEFAULT_ROUTED_MODEL)
-        _AVAILABLE_MODELS_CACHE = sorted(set(filtered))
-    except Exception as e:
-        logger.warning(f"Could not derive available models from LiteLLM: {e}")
-        _AVAILABLE_MODELS_CACHE = [DEFAULT_ROUTED_MODEL] if DEFAULT_ROUTED_MODEL else []
-    return _AVAILABLE_MODELS_CACHE
-
-
-def model_from_message(data: dict) -> str:
-    """Pick the LLM model for one request. Strict allowlist; logs and falls
-    back to the routed default when the client requests an unavailable model."""
-    requested = (data.get('model') or '').strip() if isinstance(data, dict) else ''
-    if not requested:
-        return DEFAULT_ROUTED_MODEL
-    if requested in list_available_models():
-        return requested
-    logger.warning(
-        f"Client requested unavailable model '{requested}', falling back to {DEFAULT_ROUTED_MODEL}"
-    )
-    return DEFAULT_ROUTED_MODEL
 
 # Gemini Live manager for custom-GPT streaming mode
 gemini_live_manager = GeminiLiveManager(GEMINI_API_KEY) if GEMINI_API_KEY else None
@@ -2812,7 +2758,7 @@ def extract_tool_description(code: str) -> str:
     return ' '.join(description_lines)[:200]  # Limit to 200 chars
 
 
-def parse_issue_selection(transcript: str, available_issues: list, model: str = None) -> dict:
+def parse_issue_selection(transcript: str, available_issues: list) -> dict:
     """
     Use AI to parse voice command to select an issue or switch to create mode.
     
@@ -2863,7 +2809,6 @@ Return ONLY a valid JSON object:
         response = llm_call(
             capability='tool_retrieval',
             messages=[{'role': 'user', 'content': prompt}],
-            metadata={'requested_model': model or ''},
         )
         ai_response = extract_text(response)
 
@@ -3027,7 +2972,7 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         logger.error(tb)
 
 
-def parse_transcript_with_ai(transcript: str, existing_data: dict = None, model: str = None) -> dict:
+def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dict:
     """
     Use AI to parse the transcript and extract structured information for issue template.
     
@@ -3114,7 +3059,6 @@ Return format:
         response = llm_call(
             capability='text_parse',
             messages=[{'role': 'user', 'content': prompt}],
-            metadata={'requested_model': model or ''},
         )
 
         # Parse the AI response
@@ -3333,9 +3277,6 @@ async def create_github_issue(text: str):
     Args:
         text: Text to parse and use for creating/updating the issue
     """
-    # Use the model stashed on `last_text` when the originating message arrived,
-    # so this background task respects the client's per-request choice.
-    active_model = last_text.get('model') or ''
     global incomplete_issue, selected_issue
     
     _log_to_all_sessions("INFO", f"create_github_issue called with text: {text}")
@@ -3369,7 +3310,7 @@ async def create_github_issue(text: str):
         # SECOND: Parse the text to see if it's a selection/mode change command
         logger.info(f"[DEBUG] NOT in update mode, parsing text for issue selection")
         available_issues = fetch_open_issues()
-        selection = parse_issue_selection(text.strip(), available_issues, model=active_model)
+        selection = parse_issue_selection(text.strip(), available_issues)
         
         # Handle list mode
         if selection.get('mode') == 'list':
@@ -3422,7 +3363,7 @@ async def create_github_issue(text: str):
             # Parse new transcript focusing on filling missing fields
             # Pass existing data as context so AI knows this is a follow-up
             _log_to_all_sessions("INFO", "Calling parse_transcript_with_ai (follow-up)")
-            new_parsed = parse_transcript_with_ai(text.strip(), existing_data=incomplete_issue['data'], model=active_model)
+            new_parsed = parse_transcript_with_ai(text.strip(), existing_data=incomplete_issue['data'])
             _log_to_all_sessions("INFO", f"AI parsing result: {new_parsed}")
             
             # Merge new data with existing incomplete data
@@ -3433,7 +3374,7 @@ async def create_github_issue(text: str):
         else:
             # First time parsing this issue
             _log_to_all_sessions("INFO", "Calling parse_transcript_with_ai (initial)")
-            parsed_data = parse_transcript_with_ai(text.strip(), model=active_model)
+            parsed_data = parse_transcript_with_ai(text.strip())
             _log_to_all_sessions("INFO", f"AI parsing result: {parsed_data}")
             logger.info(f"Initial parsing. Type: {parsed_data.get('type')}, Missing: {parsed_data.get('missing_fields', [])}")
         
@@ -3788,7 +3729,7 @@ async def test_door_recognition(request: web.Request):
 
 
 # New helper to process/save incoming text
-def process_text(text_payload, model: str = None) -> dict:
+def process_text(text_payload) -> dict:
     """
     Process and optionally save incoming text messages.
     Accepts a string or dict (will stringify).
@@ -3824,7 +3765,6 @@ def process_text(text_payload, model: str = None) -> dict:
             last_text['prev_raw'] = text_str
             last_text['timestamp'] = datetime.now()
             last_text['task'] = None
-            last_text['model'] = model
             return {'status': 'saved' if SAVE_FRAMES else 'received', 'text_preview': text_str[:200]}
 
         # CREATE mode: use delta calculation
@@ -3853,7 +3793,6 @@ def process_text(text_payload, model: str = None) -> dict:
         last_text['prev_raw'] = text_str
         last_text['timestamp'] = datetime.now()
         last_text['task'] = None
-        last_text['model'] = model
 
         if not delta:
             # nothing new appended
@@ -4001,12 +3940,12 @@ async def handle_client(websocket):
         session_log.log_message("send", "connection", "Welcome message sent")
 
         # Send server capabilities so the app can show/hide features accordingly.
-        # `default_model` is the env-configured fallback; clients can include a
-        # `model` field on each request to override per-call.
         capabilities_payload = {
             **SERVER_CAPABILITIES,
-            'default_model': DEFAULT_ROUTED_MODEL,
-            'available_models': list_available_models(),
+            'model_routing': True,
+            'routing_mode': 'semantic',
+            'default_model': '',
+            'available_models': [],
         }
         await websocket.send(json.dumps({
             'type': 'server_capabilities',
@@ -4663,7 +4602,7 @@ async def handle_client(websocket):
 
                 if text_payload:
                     logger.info(f"[DEBUG] Text received: {text_payload[:100]}, current mode: {selected_issue.get('mode')}, issue: {selected_issue.get('number')}")
-                    text_results = process_text(text_payload, model=data.get('model', ''))
+                    text_results = process_text(text_payload)
                     logger.info(f"[DEBUG] Text processing result: {text_results}, last_text content: {last_text.get('content', '')[:100] if last_text.get('content') else 'None'}")
                     combined_results['text'] = text_results
                     if text_results.get('status') in ('saved', 'received'):
@@ -5151,7 +5090,6 @@ async def handle_client(websocket):
                                     capability='image_analysis',
                                     messages=[{'role': 'user', 'content': prompt}],
                                     images=[pil_image],
-                                    metadata={'requested_model': data.get('model', '')},
                                 )
                                 answer = extract_text(response)
 

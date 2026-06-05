@@ -8,6 +8,7 @@ google-genai
 aiohttp>=3.13.0
 litellm
 python-dotenv>=1.0.0
+PyYAML>=6.0.0
 pytesseract>=0.3.0
 scipy
 scikit-learn

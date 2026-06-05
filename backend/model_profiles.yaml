@@ -1,14 +1,42 @@
 models:
   gemini_flash:
     model: gemini/gemini-3-flash-preview
+    description: Fast balanced general model for lightweight multimodal work and conversational follow-up.
+    routes:
+      - quick conversational follow-up without heavy reasoning
+      - general text and image assistance
+      - lightweight multimodal analysis when speed matters
+      - fallback for short assistant responses
     vision: 4
     coding: 3
     reasoning: 2
     latency: 5
     cost: 5
 
+  gemini_flash_lite:
+    model: gemini/gemini-2.5-flash-lite
+    description: Lowest-latency Gemini model for simple text parsing, JSON extraction, issue selection, and concise summaries.
+    routes:
+      - parse voice transcripts into structured JSON
+      - extract fields from short user requests
+      - choose or retrieve an issue or tool from a list
+      - summarize logs concisely for text to speech
+      - classify simple commands with minimal latency
+    vision: 2
+    coding: 2
+    reasoning: 2
+    latency: 5
+    cost: 5
+
   claude:
     model: anthropic/claude-3-5-sonnet-20241022
+    description: Strong coding and reasoning model for generating, modifying, debugging, and explaining code.
+    routes:
+      - generate code for a new assistive technology tool
+      - repair bugs or failing tests in Python or TypeScript
+      - refactor backend or mobile app code
+      - reason through implementation tradeoffs
+      - write detailed code explanations
     vision: 2
     coding: 5
     reasoning: 5
@@ -17,6 +45,13 @@ models:
 
   gpt4o:
     model: openai/gpt-4o
+    description: Vision-first multimodal model for image understanding and visual question answering.
+    routes:
+      - answer questions about an image
+      - describe a camera frame or scene
+      - identify objects, clothing, text, layout, or spatial relationships in an image
+      - analyze visual accessibility context
+      - combine image input with a user follow-up question
     vision: 5
     coding: 4
     reasoning: 4
