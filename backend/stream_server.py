@@ -19,6 +19,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 import cv2
 import numpy as np
 from PIL import Image
@@ -37,6 +38,7 @@ from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
 import re
 import traceback
+from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / 'tools'
@@ -1953,7 +1955,9 @@ def fetch_open_issues():
             issue_list.append({
                 'number': issue.number,
                 'title': issue.title,
+                'body': issue.body or '',
                 'labels': [label.name for label in issue.labels],
+                'is_pr': issue.pull_request is not None,
                 'created_at': issue.created_at.isoformat(),
                 'updated_at': issue.updated_at.isoformat()
             })
@@ -2801,6 +2805,94 @@ def extract_tool_description(code: str) -> str:
     return ' '.join(description_lines)[:200]  # Limit to 200 chars
 
 
+_DUPLICATE_STOPWORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'i', 'in',
+    'is', 'it', 'make', 'me', 'my', 'of', 'on', 'or', 'please', 'problem',
+    'that', 'the', 'this', 'to', 'tool', 'use', 'with'
+}
+
+
+def _normalize_duplicate_text(text: str) -> str:
+    return ' '.join(re.findall(r'[a-z0-9]+', (text or '').lower()))
+
+
+def _duplicate_tokens(text: str) -> set[str]:
+    tokens = set()
+    for token in re.findall(r'[a-z0-9]+', (text or '').lower()):
+        if token in _DUPLICATE_STOPWORDS or len(token) <= 2:
+            continue
+        if token.endswith('ies') and len(token) > 4:
+            token = token[:-3] + 'y'
+        elif token.endswith('s') and len(token) > 4:
+            token = token[:-1]
+        if token.startswith('identif'):
+            token = 'identify'
+        if token.startswith('denom'):
+            token = 'denomination'
+        tokens.add(token)
+    return tokens
+
+
+def duplicate_similarity(text_a: str, text_b: str) -> float:
+    """Score two tool requests for likely duplication."""
+    norm_a = _normalize_duplicate_text(text_a)
+    norm_b = _normalize_duplicate_text(text_b)
+    if not norm_a or not norm_b:
+        return 0.0
+
+    tokens_a = _duplicate_tokens(norm_a)
+    tokens_b = _duplicate_tokens(norm_b)
+    token_score = 0.0
+    if tokens_a and tokens_b:
+        token_score = len(tokens_a & tokens_b) / max(1, min(len(tokens_a), len(tokens_b)))
+
+    char_score = SequenceMatcher(None, norm_a, norm_b).ratio()
+    return max(token_score, char_score)
+
+
+def _issue_duplicate_text(issue: dict) -> str:
+    body = issue.get('body') or ''
+    original_prompts = re.findall(
+        r'<!--\s*ORIGINAL_PROMPTS\s*(.*?)\s*-->',
+        body,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    prompt_text = ' '.join(original_prompts)
+    return ' '.join(
+        str(part)
+        for part in (
+            issue.get('title', ''),
+            issue.get('description', ''),
+            body,
+            prompt_text,
+        )
+        if part
+    )
+
+
+def find_duplicate_issue(transcript: str, available_issues: list, threshold: float = 0.72) -> Optional[dict]:
+    best_issue = None
+    best_score = 0.0
+
+    for issue in available_issues:
+        score = duplicate_similarity(transcript, _issue_duplicate_text(issue))
+        if score > best_score:
+            best_issue = issue
+            best_score = score
+
+    if best_issue and best_score >= threshold:
+        return {
+            'mode': 'update',
+            'issue_number': best_issue.get('number'),
+            'issue_title': best_issue.get('title', ''),
+            'is_pr': best_issue.get('is_pr', False),
+            'confidence': best_score,
+            'match_reason': 'duplicate_similarity',
+        }
+
+    return None
+
+
 def parse_issue_selection(transcript: str, available_issues: list) -> dict:
     """
     Use AI to parse voice command to select an issue or switch to create mode.
@@ -2816,13 +2908,21 @@ def parse_issue_selection(transcript: str, available_issues: list) -> dict:
         return {'mode': 'create', 'issue_number': None, 'issue_title': None}
     
     try:
-        # Build list of available issues for the prompt
-        issue_list_str = "\n".join([f"- Issue #{issue['number']}: {issue['title']}" 
-                                     for issue in available_issues])
+        # Build list of available issues for the prompt, including a short body
+        # excerpt so duplicate tool requests can match beyond title wording.
+        issue_lines = []
+        for issue in available_issues[:30]:
+            body_excerpt = ' '.join((issue.get('body') or '').split())[:350]
+            issue_kind = 'PR' if issue.get('is_pr') else 'Issue'
+            line = f"- {issue_kind} #{issue['number']}: {issue['title']}"
+            if body_excerpt:
+                line += f" | Details: {body_excerpt}"
+            issue_lines.append(line)
+        issue_list_str = "\n".join(issue_lines)
         
         prompt = f"""Parse the following voice command to determine if the user wants to:
-1. Select an existing issue to update/iterate on
-2. Create a new issue
+1. Select an existing issue to update/iterate on, including when the new request duplicates or strongly overlaps an existing issue
+2. Create a new issue only when the request is meaningfully different from all existing issues
 3. Show/list available issues
 
 Available open issues:
@@ -2835,7 +2935,11 @@ If the user is selecting an issue (e.g., "select issue 42", "work on the bug abo
 - Return the issue number that best matches their description
 - Return the issue title
 
-If the user wants to create a new issue or doesn't mention an existing issue:
+If the user's request describes the same desired tool, problem, example usage, or implementation as an existing issue/PR:
+- Return mode: "update" even if the user did not explicitly say "update"
+- Prefer the best matching existing issue over creating a duplicate
+
+If the user wants to create a new issue and the request is not a duplicate or close match:
 - Return mode: "create"
 
 If the user wants to see the list of issues (e.g., "show issues", "list issues", "what issues are open"):
@@ -2978,8 +3082,7 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                 'pr_number': pr_number,
                 'pr_url': pr_url
             }
-            import websockets
-            websockets.broadcast(connected_clients, json.dumps(success_data))
+            await broadcast_to_connected_clients(success_data)
             
             # If we mentioned @copilot, start polling for the Copilot session
             if mention_copilot and connected_clients:
@@ -3312,6 +3415,25 @@ def _log_to_all_sessions(level: str, message: str):
         session_log.log(level, message)
 
 
+async def broadcast_to_connected_clients(payload: dict):
+    """Broadcast JSON to aiohttp/websockets-compatible client adapters."""
+    if not connected_clients:
+        return
+
+    message = json.dumps(payload)
+    send_tasks = []
+    for client in list(connected_clients):
+        send = getattr(client, 'send', None)
+        if callable(send):
+            send_tasks.append(send(message))
+
+    if send_tasks:
+        results = await asyncio.gather(*send_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning(f"Failed to broadcast to client: {result}")
+
+
 async def create_github_issue(text: str):
     """
     Create a GitHub issue OR update an existing one based on selected mode.
@@ -3353,7 +3475,14 @@ async def create_github_issue(text: str):
         # SECOND: Parse the text to see if it's a selection/mode change command
         logger.info(f"[DEBUG] NOT in update mode, parsing text for issue selection")
         available_issues = fetch_open_issues()
-        selection = parse_issue_selection(text.strip(), available_issues)
+        selection = find_duplicate_issue(text.strip(), available_issues)
+        if selection:
+            logger.info(
+                f"Duplicate issue detected locally: issue #{selection.get('issue_number')} "
+                f"score={selection.get('confidence'):.2f}"
+            )
+        else:
+            selection = parse_issue_selection(text.strip(), available_issues)
         
         # Handle list mode
         if selection.get('mode') == 'list':
@@ -3367,8 +3496,7 @@ async def create_github_issue(text: str):
                     'message': issue_list_msg,
                     'issues': available_issues[:10]
                 }
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(list_data))
+                await broadcast_to_connected_clients(list_data)
             return
         
         # Handle update mode selection
@@ -3379,14 +3507,17 @@ async def create_github_issue(text: str):
             
             # Send confirmation to client
             if connected_clients:
+                selected_kind = 'PR' if selection.get('is_pr') else 'issue'
                 confirm_data = {
                     'type': 'issue_selected',
-                    'message': f"Selected issue #{selected_issue['number']}: {selected_issue['title']}",
+                    'message': f"Found existing {selected_kind} #{selected_issue['number']}: {selected_issue['title']}. What would you like to update?",
                     'issue_number': selected_issue['number'],
-                    'issue_title': selected_issue['title']
+                    'issue_title': selected_issue['title'],
+                    'is_pr': selection.get('is_pr', False),
+                    'duplicate_match': selection.get('match_reason') == 'duplicate_similarity',
+                    'confidence': selection.get('confidence'),
                 }
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(confirm_data))
+                await broadcast_to_connected_clients(confirm_data)
             
             logger.info(f"Switched to update mode for issue #{selected_issue['number']}")
             return
@@ -3440,9 +3571,7 @@ async def create_github_issue(text: str):
                     'message': feedback_msg,
                     'missing_fields': missing_fields
                 }
-                # Send to all connected clients
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(feedback_data))
+                await broadcast_to_connected_clients(feedback_data)
             
             # Don't create issue yet, wait for more info
             logger.info("Issue incomplete, waiting for user to provide more details")
@@ -3500,6 +3629,16 @@ async def create_github_issue(text: str):
             body=body,
             labels=labels
         )
+        issue_cache['issues'].insert(0, {
+            'number': issue.number,
+            'title': issue.title,
+            'body': body,
+            'labels': labels,
+            'is_pr': False,
+            'created_at': issue.created_at.isoformat(),
+            'updated_at': issue.updated_at.isoformat(),
+        })
+        issue_cache['last_fetch'] = datetime.now()
         _log_to_all_sessions("INFO", f"GitHub API: Created issue #{issue.number}: {title} (url: {issue.html_url})")
         logger.info(f"Created GitHub issue #{issue.number}: {title[:50]}... (type: {issue_type})")
         
@@ -3511,8 +3650,7 @@ async def create_github_issue(text: str):
                 'issue_number': issue.number,
                 'issue_url': issue.html_url
             }
-            import websockets
-            websockets.broadcast(connected_clients, json.dumps(success_data))
+            await broadcast_to_connected_clients(success_data)
             
             # Start polling for Copilot session for each connected client
             for ws in connected_clients:
