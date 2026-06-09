@@ -20,6 +20,8 @@ models:
       - parse voice transcripts into structured JSON
       - extract fields from short user requests
       - choose or retrieve an issue or tool from a list
+      - read text from signs, labels, documents, and images using OCR
+      - extract OCR text from a camera frame for text to speech
       - summarize logs concisely for text to speech
       - classify simple commands with minimal latency
     vision: 2
@@ -28,9 +30,9 @@ models:
     latency: 5
     cost: 5
 
-  claude:
-    model: anthropic/claude-3-5-sonnet-20241022
-    description: Strong coding and reasoning model for generating, modifying, debugging, and explaining code.
+  llama:
+    model: groq/llama-3.1-8b-instant
+    description: Fast Groq-hosted lightweight Llama model for generating, modifying, debugging, and explaining code.
     routes:
       - generate code for a new assistive technology tool
       - repair bugs or failing tests in Python or TypeScript
@@ -38,10 +40,23 @@ models:
       - reason through implementation tradeoffs
       - write detailed code explanations
     vision: 2
-    coding: 5
-    reasoning: 5
-    latency: 2
-    cost: 2
+    coding: 4
+    reasoning: 4
+    latency: 5
+    cost: 5
+
+  llava:
+    model: groq/meta-llama/llama-4-scout-17b-16e-instruct
+    description: Groq-hosted lightweight vision-language model for image understanding through the Groq API.
+    routes:
+      - answer simple questions about an image using a Groq vision language model
+      - describe visible objects, layout, and text-adjacent visual context from a camera frame
+      - low-latency visual understanding through Groq
+    vision: 4
+    coding: 2
+    reasoning: 3
+    latency: 5
+    cost: 5
 
   gpt4o:
     model: openai/gpt-4o

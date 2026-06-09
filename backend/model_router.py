@@ -48,6 +48,8 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
                 "parse voice transcripts into structured JSON",
                 "extract fields from short user requests",
                 "choose or retrieve an issue or tool from a list",
+                "read text from signs, labels, documents, and images using OCR",
+                "extract OCR text from a camera frame for text to speech",
                 "summarize logs concisely for text to speech",
                 "classify simple commands with minimal latency",
             ],
@@ -57,9 +59,9 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
             "latency": 5,
             "cost": 5,
         },
-        "claude": {
-            "model": "anthropic/claude-3-5-sonnet-20241022",
-            "description": "Strong coding and reasoning model for generating, modifying, debugging, and explaining code.",
+        "llama": {
+            "model": os.environ.get("LLAMA_MODEL", "groq/llama-3.1-8b-instant"),
+            "description": "Fast Groq-hosted lightweight Llama model for generating, modifying, debugging, and explaining code.",
             "routes": [
                 "generate code for a new assistive technology tool",
                 "repair bugs or failing tests in Python or TypeScript",
@@ -68,10 +70,24 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
                 "write detailed code explanations",
             ],
             "vision": 2,
-            "coding": 5,
-            "reasoning": 5,
-            "latency": 2,
-            "cost": 2,
+            "coding": 4,
+            "reasoning": 4,
+            "latency": 5,
+            "cost": 5,
+        },
+        "llava": {
+            "model": os.environ.get("LLAVA_MODEL", "groq/meta-llama/llama-4-scout-17b-16e-instruct"),
+            "description": "Groq-hosted lightweight vision-language model for image understanding through the Groq API.",
+            "routes": [
+                "answer simple questions about an image using a Groq vision language model",
+                "describe visible objects, layout, and text-adjacent visual context from a camera frame",
+                "low-latency visual understanding through Groq",
+            ],
+            "vision": 4,
+            "coding": 2,
+            "reasoning": 3,
+            "latency": 5,
+            "cost": 5,
         },
         "gpt4o": {
             "model": "openai/gpt-4o",
@@ -97,8 +113,13 @@ DEFAULT_CAPABILITY_PROFILES: Dict[str, Any] = {
         "text_parse": {"vision": 0, "coding": 0, "reasoning": 1, "latency": 5},
         "tool_retrieval": {"vision": 0, "coding": 0, "reasoning": 2, "latency": 5},
         "image_analysis": {"vision": 5, "coding": 0, "reasoning": 2, "latency": 4},
+        "visual_understanding": {"vision": 5, "coding": 0, "reasoning": 2, "latency": 4},
+        "visual_reasoning": {"vision": 5, "coding": 0, "reasoning": 4, "latency": 3},
+        "ocr": {"vision": 4, "coding": 0, "reasoning": 1, "latency": 4},
+        "summarization": {"vision": 0, "coding": 0, "reasoning": 2, "latency": 5},
         "code_generation": {"vision": 0, "coding": 5, "reasoning": 4, "latency": 2},
         "code_repair": {"vision": 0, "coding": 5, "reasoning": 5, "latency": 2},
+        "general_reasoning": {"vision": 1, "coding": 1, "reasoning": 4, "latency": 3},
     }
 }
 
@@ -106,18 +127,40 @@ CAPABILITY_TO_PROFILE = {
     "text_parse": "gemini_flash_lite",
     "tool_retrieval": "gemini_flash_lite",
     "image_analysis": "gpt4o",
-    "code_generation": "claude",
-    "code_repair": "claude",
+    "visual_understanding": "gpt4o",
+    "visual_reasoning": "gpt4o",
+    "ocr": "gemini_flash_lite",
+    "code_generation": "llama",
+    "code_repair": "llama",
     "summarization": "gemini_flash_lite",
+    "general_reasoning": "gemini_flash",
 }
 
 CAPABILITY_ROUTE_HINTS = {
     "text_parse": "parse transcript structured json extract fields",
     "tool_retrieval": "retrieve choose select issue tool from list",
     "image_analysis": "image visual camera frame scene question",
+    "visual_understanding": "identify describe image visual camera frame scene objects layout",
+    "visual_reasoning": "reason about image visual scene spatial relationships accessibility context",
+    "ocr": "read text ocr extract words signs labels documents from image",
     "code_generation": "generate code implement feature",
     "code_repair": "repair bug fix tests debug code",
     "summarization": "summarize summarization concise log summary",
+    "general_reasoning": "general reasoning assistant response plan explain decide",
+}
+
+TASK_CATEGORIES = (
+    "visual_understanding",
+    "visual_reasoning",
+    "OCR",
+    "summarization",
+    "code_generation",
+    "general_reasoning",
+)
+
+TASK_CATEGORY_ALIASES = {
+    "image_analysis": "visual_understanding",
+    "ocr": "ocr",
 }
 
 _MODEL_PROFILES: Dict[str, Any] | None = None
@@ -128,6 +171,12 @@ ROUTING_MIN_SCORE = float(os.environ.get("ROUTING_MIN_SCORE", "0.0") or 0.0)
 
 def _routing_mode() -> str:
     return ROUTING_MODE if ROUTING_MODE in {"semantic", "fixed", "score"} else "semantic"
+
+
+def _normalize_capability(capability: str) -> tuple[str, str]:
+    raw_capability = (capability or "").strip()
+    lowered = raw_capability.lower()
+    return raw_capability, TASK_CATEGORY_ALIASES.get(lowered, lowered)
 
 
 def _parse_scalar(raw_value: str) -> Any:
@@ -208,6 +257,12 @@ def _model_profiles() -> Dict[str, Any]:
     global _MODEL_PROFILES
     if _MODEL_PROFILES is None:
         _MODEL_PROFILES = _load_simple_yaml(MODEL_PROFILES_PATH, DEFAULT_MODEL_PROFILES)
+        models = _MODEL_PROFILES.get("models", {})
+        if isinstance(models, dict):
+            if os.environ.get("LLAMA_MODEL") and isinstance(models.get("llama"), dict):
+                models["llama"]["model"] = os.environ["LLAMA_MODEL"]
+            if os.environ.get("LLAVA_MODEL") and isinstance(models.get("llava"), dict):
+                models["llava"]["model"] = os.environ["LLAVA_MODEL"]
     return _MODEL_PROFILES
 
 
@@ -222,6 +277,8 @@ def _provider_for_model(model_name: str) -> str:
     raw = (model_name or "").strip()
     if "/" in raw:
         return raw.split("/", 1)[0]
+    if raw.startswith("llama") or raw.startswith("llava"):
+        return "ollama"
     if raw.startswith("gemini"):
         return "gemini"
     if raw.startswith("claude"):
@@ -279,13 +336,16 @@ def _route_query_from_messages(
     images: Optional[Iterable[Any]] = None,
     metadata: Dict[str, Any] | None = None,
 ) -> str:
+    capability_key = str(capability or "").strip().lower()
+    category_parts = [capability_key.replace("_", " "), CAPABILITY_ROUTE_HINTS.get(capability_key, "")]
+
     if isinstance(metadata, dict):
         explicit = metadata.get("route_text") or metadata.get("routing_text")
         if isinstance(explicit, str) and explicit.strip():
-            return explicit.strip()
+            compact = " ".join(part.strip() for part in category_parts + [explicit] if isinstance(part, str) and part.strip())
+            return compact[:6000]
 
-    capability_key = str(capability or "").strip().lower()
-    parts = [capability_key.replace("_", " "), CAPABILITY_ROUTE_HINTS.get(capability_key, "")]
+    parts = list(category_parts)
     for message in messages or []:
         parts.extend(_text_parts_from_content(message.get("content")))
 
@@ -367,10 +427,14 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
     models = _model_profiles().get("models", {})
     capabilities = _capability_profiles().get("capabilities", {})
 
-    capability_key = (capability or "").strip().lower()
+    raw_capability, capability_key = _normalize_capability(capability)
     routing_mode = _routing_mode()
     capability_profile = capabilities.get(capability_key, {})
     explicit_profile = _resolve_explicit_profile(metadata)
+    fallback_profile = CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
+    fallback_model = str(models.get(fallback_profile, {}).get("model", "")).strip()
+    fallback_reason = None
+    selected_via_fallback = False
 
     if explicit_profile:
         selected_profile = explicit_profile
@@ -378,11 +442,19 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
     elif routing_mode == "semantic":
         route_text = _route_query_from_messages(capability_key, metadata=metadata)
         selected_profile, scoreboard = _select_semantic_profile(route_text, capability_key)
+        if not scoreboard:
+            fallback_reason = "empty_scoreboard"
+            selected_via_fallback = True
+        elif selected_profile == fallback_profile and scoreboard.get(selected_profile, 0.0) < ROUTING_MIN_SCORE:
+            fallback_reason = "below_min_score"
+            selected_via_fallback = True
     elif routing_mode == "score" and capability_profile:
         selected_profile, scoreboard = _select_scored_profile(capability_key)
     else:
-        selected_profile = CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
+        selected_profile = fallback_profile
         scoreboard = None
+        fallback_reason = "fixed_or_unknown_capability"
+        selected_via_fallback = True
 
     profile_data = models.get(selected_profile, {})
     selected_model = str(profile_data.get("model", "")).strip()
@@ -392,15 +464,24 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
         profile_data = models.get(selected_profile, {})
         selected_model = str(profile_data.get("model", "gemini/gemini-2.0-flash")).strip()
         routing_mode = "fixed"
+        fallback_profile = selected_profile
+        fallback_model = selected_model
+        fallback_reason = "missing_selected_model"
+        selected_via_fallback = True
 
     if routing_mode in {"semantic", "score"} and scoreboard is not None:
         _log_scoreboard(capability_key, scoreboard, selected_profile)
 
     return {
+        "requested_capability": raw_capability,
         "capability": capability_key,
+        "task_category": capability_key,
         "selected_profile": selected_profile,
         "selected_model": selected_model,
         "provider": _provider_for_model(selected_model),
+        "fallback_profile": fallback_profile if selected_via_fallback else None,
+        "fallback_model": fallback_model if selected_via_fallback else None,
+        "fallback_reason": fallback_reason,
         "profile_data": profile_data,
         "capability_profile": capability_profile,
         "routing_mode": routing_mode,
@@ -471,6 +552,8 @@ def _resolve_api_key(model_name: str, metadata: Dict[str, Any] | None = None) ->
     normalized = (model_name or "").lower()
     if normalized.startswith("gemini"):
         return os.environ.get("GEMINI_API_KEY", "")
+    if normalized.startswith("ollama") or normalized.startswith("llama") or normalized.startswith("llava"):
+        return os.environ.get("OLLAMA_API_KEY", "")
     if normalized.startswith("groq"):
         return os.environ.get("GROQ_API_KEY", "")
     if normalized.startswith("anthropic") or normalized.startswith("claude"):
@@ -546,19 +629,28 @@ def llm_call(
     route_metadata = dict(metadata or {})
     route_metadata.setdefault("route_text", _route_query_from_messages(capability, messages, image_items, route_metadata))
     route_info = get_route_info(capability, route_metadata)
+    task_category = route_info["task_category"]
     selected_profile = route_info["selected_profile"]
     selected_model = route_info["selected_model"]
     provider = route_info["provider"]
+    fallback_model = route_info.get("fallback_model")
+    fallback_reason = route_info.get("fallback_reason")
 
     logger.info(
-        f"[ROUTER] capability={capability} selected_profile={selected_profile} selected_model={selected_model} provider={provider}"
+        f"[ROUTER] task_category={task_category} capability={capability} "
+        f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
+        f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
     )
 
     completion_kwargs: Dict[str, Any] = {}
     if isinstance(metadata, dict):
-        for key in ("temperature", "max_tokens", "top_p", "stop", "timeout", "response_format", "stream"):
+        for key in ("temperature", "max_tokens", "top_p", "stop", "timeout", "response_format", "stream", "api_base", "base_url"):
             if key in metadata and metadata[key] is not None:
-                completion_kwargs[key] = metadata[key]
+                completion_key = "api_base" if key == "base_url" else key
+                completion_kwargs[completion_key] = metadata[key]
+
+    if selected_model.startswith("ollama/"):
+        completion_kwargs.setdefault("api_base", os.environ.get("OLLAMA_API_BASE", "http://localhost:11434"))
 
     payload = _merge_messages(messages, image_items)
     api_key = _resolve_api_key(selected_model, metadata)
@@ -572,7 +664,9 @@ def llm_call(
         )
     except Exception:
         logger.exception(
-            f"[ROUTER] capability={capability} selected_profile={selected_profile} selected_model={selected_model} provider={provider}"
+            f"[ROUTER] task_category={task_category} capability={capability} "
+            f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
+            f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
         )
         raise
 
@@ -809,6 +903,7 @@ class GeminiLiveManager:
 __all__ = [
     "llm_call",
     "get_route_info",
+    "TASK_CATEGORIES",
     "GeminiLiveSession",
     "GeminiLiveManager",
     "GEMINI_IMAGE_MAX_DIM",

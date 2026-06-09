@@ -28,6 +28,10 @@ from google.cloud import secretmanager
 from github import Github
 import os
 from dotenv import load_dotenv
+
+# Load .env before importing modules that read routing/provider settings at import time.
+load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
+
 from model_router import llm_call
 from litellm_utils import (
     extract_text,
@@ -46,9 +50,6 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from door_detection import main as door_recognition_main
-
-# Load .env from the backend directory (if present)
-load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 # Configure logging
 logging.basicConfig(

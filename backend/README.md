@@ -33,8 +33,10 @@ The server uses environment variables for configuration:
 
 - `ROUTING_MODE`: Optional model routing mode. Defaults to `semantic`, which compares the request against each model's `routes` in `model_profiles.yaml`. Legacy options are `fixed` and `score`.
 
-- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
+- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`.
   - If a provider-specific model is selected, ensure the corresponding provider API key is present.
+- Code-generation routing uses Groq's lightweight Llama profile by default, so keep `GROQ_API_KEY` set. Override defaults with `LLAMA_MODEL` or `LLAVA_MODEL`.
+- Local Ollama models remain optional. Set `OLLAMA_API_BASE` if you override a routed model to an Ollama model and your Ollama server is not at `http://localhost:11434`.
 
 ### Semantic Model Routing
 
@@ -186,7 +188,7 @@ User: "I open the camera and click the photo button. I expected to take a photo 
 
 ## Security Notes
 
-- Never commit your `GITHUB_TOKEN` or any provider API key (for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) to source control
+- Never commit your `GITHUB_TOKEN` or any provider API key (for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`) to source control
 - Use environment variables or a secure secrets manager
 - The GitHub token should have minimal required permissions (only `repo` scope)
 - Provider API keys should be kept secure and rotated regularly
