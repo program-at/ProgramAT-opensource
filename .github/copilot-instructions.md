@@ -8,6 +8,58 @@ When using other tool files as building blocks, use their patterns but do not im
 
 From the Github agent, tools must NOT connect to the backend server or use WebSockets. Tools execute ON the backend server and receive data as function parameters. The mobile app handles all network communication. Tools should only process the image and input_data parameters passed to their main() function and return results as strings or dictionaries.
 
+Before implementing a new tool, analyze whether the request requires multiple fundamentally different capabilities. Prefer the smallest number of stages possible. Only create a new stage when one of these changes:
+- Required capability
+- Required modality
+- Required latency requirement
+- Required output type
+
+Use these capability categories when designing tool stages:
+- `object_detection`
+- `object_localization`
+- `OCR`
+- `visual_understanding`
+- `visual_reasoning`
+- `navigation`
+- `summarization`
+- `general_reasoning`
+
+Do not decompose a task into many small stages. If the capability is unchanged, keep it within the same stage.
+
+Good stage boundaries:
+- Vehicle identification -> Door handle localization
+- OCR -> Reasoning
+- Detection -> Navigation
+
+Bad stage boundaries:
+- Find car -> Verify car -> Verify color -> Verify door
+- Read bottle -> Read dosage -> Read expiration date
+
+Before generating code, include a brief design section in the issue/PR discussion or implementation notes:
+
+```text
+Task Pipeline
+
+Stage 1:
+Capability:
+Input:
+Output:
+
+Stage 2:
+Capability:
+Input:
+Output:
+
+Stage 3:
+Capability:
+Input:
+Output:
+```
+
+If only one capability is needed, use a single stage. Outputs from earlier stages should be reused by later stages instead of recomputing the same information. For example, first find the user's Uber and output the vehicle identity and location; then use that vehicle location as input when locating the passenger-side door handle.
+
+Do not hardcode Gemini, GPT, Claude, Llama, or any provider/model during planning. Describe capabilities in the pipeline. The actual model selection happens later through ProgramAT's model routing system.
+
 From the Github agent, ALL tools MUST return audio-friendly output. Tool results are automatically spoken aloud via text-to-speech on the mobile device unless another form of audio is specified. Return values should be:
 - Natural language strings that sound good when spoken (not JSON, not code, not cryptic abbreviations)
 - Concise - Long outputs will take too long to speak
