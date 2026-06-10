@@ -50,6 +50,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from door_detection import main as door_recognition_main
+from model_router_client import (
+    routed_llm_call,
+    routed_object_detection,
+    routed_ocr_call,
+    routed_vision_call,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -518,6 +524,10 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 'vision_call': vision_call,
                 'detect_objects': detect_objects,
                 'ocr_call': ocr_call,
+                'routed_llm_call': routed_llm_call,
+                'routed_vision_call': routed_vision_call,
+                'routed_object_detection': routed_object_detection,
+                'routed_ocr_call': routed_ocr_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -5019,6 +5029,10 @@ async def handle_client(websocket):
                                 'vision_call': vision_call,
                                 'detect_objects': detect_objects,
                                 'ocr_call': ocr_call,
+                                'routed_llm_call': routed_llm_call,
+                                'routed_vision_call': routed_vision_call,
+                                'routed_object_detection': routed_object_detection,
+                                'routed_ocr_call': routed_ocr_call,
                                 'input_data': parsed_input,  # Use parsed input (dict or string)
                                 'image': frame_image,  # OpenCV image (numpy array)
                                 'image_base64': frame_base64,  # Base64 string

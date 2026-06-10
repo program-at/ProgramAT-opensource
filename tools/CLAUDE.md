@@ -43,16 +43,18 @@ def main(image, input_data=None):
   trust the existing backend capability layer and centralized model router. Do
   not implement routing, create routers, create capability registries, create
   detector/OCR/LLM wrappers, or choose providers/models inside a generated tool.
-  Import `llm_call`, `vision_call`, `detect_objects`, or `ocr_call` from
-  `model_router` only as existing backend entrypoints. Supported categories
-  for new tools include
+  Import `routed_llm_call`, `routed_vision_call`, `routed_object_detection`, or
+  `routed_ocr_call` from `model_router_client` only as existing backend
+  entrypoints. Supported categories for new tools include
   `simple_parsing`, `object_detection`, `object_localization`,
   `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`,
   `code_generation`, and `general_reasoning`. Include
   `metadata={"tool_name": "...", "route_text": "..."}` for routing logs. Do not
   hardcode provider/model names, detector names, provider-specific
-  `DEFAULT_MODEL` constants, or direct `litellm.completion()` calls unless no
-  backend capability path exists.
+  `DEFAULT_MODEL` constants, direct `litellm.completion()` calls, provider SDK
+  imports, or model-file discovery logic. If the approved API cannot support the
+  needed capability, add support to the centralized router or
+  `model_router_client` instead of implementing it inside the tool.
 - **Imports:** `import litellm_utils` bare (the server makes `tools/` the import
   root). Wrap optional dependencies in `try/except ImportError` — missing pip
   packages are auto-installed by the backend.
