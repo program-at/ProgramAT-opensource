@@ -62,6 +62,14 @@ class TestSemanticModelRouter(unittest.TestCase):
             "OCR",
             {"route_text": "read text from a sign in the camera frame"},
         )
+        detection_route = model_router.get_route_info(
+            "object_detection",
+            {"labels": ["car"], "route_text": "detect cars with bounding boxes"},
+        )
+        world_route = model_router.get_route_info(
+            "object_localization",
+            {"labels": ["door handle"], "route_text": "localize a door handle"},
+        )
         visual_reasoning_route = model_router.get_route_info(
             "visual_reasoning",
             {"route_text": "reason about the spatial layout of objects in an image"},
@@ -70,7 +78,9 @@ class TestSemanticModelRouter(unittest.TestCase):
         self.assertEqual(simple_route["task_category"], "simple_parsing")
         self.assertEqual(simple_route["selected_profile"], "gemini_flash_lite")
         self.assertEqual(ocr_route["task_category"], "ocr")
-        self.assertEqual(ocr_route["selected_profile"], "gemini_flash_lite")
+        self.assertEqual(ocr_route["selected_profile"], "google_vision_ocr")
+        self.assertEqual(detection_route["selected_profile"], "yolo11_detector")
+        self.assertEqual(world_route["selected_profile"], "yolo_world_detector")
         self.assertEqual(visual_reasoning_route["task_category"], "visual_reasoning")
         self.assertEqual(visual_reasoning_route["selected_profile"], "gpt4o")
 
@@ -90,6 +100,44 @@ class TestSemanticModelRouter(unittest.TestCase):
             )
 
         self.assertEqual(completion.call_args.kwargs["model"], "openai/gpt-4o")
+
+    def test_llm_call_falls_back_from_non_llm_backend(self):
+        fake_litellm = SimpleNamespace()
+
+        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
+             patch.object(model_router, "litellm", fake_litellm), \
+             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
+            model_router.llm_call(
+                task="ocr",
+                messages=[{"role": "user", "content": "Clean up OCR text."}],
+                metadata={"tool_name": "ocr_cleanup"},
+            )
+
+        self.assertEqual(completion.call_args.kwargs["model"], "gemini/gemini-2.5-flash-lite")
+
+    def test_vision_call_routes_images_to_llm_call(self):
+        with patch.object(model_router, "llm_call", return_value={"choices": []}) as llm_call:
+            model_router.vision_call(
+                task="visual_reasoning",
+                image="abc123",
+                prompt="Find the correct vehicle.",
+                metadata={"tool_name": "uber_finder"},
+            )
+
+        self.assertEqual(llm_call.call_args.kwargs["task"], "visual_reasoning")
+        self.assertEqual(llm_call.call_args.kwargs["images"], ["abc123"])
+
+    def test_detect_objects_routes_to_detector_backend(self):
+        with patch.object(model_router, "_run_ultralytics_detector", return_value=[]) as run_detector:
+            result = model_router.detect_objects(
+                task="object_detection",
+                image=object(),
+                labels=["car"],
+                metadata={"tool_name": "car_counter"},
+            )
+
+        self.assertEqual(result, [])
+        self.assertEqual(run_detector.call_args.kwargs["model_name"], "local/yolo11n.pt")
 
     def test_unknown_category_reports_fallback_model(self):
         original_min_score = model_router.ROUTING_MIN_SCORE

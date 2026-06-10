@@ -41,6 +41,18 @@ capabilities:
     reasoning: 1
     latency: 4
 
+  object_detection:
+    vision: 5
+    coding: 0
+    reasoning: 0
+    latency: 5
+
+  object_localization:
+    vision: 5
+    coding: 0
+    reasoning: 1
+    latency: 5
+
   summarization:
     vision: 0
     coding: 0

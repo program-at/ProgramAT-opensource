@@ -38,14 +38,16 @@ def main(image, input_data=None):
   per frame makes streaming unusable. `door_detection.py` shows the pattern.
 - **Streaming etiquette:** when run per frame, return `""` when nothing changed, or
   the user hears the same thing every ~500ms. Streaming output is capped at ~15 words.
-- **LLM calls:** use `from model_router import llm_call`, first choose a task
-  category, and pass it as `task`. Supported categories for new tools are
-  `simple_parsing`, `visual_understanding`, `visual_reasoning`, `ocr`,
-  `summarization`, `code_generation`, and `general_reasoning`. Include
+- **Model-backed work:** use the router, not provider-specific model code.
+  Import `llm_call`, `vision_call`, `detect_objects`, or `ocr_call` from
+  `model_router`. Supported categories for new tools include
+  `simple_parsing`, `object_detection`, `object_localization`,
+  `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`,
+  `code_generation`, and `general_reasoning`. Include
   `metadata={"tool_name": "...", "route_text": "..."}` for routing logs. Do not
-  hardcode provider/model names, define provider-specific `DEFAULT_MODEL`
-  constants, or call `litellm.completion()` directly unless no router-compatible
-  path exists.
+  hardcode provider/model names, detector names, provider-specific
+  `DEFAULT_MODEL` constants, or direct `litellm.completion()` calls unless no
+  router-compatible path exists.
 - **Imports:** `import litellm_utils` bare (the server makes `tools/` the import
   root). Wrap optional dependencies in `try/except ImportError` — missing pip
   packages are auto-installed by the backend.
@@ -63,8 +65,8 @@ def main(image, input_data=None):
 
 1. Create `tools/your_tool.py` with `main(image, input_data)`.
 2. Write a `backend/test_<tool>.py` script and verify with `python test_<tool>.py`.
-3. Default building blocks: YOLO11 + COCO for common objects, YOLOWorld for
-   novel objects, Google Cloud Vision for OCR, and semantic LLM routing through
-   `llm_call`.
+3. Default building blocks: route pure detection/localization/counting through
+   `detect_objects`, OCR through `ocr_call`, VLM work through `vision_call`, and
+   text LLM work through `llm_call`.
 4. `MODEL_SETUP.md` covers model files; `.github/copilot-instructions.md` has the
    full tool-generation spec. `CONTRIBUTING.md` has the PR and review process.

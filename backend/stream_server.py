@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 # Load .env before importing modules that read routing/provider settings at import time.
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
-from model_router import llm_call
+from model_router import detect_objects, llm_call, ocr_call, vision_call
 from litellm_utils import (
     extract_text,
 )
@@ -504,6 +504,9 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 '__builtins__': __builtins__,
                 '__file__': str(Path(__file__).parent.parent / 'tools' / 'dynamic_tool.py'),
                 'llm_call': llm_call,
+                'vision_call': vision_call,
+                'detect_objects': detect_objects,
+                'ocr_call': ocr_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -4996,6 +4999,9 @@ async def handle_client(websocket):
                                 '__builtins__': __builtins__,
                                 '__file__': str(TOOLS_DIR / f'{Path(tool_name).name}.py'),
                                 'llm_call': llm_call,
+                                'vision_call': vision_call,
+                                'detect_objects': detect_objects,
+                                'ocr_call': ocr_call,
                                 'input_data': parsed_input,  # Use parsed input (dict or string)
                                 'image': frame_image,  # OpenCV image (numpy array)
                                 'image_base64': frame_base64,  # Base64 string

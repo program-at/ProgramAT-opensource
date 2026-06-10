@@ -72,3 +72,46 @@ models:
     reasoning: 4
     latency: 3
     cost: 1
+
+  yolo11_detector:
+    model: local/yolo11n.pt
+    backend: local_detector
+    description: Local YOLO11 detector for pure object detection, localization, and counting over COCO-style object classes.
+    routes:
+      - detect common objects with bounding boxes
+      - localize known object classes in a camera frame
+      - count visible objects using a specialized detector
+      - fast object detection for navigation cues
+    vision: 5
+    coding: 0
+    reasoning: 0
+    latency: 5
+    cost: 5
+
+  yolo_world_detector:
+    model: local/yolov8s-world.pt
+    backend: local_detector
+    description: Local open-vocabulary YOLOWorld detector for pure detection/localization of labels outside COCO.
+    routes:
+      - detect a named object class that is not in COCO
+      - open vocabulary object localization
+      - localize unusual objects with bounding boxes
+    vision: 5
+    coding: 0
+    reasoning: 1
+    latency: 4
+    cost: 5
+
+  google_vision_ocr:
+    model: google_vision/text_detection
+    backend: ocr
+    description: Google Cloud Vision OCR for extracting text from signs, labels, documents, menus, and other camera frames.
+    routes:
+      - extract text from an image
+      - read signs labels menus documents and license plates
+      - OCR text detection with bounding boxes
+    vision: 4
+    coding: 0
+    reasoning: 0
+    latency: 4
+    cost: 3
