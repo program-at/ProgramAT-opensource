@@ -21,7 +21,7 @@ assignees: ''
 
 **Implementation details**
 <!-- Any particular models or libraries that should be employed -->
-If not specified otherwise above, tools for object detection should either utilize Yolo11 and COCO or YoloWorld, based on the conditions described in the copilot instructions. Tools involving text extraction should utilize the Google Cloud Vision API. 
+If not specified otherwise above, tools for object detection should either utilize Yolo11 and COCO or YoloWorld, based on the conditions described in the copilot instructions. Tools involving text extraction should utilize the Google Cloud Vision API. If the tool needs an LLM or VLM, it must choose one task category (`simple_parsing`, `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`, `code_generation`, or `general_reasoning`) and call `model_router.llm_call()` with that task so the router selects the actual model. Generated tools should not hardcode Gemini, GPT, Claude, Llama, or other provider/model names, should not define provider-specific `DEFAULT_MODEL` constants, and should not call `litellm.completion()` directly unless there is no router-compatible path.
 
 **Alternatives Considered**
 <!-- Describe any alternative solutions or features you've considered. -->
