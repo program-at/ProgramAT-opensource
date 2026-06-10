@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite the code for this tool inside the tools folder. Before coding, include a Task Pipeline with the smallest number of stages needed; create a new stage only when capability, modality, latency requirement, or output type changes, and reuse earlier stage outputs in later stages. Use the model router for all model-backed operations; it decides whether to use a specialized detector, OCR engine, VLM, LLM, or other backend. Do not hardcode provider/model names or call `litellm.completion()` directly from the tool unless no router-compatible path exists.";
+            const extraLine = "\n\nWrite the code for this tool inside the tools folder. Before coding, include a Capability Pipeline with the smallest number of stages needed; create a new stage only when capability, modality, latency requirement, or output type changes, and reuse earlier stage outputs in later stages. Capability categories are declarations, not implementation requirements. Trust the existing backend capability layer and centralized model router. Do not implement routing, create routers or wrappers, choose providers/models, or call `litellm.completion()` directly from the tool unless no backend capability path exists.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -47,7 +47,6 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           github_token: ${{ secrets.COPILOT_PAT }}
-
 
 
 
