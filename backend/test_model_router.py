@@ -3,6 +3,8 @@
 import unittest
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -52,6 +54,10 @@ class TestSemanticModelRouter(unittest.TestCase):
         self.assertEqual(route["selected_profile"], "gemini_flash_lite")
 
     def test_routes_new_task_categories(self):
+        simple_route = model_router.get_route_info(
+            "simple_parsing",
+            {"route_text": "classify a short command and extract fields"},
+        )
         ocr_route = model_router.get_route_info(
             "OCR",
             {"route_text": "read text from a sign in the camera frame"},
@@ -61,10 +67,29 @@ class TestSemanticModelRouter(unittest.TestCase):
             {"route_text": "reason about the spatial layout of objects in an image"},
         )
 
+        self.assertEqual(simple_route["task_category"], "simple_parsing")
+        self.assertEqual(simple_route["selected_profile"], "gemini_flash_lite")
         self.assertEqual(ocr_route["task_category"], "ocr")
         self.assertEqual(ocr_route["selected_profile"], "gemini_flash_lite")
         self.assertEqual(visual_reasoning_route["task_category"], "visual_reasoning")
         self.assertEqual(visual_reasoning_route["selected_profile"], "gpt4o")
+
+    def test_llm_call_accepts_task_alias(self):
+        fake_litellm = SimpleNamespace()
+
+        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
+             patch.object(model_router, "litellm", fake_litellm), \
+             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
+            model_router.llm_call(
+                task="visual_understanding",
+                messages=[{"role": "user", "content": "Describe the clothing."}],
+                metadata={
+                    "tool_name": "clothing_recognition",
+                    "route_text": "identify clothing in a camera frame",
+                },
+            )
+
+        self.assertEqual(completion.call_args.kwargs["model"], "openai/gpt-4o")
 
     def test_unknown_category_reports_fallback_model(self):
         original_min_score = model_router.ROUTING_MIN_SCORE
