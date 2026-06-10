@@ -58,7 +58,7 @@ Output:
 
 If only one capability is needed, use a single stage. Outputs from earlier stages should be reused by later stages instead of recomputing the same information. For example, first find the user's Uber and output the vehicle identity and location; then use that vehicle location as input when locating the passenger-side door handle.
 
-Do not hardcode Gemini, GPT, Claude, Llama, or any provider/model during planning. Describe capabilities in the pipeline. The actual model selection happens later through ProgramAT's model routing system.
+Do not hardcode Gemini, GPT, Claude, Llama, YOLO, Google Vision, or any provider/model during planning. Describe capabilities in the pipeline. The actual backend/model selection happens later through ProgramAT's model routing system.
 
 From the Github agent, ALL tools MUST return audio-friendly output. Tool results are automatically spoken aloud via text-to-speech on the mobile device unless another form of audio is specified. Return values should be:
 - Natural language strings that sound good when spoken (not JSON, not code, not cryptic abbreviations)
@@ -109,8 +109,17 @@ From the Github agent, when tools detect critical information (obstacles, warnin
 
 When wrting code from the Github agent, avoid GPU based packages unless strictly necessary. 
 
-For certain types of tasks, there are preferred local/non-LLM building blocks unless the user has specified otherwise.
-For object detection generally, this is to use Yolo11 and COCO. For detecting a specific object, it depends on if the object is in the COCO classes, as described below.
+For model-backed tasks, use the central model router rather than choosing a concrete backend in the generated tool. Public router interfaces available to generated tools:
+- `llm_call(task=..., messages=..., images=..., metadata=...)` for LLM/VLM calls.
+- `vision_call(task=..., image=..., prompt=..., metadata=...)` for simple multimodal VLM calls.
+- `detect_objects(task="object_detection" or "object_localization", image=..., labels=..., metadata=...)` for pure detector-backed detection/localization/counting.
+- `ocr_call(image=..., language_hints=..., metadata=...)` for OCR/text extraction.
+
+For pure object detection, localization, or counting, use `detect_objects(...)` and let the router decide whether a specialized detector backend is appropriate. Do not choose YOLO, YOLOWorld, or any detector directly in generated tools.
+
+Specialized detectors are not automatically sufficient for fine-grained identification, attributes, make/model, license plates, visual comparison, or contextual reasoning. For those requests, choose `visual_understanding`, `visual_reasoning`, `ocr`, or a multi-stage pipeline that reuses earlier outputs. For example, vehicle make/model matching may be `visual_reasoning`; reading a license plate may be `ocr`; locating a known door handle after identifying a target vehicle may be `object_localization`.
+
+The router understands common object classes, but generated tools should still describe capabilities and labels instead of naming the detector:
 ```python
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 
@@ -127,8 +136,7 @@ COCO_CLASSES = [
     'toothbrush'
 ]
 ```
-If the object they are looking for is in the COCO classes, still use Yolo11 and COCO. If it is not, use YoloWorld.
-For OCR or text extraction, use the Google Cloud Vision API, whose key can be accessed in environment as GOOGLE_APPLICATION_CREDENTIALS
+For OCR or text extraction, use `ocr_call(...)` and let the router choose the OCR backend.
 
 For any LLM or VLM task, do not directly call `litellm.completion()` from a generated tool and do not define `DEFAULT_MODEL` or any provider/model name such as Gemini, GPT, Claude, or Llama. First identify the task category, then route through the central router:
 
@@ -154,6 +162,8 @@ response = llm_call(
 
 Use one of these task categories:
 - `simple_parsing`: parse short inputs, classify simple commands, or extract structured fields.
+- `object_detection`: detect/count known object categories with bounding boxes; no fine-grained identification or reasoning.
+- `object_localization`: locate a known target or part with a bounding box/position after the target is already specified.
 - `visual_understanding`: describe or identify visible objects, scenes, clothing, colors, layout, or text-adjacent visual context.
 - `visual_reasoning`: answer questions that require reasoning over visual relationships, accessibility context, spatial layout, or multi-step visual interpretation.
 - `ocr`: read or extract text from an image. Prefer Google Cloud Vision for dedicated OCR, but if an LLM is needed for interpretation or cleanup, route with `task="ocr"`.
@@ -162,6 +172,24 @@ Use one of these task categories:
 - `general_reasoning`: non-visual reasoning, classification, planning, or concise assistant responses.
 
 When creating a new tool, explicitly choose the nearest task category before writing the LLM call. Let `llm_call()` choose the actual model and emit routing logs with the tool name, routed task category, selected model, and fallback model if one is used. Do not pass `model`, `requested_model`, or provider-specific names in generated tools. Only call `litellm.completion()` directly if there is no router-compatible path, and explain why in a code comment near that call.
+
+Example issue-design output for "Make a tool that helps me find my Uber and then locate the passenger-side door handle":
+
+```text
+Task Pipeline
+
+Stage 1:
+Capability: visual_reasoning / ocr if vehicle details or license plate are involved
+Input: Camera frame and any user-provided vehicle details.
+Output: Target vehicle location and identifying details.
+
+Stage 2:
+Capability: object_localization
+Input: Target vehicle location from Stage 1 and the current camera frame.
+Output: Passenger-side door handle position relative to the user/camera.
+```
+
+Do not hardcode which concrete model handles either stage in the issue description or generated tool.
 
 For tools where the custom GPT field is filled to indicate that is what they want, prioritize Gemini live over anything specified above. For these tools, arrange for the specified query to be re-pushed without the user needing to say anything new every 5 seconds.
 
