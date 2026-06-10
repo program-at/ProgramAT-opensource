@@ -14,11 +14,16 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("Task Pipeline", template)
-        self.assertIn("Use the model router for all model-backed operations", template)
+        self.assertIn("Capability Pipeline", template)
+        self.assertIn("Capability categories are declarations, not implementation requirements", template)
+        self.assertIn("backend capability layer and centralized model router", template)
         self.assertIn("object_localization", template)
         self.assertNotIn("should either utilize Yolo11", template)
-        self.assertNotIn("DEFAULT_MODEL", template.split("Generated tools should not", 1)[0])
+        self.assertNotIn("Google Vision", template)
+        self.assertNotIn("YOLO", template)
+        self.assertNotIn("Gemini", template)
+        self.assertNotIn("GPT", template)
+        self.assertIn("define provider-specific `DEFAULT_MODEL` constants", template)
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):
@@ -118,7 +123,7 @@ class TestTemplateFilling(unittest.TestCase):
             'type': 'visual AT',
             'description': 'Object detection tool',
             'problem': 'Need to identify objects in environment',
-            'solution': 'Use YOLO model to detect objects',
+            'solution': 'Declare object_detection capability and use the backend capability layer',
             'example_usage': 'User points camera at table, tool identifies cup and phone'
         }
         
@@ -126,7 +131,7 @@ class TestTemplateFilling(unittest.TestCase):
         
         self.assertIn('Object detection tool', result)
         self.assertIn('Need to identify objects in environment', result)
-        self.assertIn('Use YOLO model to detect objects', result)
+        self.assertIn('Declare object_detection capability and use the backend capability layer', result)
         self.assertIn('User points camera at table, tool identifies cup and phone', result)
         self.assertNotIn('<!--', result.replace('<!--', '', 1))  # Check most placeholders replaced
     
@@ -261,7 +266,7 @@ class TestDataMerging(unittest.TestCase):
             'title': '',
             'description': '',
             'problem': 'Hard to identify objects',
-            'solution': 'Use YOLO model',
+            'solution': 'Declare object_detection capability and use the backend capability layer',
             'example_usage': 'Point camera at table to identify items',
             'missing_fields': []
         }
@@ -274,7 +279,7 @@ class TestDataMerging(unittest.TestCase):
         
         # Should add new fields
         self.assertEqual(merged['problem'], 'Hard to identify objects')
-        self.assertEqual(merged['solution'], 'Use YOLO model')
+        self.assertEqual(merged['solution'], 'Declare object_detection capability and use the backend capability layer')
         self.assertEqual(merged['example_usage'], 'Point camera at table to identify items')
         
         # Should update missing_fields to empty
@@ -390,7 +395,7 @@ class TestWellSpecifiedIssues(unittest.TestCase):
             'title': 'Text reader tool',
             'description': 'Read text from images',
             'problem': 'Cannot read text in environment',
-            'solution': 'Use OCR to read text',
+            'solution': 'Declare OCR capability and use the backend capability layer',
             'implementation_details': '',
             'example_usage': 'Point at sign to hear text',
             'alternatives': '',

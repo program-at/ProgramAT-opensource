@@ -104,6 +104,17 @@ def _normalize_custom_gpt_value(value) -> str:
 
     return ''
 
+
+def _extract_issue_section(body: str, *section_names: str) -> str:
+    """Extract a markdown **Section** value, supporting legacy/new section names."""
+    escaped_names = "|".join(re.escape(name) for name in section_names)
+    match = re.search(
+        rf'\*\*(?:{escaped_names})\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)',
+        body or '',
+        re.IGNORECASE | re.DOTALL,
+    )
+    return match.group(1).strip() if match else ''
+
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
 PORT = 8081 #port for listening
@@ -2161,12 +2172,11 @@ def fetch_pr_tools_from_github(pr, repo) -> list:
             linked_issue = repo.get_issue(int(issue_ref_match.group(1)))
             linked_body = linked_issue.body or ''
             
-            cgpt_match = re.search(r'\*\*Custom GPT\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', linked_body, re.IGNORECASE | re.DOTALL)
-            if cgpt_match:
-                pr_custom_gpt = _normalize_custom_gpt_value(cgpt_match.group(1)) == 'yes'
+            live_mode_value = _extract_issue_section(linked_body, 'Live Mode', 'Custom GPT')
+            if live_mode_value:
+                pr_custom_gpt = _normalize_custom_gpt_value(live_mode_value) == 'yes'
             
-            gq_match = re.search(r'\*\*GPT Query\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', linked_body, re.IGNORECASE | re.DOTALL)
-            pr_gpt_query = gq_match.group(1).strip() if gq_match else ''
+            pr_gpt_query = _extract_issue_section(linked_body, 'Live Query', 'GPT Query')
             
             si_match = re.search(r'\*\*System Instruction\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', linked_body, re.IGNORECASE | re.DOTALL)
             pr_system_instruction = si_match.group(1).strip() if si_match else ''
@@ -2518,15 +2528,14 @@ def fetch_issue_tools(issue_number: int) -> list:
         repo = g.get_repo(GITHUB_REPO)
         issue = repo.get_issue(issue_number)
         
-        # Parse custom_gpt / Gemini Live fields from issue body
+        # Parse live-mode fields from issue body
         issue_body = issue.body or ''
-        custom_gpt_match = re.search(r'\*\*Custom GPT\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', issue_body, re.IGNORECASE | re.DOTALL)
+        live_mode_value = _extract_issue_section(issue_body, 'Live Mode', 'Custom GPT')
         issue_custom_gpt = False
-        if custom_gpt_match:
-            issue_custom_gpt = _normalize_custom_gpt_value(custom_gpt_match.group(1)) == 'yes'
+        if live_mode_value:
+            issue_custom_gpt = _normalize_custom_gpt_value(live_mode_value) == 'yes'
         
-        gpt_query_match = re.search(r'\*\*GPT Query\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', issue_body, re.IGNORECASE | re.DOTALL)
-        issue_gpt_query = gpt_query_match.group(1).strip() if gpt_query_match else ''
+        issue_gpt_query = _extract_issue_section(issue_body, 'Live Query', 'GPT Query')
         
         si_match = re.search(r'\*\*System Instruction\*\*\s*(?:<!--.*?-->)?\s*(.+?)(?:\n\n|\n\*\*|$)', issue_body, re.IGNORECASE | re.DOTALL)
         issue_system_instruction = si_match.group(1).strip() if si_match else ''
@@ -3162,16 +3171,16 @@ For a visual AT request, extract:
 - solution: Proposed solution
 - implementation_details: any specific tech stack details desired
 - example_usage: an example use case and how the tool should handle it
-- custom_gpt: should this tool operate similarly to a custom GPT (using Gemini Live with a repeated query on each camera frame)? ONLY set to "yes" or "no" if the user EXPLICITLY stated their preference. If they did not mention it at all, leave this field EMPTY (empty string "").
-- gpt_query: if custom_gpt is "yes", what is the exact prompt to re-ask on every frame?
+- live_mode: should this tool use backend-managed live multimodal mode with a repeated query on each camera frame? ONLY set to "yes" or "no" if the user EXPLICITLY stated their preference. If they did not mention it at all, leave this field EMPTY (empty string "").
+- live_query: if live_mode is "yes", what is the exact prompt to re-ask on every frame?
 - alternatives: Alternative solutions considered
 - additional: Any other context
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
 
-Important fields for visual AT: title, description, problem, solution, example_usage, custom_gpt, gpt_query
-In the event custom_gpt is explicitly "no", gpt_query is no longer important.
+Important fields for visual AT: title, description, problem, solution, example_usage, live_mode, live_query
+In the event live_mode is explicitly "no", live_query is no longer important.
 
 
 Guidelines for determining if an IMPORTANT field is missing:
@@ -3180,8 +3189,8 @@ Guidelines for determining if an IMPORTANT field is missing:
 3. For "problem": If the user explains why they need the tool, this is sufficient
 4. For "solution": If the user describes what they want or how it should work, this is sufficient
 5. For "example_usage": If the user provides any concrete example use case, this is sufficient
-6. For "custom_gpt": Leave this field as an EMPTY STRING unless the user EXPLICITLY said "yes" or "no". If the transcript does not clearly contain the user saying they want or don't want custom GPT mode, the field MUST be empty. When it is empty, ALWAYS include "custom_gpt" in missing_fields. Do NOT guess, infer, or assume — this is a question we must ask the user directly.
-7. For "gpt_query": Always include this in missing_fields if custom_gpt is "yes" and no query has been provided. If custom_gpt is "no", do not include this.
+6. For "live_mode": Leave this field as an EMPTY STRING unless the user EXPLICITLY said "yes" or "no". If the transcript does not clearly contain the user saying they want or don't want live mode, the field MUST be empty. When it is empty, ALWAYS include "live_mode" in missing_fields. Do NOT guess, infer, or assume — this is a question we must ask the user directly.
+7. For "live_query": Always include this in missing_fields if live_mode is "yes" and no query has been provided. If live_mode is "no", do not include this.
 8. ALWAYS include example_usage in missing_fields if no concrete example use case (>= 10 characters) is present
 
 If ALL important fields have meaningful content (even if brief), return an empty missing_fields array: []
@@ -3200,8 +3209,8 @@ Return format:
   "implementation_details": "...",
   "example_usage": "...",
   "alternatives": "...",
-  "custom_gpt": "...",
-  "gpt_query": "...",
+  "live_mode": "...",
+  "live_query": "...",
   "additional": "...",
   "missing_fields": ["field1", "field2"]  // Only truly missing/empty important fields. Use [] if all important fields have content.
 }}"""
@@ -3225,12 +3234,20 @@ Return format:
         
         parsed_data = json.loads(ai_response)
 
+        if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
+            parsed_data['custom_gpt'] = parsed_data.get('live_mode', '')
+        if 'live_query' in parsed_data and 'gpt_query' not in parsed_data:
+            parsed_data['gpt_query'] = parsed_data.get('live_query', '')
+
         parsed_custom_gpt = _normalize_custom_gpt_value(parsed_data.get('custom_gpt', ''))
         if not parsed_custom_gpt:
             parsed_custom_gpt = _normalize_custom_gpt_value(transcript)
         parsed_data['custom_gpt'] = parsed_custom_gpt
 
-        missing_fields = parsed_data.get('missing_fields', [])
+        missing_fields = [
+            'custom_gpt' if field == 'live_mode' else 'gpt_query' if field == 'live_query' else field
+            for field in parsed_data.get('missing_fields', [])
+        ]
         if parsed_custom_gpt:
             missing_fields = [field for field in missing_fields if field != 'custom_gpt']
             if parsed_custom_gpt == 'no':
@@ -3324,9 +3341,9 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                            ensure_string(parsed_data.get('alternatives', '')))
     filled = filled.replace('<!-- Describe an example situation the tool would be used in and how it could work -->', 
                            ensure_string(parsed_data.get('example_usage', '')))
-    filled = filled.replace('<!-- Should this tool, in live mode, leverage Gemini live and work basically as a custom GPT without the need to ask again?-->', 
+    filled = filled.replace('<!-- Should this tool, in live mode, use the backend-managed live multimodal mode without the need to ask again?-->',
                            ensure_string(parsed_data.get('custom_gpt', '')))
-    filled = filled.replace('<!-- If custom GPT, what is the query to be reasked every few seconds. Otherwise leave empty-->', 
+    filled = filled.replace('<!-- If live mode is enabled, what is the query to be reasked every few seconds. Otherwise leave empty-->',
                            ensure_string(parsed_data.get('gpt_query', '')))
     filled = filled.replace('<!-- Add any other context or screenshots about the feature request here. -->', 
                            ensure_string(parsed_data.get('additional', '')))
@@ -3399,8 +3416,8 @@ def generate_feedback_message(missing_fields: list, issue_type: str) -> str:
         'description': 'tool description',
         'implementation_details': 'implementation details',
         'example_usage': 'example usage',
-        'custom_gpt': 'to know should this behave like a custom GPT, minus the need to reask often. Answer yes or no',
-        'gpt_query': 'query for custom GPT',
+        'custom_gpt': 'to know whether this should use live mode without the need to reask often. Answer yes or no',
+        'gpt_query': 'query for live mode',
         'additional': 'additional context',
         'alternatives': 'alternative solutions',
         'title': 'title'

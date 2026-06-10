@@ -21,7 +21,7 @@ assignees: ''
 
 **Implementation details**
 <!-- Any particular models or libraries that should be employed -->
-Before coding, include a Task Pipeline with the smallest number of stages needed. Create a new stage only when capability, modality, latency requirement, or output type changes. For each stage, specify one capability category: `object_detection`, `object_localization`, `OCR`, `visual_understanding`, `visual_reasoning`, `navigation`, `summarization`, or `general_reasoning`. Outputs from earlier stages should be reused by later stages. Use the model router for all model-backed operations; the router decides whether to use a specialized detector, OCR engine, VLM, LLM, or other backend. Specialized detectors are preferred for pure detection/localization/counting, but they are not automatically sufficient for fine-grained identification, attributes, license plates, visual comparison, or contextual reasoning. In those cases use `visual_understanding`, `visual_reasoning`, `OCR`, or a multi-stage pipeline. Generated tools should not hardcode Gemini, GPT, Claude, Llama, YOLO, Google Vision, or other provider/model names, should not define provider-specific `DEFAULT_MODEL` constants, and should not call `litellm.completion()` directly unless there is no router-compatible path.
+Before coding, include a Capability Pipeline with the smallest number of stages needed. Create a new stage only when capability, modality, latency requirement, or output type changes. For each stage, specify one capability category: `object_detection`, `object_localization`, `OCR`, `visual_understanding`, `visual_reasoning`, `navigation`, `summarization`, `general_reasoning`, or `simple_parsing`. Outputs from earlier stages should be reused by later stages. Capability categories are declarations, not implementation requirements. Generated tools should call backend-provided capability interfaces and trust the existing backend capability layer and centralized model router. The backend decides model selection, fallback logic, provider selection, detector selection, and OCR selection. Generated tools must not implement model routing, create routers, create capability registries, create detector/OCR/LLM wrappers, choose provider/model names, define provider-specific `DEFAULT_MODEL` constants, or call `litellm.completion()` directly unless there is no backend capability path.
 
 **Alternatives Considered**
 <!-- Describe any alternative solutions or features you've considered. -->
@@ -29,11 +29,11 @@ Before coding, include a Task Pipeline with the smallest number of stages needed
 **Example usage**
 <!-- Describe an example situation the tool would be used in and how it could work -->
 
-**Custom GPT**
-<!-- Should this tool, in live mode, leverage Gemini live and work basically as a custom GPT without the need to ask again?-->
+**Live Mode**
+<!-- Should this tool, in live mode, use the backend-managed live multimodal mode without the need to ask again?-->
 
-**GPT Query**
-<!-- If custom GPT, what is the query to be reasked every few seconds. Otherwise leave empty-->
+**Live Query**
+<!-- If live mode is enabled, what is the query to be reasked every few seconds. Otherwise leave empty-->
 
 **Additional Context**
 <!-- Add any other context or screenshots about the feature request here. -->
