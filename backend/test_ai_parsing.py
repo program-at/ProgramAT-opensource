@@ -4,6 +4,21 @@ These tests test the logic in isolation without importing stream_server
 """
 import unittest
 import json
+from pathlib import Path
+
+
+class TestIssueTemplateGuidance(unittest.TestCase):
+    """Test Copilot-facing issue template guidance."""
+
+    def test_visual_at_template_uses_capability_routing(self):
+        template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
+        template = template_path.read_text(encoding="utf-8")
+
+        self.assertIn("Task Pipeline", template)
+        self.assertIn("Use the model router for all model-backed operations", template)
+        self.assertIn("object_localization", template)
+        self.assertNotIn("should either utilize Yolo11", template)
+        self.assertNotIn("DEFAULT_MODEL", template.split("Generated tools should not", 1)[0])
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

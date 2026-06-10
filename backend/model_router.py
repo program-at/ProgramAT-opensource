@@ -1,4 +1,4 @@
-"""Central semantic routing for all LLM interactions."""
+"""Central routing for ProgramAT model-backed interactions."""
 
 from __future__ import annotations
 
@@ -105,6 +105,52 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
             "latency": 3,
             "cost": 1,
         },
+        "yolo11_detector": {
+            "model": "local/yolo11n.pt",
+            "backend": "local_detector",
+            "description": "Local YOLO11 detector for pure object detection, localization, and counting over COCO-style object classes.",
+            "routes": [
+                "detect common objects with bounding boxes",
+                "localize known object classes in a camera frame",
+                "count visible objects using a specialized detector",
+                "fast object detection for navigation cues",
+            ],
+            "vision": 5,
+            "coding": 0,
+            "reasoning": 0,
+            "latency": 5,
+            "cost": 5,
+        },
+        "yolo_world_detector": {
+            "model": "local/yolov8s-world.pt",
+            "backend": "local_detector",
+            "description": "Local open-vocabulary YOLOWorld detector for pure detection/localization of labels outside COCO.",
+            "routes": [
+                "detect a named object class that is not in COCO",
+                "open vocabulary object localization",
+                "localize unusual objects with bounding boxes",
+            ],
+            "vision": 5,
+            "coding": 0,
+            "reasoning": 1,
+            "latency": 4,
+            "cost": 5,
+        },
+        "google_vision_ocr": {
+            "model": "google_vision/text_detection",
+            "backend": "ocr",
+            "description": "Google Cloud Vision OCR for extracting text from signs, labels, documents, menus, and other camera frames.",
+            "routes": [
+                "extract text from an image",
+                "read signs labels menus documents and license plates",
+                "OCR text detection with bounding boxes",
+            ],
+            "vision": 4,
+            "coding": 0,
+            "reasoning": 0,
+            "latency": 4,
+            "cost": 3,
+        },
     }
 }
 
@@ -117,6 +163,8 @@ DEFAULT_CAPABILITY_PROFILES: Dict[str, Any] = {
         "visual_understanding": {"vision": 5, "coding": 0, "reasoning": 2, "latency": 4},
         "visual_reasoning": {"vision": 5, "coding": 0, "reasoning": 4, "latency": 3},
         "ocr": {"vision": 4, "coding": 0, "reasoning": 1, "latency": 4},
+        "object_detection": {"vision": 5, "coding": 0, "reasoning": 0, "latency": 5},
+        "object_localization": {"vision": 5, "coding": 0, "reasoning": 1, "latency": 5},
         "summarization": {"vision": 0, "coding": 0, "reasoning": 2, "latency": 5},
         "code_generation": {"vision": 0, "coding": 5, "reasoning": 4, "latency": 2},
         "code_repair": {"vision": 0, "coding": 5, "reasoning": 5, "latency": 2},
@@ -131,7 +179,9 @@ CAPABILITY_TO_PROFILE = {
     "image_analysis": "gpt4o",
     "visual_understanding": "gpt4o",
     "visual_reasoning": "gpt4o",
-    "ocr": "gemini_flash_lite",
+    "ocr": "google_vision_ocr",
+    "object_detection": "yolo11_detector",
+    "object_localization": "yolo11_detector",
     "code_generation": "llama",
     "code_repair": "llama",
     "summarization": "gemini_flash_lite",
@@ -146,16 +196,42 @@ CAPABILITY_ROUTE_HINTS = {
     "visual_understanding": "identify describe image visual camera frame scene objects layout",
     "visual_reasoning": "reason about image visual scene spatial relationships accessibility context",
     "ocr": "read text ocr extract words signs labels documents from image",
+    "object_detection": "pure object detection localization counting known objects bounding boxes detector",
+    "object_localization": "localize object position bounding box detector navigation target",
     "code_generation": "generate code implement feature",
     "code_repair": "repair bug fix tests debug code",
     "summarization": "summarize summarization concise log summary",
     "general_reasoning": "general reasoning assistant response plan explain decide",
 }
 
+COCO_CLASSES = {
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
+    "toothbrush",
+}
+
+LLM_FALLBACK_PROFILES = {
+    "ocr": "gemini_flash_lite",
+    "object_detection": "gpt4o",
+    "object_localization": "gpt4o",
+}
+
 TASK_CATEGORIES = (
+    "simple_parsing",
     "visual_understanding",
     "visual_reasoning",
-    "OCR",
+    "ocr",
+    "object_detection",
+    "object_localization",
     "summarization",
     "code_generation",
     "general_reasoning",
@@ -278,6 +354,10 @@ def _capability_profiles() -> Dict[str, Any]:
 
 def _provider_for_model(model_name: str) -> str:
     raw = (model_name or "").strip()
+    if raw.startswith("local/"):
+        return "local"
+    if raw.startswith("google_vision/"):
+        return "google_vision"
     if "/" in raw:
         return raw.split("/", 1)[0]
     if raw.startswith("llama") or raw.startswith("llava"):
@@ -289,6 +369,22 @@ def _provider_for_model(model_name: str) -> str:
     if raw.startswith("gpt"):
         return "openai"
     return "unknown"
+
+
+def _profile_backend(profile_data: Dict[str, Any]) -> str:
+    backend = profile_data.get("backend")
+    return str(backend).strip() if backend else "litellm"
+
+
+def _route_log_context(route_info: Dict[str, Any], tool_name: str | None = None, note: str | None = None) -> str:
+    return (
+        f"tool_name={tool_name or 'unknown'} task_category={route_info.get('task_category')} "
+        f"selected_profile={route_info.get('selected_profile')} selected_backend={_profile_backend(route_info.get('profile_data') or {})} "
+        f"selected_model={route_info.get('selected_model')} provider={route_info.get('provider')} "
+        f"fallback_model={route_info.get('fallback_model') or 'none'} "
+        f"fallback_reason={route_info.get('fallback_reason') or 'none'} "
+        f"routing_note={note or 'none'}"
+    )
 
 
 def _resolve_explicit_profile(metadata: Dict[str, Any] | None) -> Optional[str]:
@@ -314,6 +410,31 @@ def _resolve_explicit_profile(metadata: Dict[str, Any] | None) -> Optional[str]:
             or requested_model == profile_name.replace("_", "-")
         ):
             return profile_name
+    return None
+
+
+def _labels_from_metadata(metadata: Dict[str, Any] | None) -> List[str]:
+    if not isinstance(metadata, dict):
+        return []
+
+    raw_labels = metadata.get("labels") or metadata.get("label") or metadata.get("classes")
+    if raw_labels is None:
+        return []
+    if isinstance(raw_labels, str):
+        return [item.strip().lower() for item in raw_labels.split(",") if item.strip()]
+    if isinstance(raw_labels, (list, tuple, set)):
+        return [str(item).strip().lower() for item in raw_labels if str(item).strip()]
+    return []
+
+
+def _preferred_profile_for_capability(capability_key: str, metadata: Dict[str, Any] | None) -> Optional[str]:
+    if capability_key in {"object_detection", "object_localization"}:
+        labels = _labels_from_metadata(metadata)
+        if labels and any(label not in COCO_CLASSES for label in labels):
+            return "yolo_world_detector"
+        return "yolo11_detector"
+    if capability_key == "ocr":
+        return "google_vision_ocr"
     return None
 
 
@@ -434,6 +555,7 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
     routing_mode = _routing_mode()
     capability_profile = capabilities.get(capability_key, {})
     explicit_profile = _resolve_explicit_profile(metadata)
+    preferred_profile = _preferred_profile_for_capability(capability_key, metadata)
     fallback_profile = CAPABILITY_TO_PROFILE.get(capability_key, "gemini_flash")
     fallback_model = str(models.get(fallback_profile, {}).get("model", "")).strip()
     fallback_reason = None
@@ -441,6 +563,9 @@ def get_route_info(capability: str, metadata: Dict[str, Any] | None = None) -> D
 
     if explicit_profile:
         selected_profile = explicit_profile
+        scoreboard = None
+    elif preferred_profile:
+        selected_profile = preferred_profile
         scoreboard = None
     elif routing_mode == "semantic":
         route_text = _route_query_from_messages(capability_key, metadata=metadata)
@@ -645,10 +770,22 @@ def llm_call(
     fallback_model = route_info.get("fallback_model")
     fallback_reason = route_info.get("fallback_reason")
     tool_name = route_metadata.get("tool_name") or route_metadata.get("tool")
+    selected_backend = _profile_backend(route_info.get("profile_data") or {})
+
+    if selected_backend != "litellm":
+        models = _model_profiles().get("models", {})
+        fallback_profile = LLM_FALLBACK_PROFILES.get(task_category, "gemini_flash")
+        fallback_data = models.get(fallback_profile, {})
+        fallback_model = selected_model
+        fallback_reason = f"selected_backend_{selected_backend}_not_supported_by_llm_call"
+        selected_profile = fallback_profile
+        selected_model = str(fallback_data.get("model", "gemini/gemini-3-flash-preview")).strip()
+        provider = _provider_for_model(selected_model)
+        selected_backend = _profile_backend(fallback_data)
 
     logger.info(
         f"[ROUTER] tool_name={tool_name or 'unknown'} task_category={task_category} capability={capability} "
-        f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
+        f"selected_profile={selected_profile} selected_backend={selected_backend} selected_model={selected_model} provider={provider} "
         f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
     )
 
@@ -675,10 +812,159 @@ def llm_call(
     except Exception:
         logger.exception(
             f"[ROUTER] tool_name={tool_name or 'unknown'} task_category={task_category} capability={capability} "
-            f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
+            f"selected_profile={selected_profile} selected_backend={selected_backend} selected_model={selected_model} provider={provider} "
             f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
         )
         raise
+
+
+def vision_call(
+    task: str,
+    image: Any,
+    prompt: str,
+    metadata: Optional[Dict[str, Any]] = None,
+    system_prompt: str = "Keep responses concise and audio-friendly.",
+):
+    """Route a multimodal LLM/VLM request through the central router."""
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt},
+    ]
+    return llm_call(task=task, messages=messages, images=[image], metadata=metadata)
+
+
+_DETECTOR_CACHE: Dict[str, Any] = {}
+
+
+def _local_model_path(model_name: str) -> str:
+    name = model_name.split("/", 1)[1] if "/" in model_name else model_name
+    candidate = Path(__file__).with_name(name)
+    return str(candidate) if candidate.exists() else name
+
+
+def _run_ultralytics_detector(
+    image: Any,
+    model_name: str,
+    labels: Optional[List[str]],
+    confidence: float,
+    metadata: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise ImportError("ultralytics is required for detector-backed routing") from exc
+
+    cache = metadata.get("yolo_model_cache")
+    if not isinstance(cache, dict):
+        cache = _DETECTOR_CACHE
+
+    model_path = _local_model_path(model_name)
+    cache_key = f"model_router:{model_path}:{','.join(labels or [])}"
+    if cache_key not in cache:
+        cache[cache_key] = YOLO(model_path)
+        if labels and "world" in model_path.lower():
+            cache[cache_key].set_classes(labels)
+
+    model = cache[cache_key]
+    results = model(image, conf=confidence, verbose=False)
+    wanted = {label.lower() for label in labels or []}
+    detections: List[Dict[str, Any]] = []
+
+    for result in results:
+        names = getattr(result, "names", {}) or {}
+        boxes = getattr(result, "boxes", []) or []
+        for box in boxes:
+            x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+            class_id = int(box.cls[0])
+            class_name = str(names.get(class_id, f"object_{class_id}"))
+            if wanted and class_name.lower() not in wanted:
+                continue
+
+            x, y = int(x1), int(y1)
+            w, h = int(x2 - x1), int(y2 - y1)
+            detections.append({
+                "class_id": class_id,
+                "class_name": class_name,
+                "confidence": float(box.conf[0]),
+                "bbox": [x, y, w, h],
+                "center": [x + w // 2, y + h // 2],
+                "backend": "ultralytics",
+                "model": model_name,
+            })
+
+    return detections
+
+
+def detect_objects(
+    task: str = "object_detection",
+    image: Any = None,
+    labels: Optional[Iterable[str]] = None,
+    confidence: float = 0.5,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Route pure object detection/localization to the configured detector backend."""
+    if image is None:
+        return []
+
+    label_list = [str(label).strip().lower() for label in (labels or []) if str(label).strip()]
+    route_metadata = dict(metadata or {})
+    route_metadata.setdefault("labels", label_list)
+    route_metadata.setdefault(
+        "route_text",
+        f"pure {task} for labels {', '.join(label_list) if label_list else 'common objects'}",
+    )
+
+    route_info = get_route_info(task, route_metadata)
+    tool_name = route_metadata.get("tool_name") or route_metadata.get("tool")
+    backend = _profile_backend(route_info.get("profile_data") or {})
+    logger.info(f"[ROUTER] {_route_log_context(route_info, tool_name, 'detector_call')}")
+
+    if backend != "local_detector":
+        raise ValueError(
+            f"Task {task!r} routed to backend {backend!r}; use vision_call for VLM reasoning tasks."
+        )
+
+    return _run_ultralytics_detector(
+        image=image,
+        model_name=route_info["selected_model"],
+        labels=label_list,
+        confidence=confidence,
+        metadata=route_metadata,
+    )
+
+
+def ocr_call(
+    image: Any,
+    language_hints: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Route OCR/text extraction to the configured OCR backend."""
+    if image is None:
+        return []
+
+    route_metadata = dict(metadata or {})
+    route_metadata.setdefault("route_text", "extract readable text from image using OCR")
+    route_info = get_route_info("ocr", route_metadata)
+    tool_name = route_metadata.get("tool_name") or route_metadata.get("tool")
+    backend = _profile_backend(route_info.get("profile_data") or {})
+    logger.info(f"[ROUTER] {_route_log_context(route_info, tool_name, 'ocr_call')}")
+
+    if backend != "ocr":
+        raise ValueError(f"OCR routed to backend {backend!r}; use llm_call or vision_call for interpretation.")
+
+    tools_dir = Path(__file__).resolve().parent.parent / "tools"
+    import sys
+    if str(tools_dir) not in sys.path:
+        sys.path.insert(0, str(tools_dir))
+
+    from live_ocr import detect_text_google_vision
+
+    api_key = route_metadata.get("api_key") or route_metadata.get("explicit_api_key")
+    return detect_text_google_vision(
+        image=image,
+        api_key=api_key if isinstance(api_key, str) else None,
+        language_hints=language_hints or ["en"],
+    )
 
 
 def _downscale_image_base64(image_base64: str, max_dim: int = 1024) -> str:
@@ -912,6 +1198,9 @@ class GeminiLiveManager:
 
 __all__ = [
     "llm_call",
+    "vision_call",
+    "detect_objects",
+    "ocr_call",
     "get_route_info",
     "TASK_CATEGORIES",
     "GeminiLiveSession",
