@@ -111,6 +111,7 @@ DEFAULT_MODEL_PROFILES: Dict[str, Any] = {
 DEFAULT_CAPABILITY_PROFILES: Dict[str, Any] = {
     "capabilities": {
         "text_parse": {"vision": 0, "coding": 0, "reasoning": 1, "latency": 5},
+        "simple_parsing": {"vision": 0, "coding": 0, "reasoning": 1, "latency": 5},
         "tool_retrieval": {"vision": 0, "coding": 0, "reasoning": 2, "latency": 5},
         "image_analysis": {"vision": 5, "coding": 0, "reasoning": 2, "latency": 4},
         "visual_understanding": {"vision": 5, "coding": 0, "reasoning": 2, "latency": 4},
@@ -125,6 +126,7 @@ DEFAULT_CAPABILITY_PROFILES: Dict[str, Any] = {
 
 CAPABILITY_TO_PROFILE = {
     "text_parse": "gemini_flash_lite",
+    "simple_parsing": "gemini_flash_lite",
     "tool_retrieval": "gemini_flash_lite",
     "image_analysis": "gpt4o",
     "visual_understanding": "gpt4o",
@@ -138,6 +140,7 @@ CAPABILITY_TO_PROFILE = {
 
 CAPABILITY_ROUTE_HINTS = {
     "text_parse": "parse transcript structured json extract fields",
+    "simple_parsing": "parse short input classify simple commands extract fields",
     "tool_retrieval": "retrieve choose select issue tool from list",
     "image_analysis": "image visual camera frame scene question",
     "visual_understanding": "identify describe image visual camera frame scene objects layout",
@@ -616,10 +619,11 @@ def _merge_messages(messages: List[Dict[str, Any]], images: Optional[Iterable[An
 
 
 def llm_call(
-    capability: str,
-    messages: List[Dict[str, Any]],
+    capability: Optional[str] = None,
+    messages: Optional[List[Dict[str, Any]]] = None,
     images: Optional[Iterable[Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    task: Optional[str] = None,
 ):
     """Route a request through model-level semantic routes and call LiteLLM."""
     if not LITELLM_AVAILABLE:
@@ -627,6 +631,11 @@ def llm_call(
 
     image_items = list(images or [])
     route_metadata = dict(metadata or {})
+    capability = capability or task
+    if not capability:
+        raise ValueError("llm_call requires a capability or task category")
+    messages = messages or []
+
     route_metadata.setdefault("route_text", _route_query_from_messages(capability, messages, image_items, route_metadata))
     route_info = get_route_info(capability, route_metadata)
     task_category = route_info["task_category"]
@@ -635,9 +644,10 @@ def llm_call(
     provider = route_info["provider"]
     fallback_model = route_info.get("fallback_model")
     fallback_reason = route_info.get("fallback_reason")
+    tool_name = route_metadata.get("tool_name") or route_metadata.get("tool")
 
     logger.info(
-        f"[ROUTER] task_category={task_category} capability={capability} "
+        f"[ROUTER] tool_name={tool_name or 'unknown'} task_category={task_category} capability={capability} "
         f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
         f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
     )
@@ -664,7 +674,7 @@ def llm_call(
         )
     except Exception:
         logger.exception(
-            f"[ROUTER] task_category={task_category} capability={capability} "
+            f"[ROUTER] tool_name={tool_name or 'unknown'} task_category={task_category} capability={capability} "
             f"selected_profile={selected_profile} selected_model={selected_model} provider={provider} "
             f"fallback_model={fallback_model or 'none'} fallback_reason={fallback_reason or 'none'}"
         )

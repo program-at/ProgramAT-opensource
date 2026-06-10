@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite the code for this tool inside the tools folder";
+            const extraLine = "\n\nWrite the code for this tool inside the tools folder. For any LLM or VLM call, import `llm_call` from `model_router`, choose a task category, and let the router select the model. Do not hardcode provider/model names or call `litellm.completion()` directly from the tool unless no router-compatible path exists.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -47,7 +47,6 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           github_token: ${{ secrets.COPILOT_PAT }}
-
 
 
 

@@ -5,6 +5,12 @@ capabilities:
     reasoning: 1
     latency: 5
 
+  simple_parsing:
+    vision: 0
+    coding: 0
+    reasoning: 1
+    latency: 5
+
   tool_retrieval:
     vision: 0
     coding: 0

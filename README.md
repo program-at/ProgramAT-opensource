@@ -94,9 +94,11 @@ Use the table below as a quick reference for what each value does.
 | Variable                           | Required                       | Description                                                                                                                                       |
 | ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ROUTING_MODE`                     | Optional                       | Model routing mode. Defaults to `semantic`, which routes each request directly to the closest model profile in `backend/model_profiles.yaml`; legacy options are `fixed` and `score`. |
-| `GEMINI_API_KEY`                   | Optional                       | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`. |
-| `GROQ_API_KEY`                     | Optional                       | Provider API key for Groq. Add Groq models to `backend/model_profiles.yaml` if you want semantic routing to select them. Free tier available, no credit card required. |
+| `GEMINI_API_KEY`                   | Optional                       | Provider API key for Google Gemini. Keep provider keys in `.env` as needed: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`. |
+| `GROQ_API_KEY`                     | For routed code tasks          | Provider API key for Groq. The default lightweight code-generation route uses `groq/llama-3.1-8b-instant`. Free tier available, no credit card required. |
 | `MISTRAL_API_KEY`                  | Optional                       | Provider API key for Mistral AI. Add Mistral models to `backend/model_profiles.yaml` if you want semantic routing to select them. Free tier available. |
+| `OLLAMA_API_BASE`                  | Optional                       | Local Ollama URL if you override a routed model to use Ollama. Defaults to `http://localhost:11434`. |
+| `LLAMA_MODEL` / `LLAVA_MODEL`      | Optional                       | Override routed model names. Defaults are `groq/llama-3.1-8b-instant` and `groq/meta-llama/llama-4-scout-17b-16e-instruct`. |
 | `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
 | `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
 | `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |
@@ -193,7 +195,8 @@ We provide instructions here for hosting from your personal machine. If you woul
 4. **Fill in the values in `backend/.env`**
 
    - `ROUTING_MODE`: model routing mode. Leave unset for semantic model routing, or set `fixed` / `score` to use the legacy routing behavior.
-   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`
+   - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`
+   - Model routing overrides: optional `LLAMA_MODEL`, `LLAVA_MODEL`, `OLLAMA_API_BASE`
    - `GITHUB_TOKEN`
    - `GITHUB_REPO`
    - `GOOGLE_APPLICATION_CREDENTIALS`

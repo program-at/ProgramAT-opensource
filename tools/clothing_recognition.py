@@ -14,6 +14,9 @@ from PIL import Image
 from litellm_utils import extract_text, pil_image_to_data_uri
 from model_router import llm_call
 
+TOOL_NAME = "clothing_recognition"
+TASK_CATEGORY = "visual_understanding"
+
 
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
     """
@@ -65,7 +68,7 @@ def build_clothing_prompt(detail_level: str = 'standard') -> str:
         detail_level: 'brief', 'standard', or 'detailed'
     
     Returns:
-        Formatted prompt string for Gemini
+        Formatted prompt string for the routed vision model
     """
     # Base instruction - focus on the most prominent item only
     base = "Analyze the clothing in this image for a blind or low vision user. "
@@ -136,11 +139,18 @@ def analyze_clothing(
         prompt = build_clothing_prompt(detail_level)
         print(f"📋 Detail level: {detail_level}")
         
+        metadata = {
+            'tool_name': TOOL_NAME,
+            'route_text': 'identify the most prominent clothing item and describe visual features concisely',
+        }
+        if api_key:
+            metadata['api_key'] = api_key
+
         response = llm_call(
-            capability='image_analysis',
+            task=TASK_CATEGORY,
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
-            metadata={'api_key': api_key},
+            metadata=metadata,
         )
         
         # Extract description
@@ -151,7 +161,7 @@ def analyze_clothing(
         return {
             'success': True,
             'description': description,
-            'confidence': 0.9,  # Gemini provides high-quality results
+            'confidence': 0.9,
             'detail_level': detail_level
         }
         
