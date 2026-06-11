@@ -16,13 +16,11 @@ class TestIssueTemplateGuidance(unittest.TestCase):
 
         self.assertIn("Capability Pipeline", template)
         self.assertIn("Capability categories are declarations, not implementation requirements", template)
-        self.assertIn("approved backend model-router API from `model_router_client`", template)
+        self.assertIn("centralized backend model router through the approved wrapper from `model_router_client`", template)
         self.assertIn("object_localization", template)
         self.assertNotIn("should either utilize Yolo11", template)
         self.assertNotIn("Google Vision", template)
-        self.assertNotIn("YOLO", template)
-        self.assertNotIn("Gemini", template)
-        self.assertNotIn("GPT", template)
+        self.assertIn("call `YOLO(...)`", template)
         self.assertIn("define provider-specific `DEFAULT_MODEL` constants", template)
 
 

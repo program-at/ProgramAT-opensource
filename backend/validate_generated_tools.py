@@ -16,14 +16,18 @@ TOOLS_DIR = REPO_ROOT / "tools"
 FORBIDDEN_PATTERNS = [
     ("import litellm", re.compile(r"^\s*(?:import|from)\s+litellm\b", re.MULTILINE)),
     ("litellm.completion", re.compile(r"\blitellm\s*\.\s*completion\s*\(")),
-    ("direct YOLO import", re.compile(r"^\s*from\s+ultralytics\s+import\s+YOLO\b", re.MULTILINE)),
+    ("direct ultralytics import", re.compile(r"^\s*(?:import\s+ultralytics\b|from\s+ultralytics\s+import\b)", re.MULTILINE)),
+    ("direct YOLO import", re.compile(r"^\s*(?:import\s+YOLO\b|from\s+\S+\s+import\s+.*\bYOLO\b)", re.MULTILINE)),
+    ("direct YOLO call", re.compile(r"\bYOLO\s*\(")),
+    ("hardcoded YOLO model name", re.compile(r"\byolo11\w*\b", re.IGNORECASE)),
     ("direct Google Vision import", re.compile(r"^\s*(?:import\s+google\.cloud\.vision\b|from\s+google\.cloud\s+import\s+vision\b)", re.MULTILINE)),
     ("direct provider SDK import", re.compile(r"^\s*(?:import|from)\s+(?:openai|anthropic|google\.genai|google\.generativeai)\b", re.MULTILINE)),
     ("DEFAULT_MODEL constant", re.compile(r"\bDEFAULT_MODEL\b")),
     ("local ModelRouter class", re.compile(r"\bclass\s+ModelRouter\b")),
+    ("COCO class list", re.compile(r"\bCOCO_CLASSES\b")),
     ("model registry", re.compile(r"\b(?:MODEL_REGISTRY|model_registry|available_models|provider_registry)\b")),
     ("provider fallback logic", re.compile(r"\b(?:fallback_models|fallback_model|provider_fallback|fallback_provider)\b")),
-    ("direct .pt model loading", re.compile(r"\bYOLO\s*\([^)]*\.pt[^)]*\)|['\"][^'\"]+\.pt['\"]")),
+    ("model file reference", re.compile(r"\.pt\b|['\"][^'\"]+\.pt['\"]")),
     ("model file discovery", re.compile(r"\b(?:glob|rglob)\s*\([^)]*\.pt[^)]*\)|os\.walk\s*\(")),
 ]
 
@@ -95,7 +99,7 @@ def main(argv: List[str] | None = None) -> int:
     failures = validate_files(paths)
     if failures:
         print("Generated tools must use tools/model_router_client.py or backend-injected routed_* APIs.")
-        print("Do not implement local routing, provider SDK calls, detector wrappers, OCR wrappers, or model discovery in tool files.")
+        print("Do not implement detection, OCR, VLM, LLM, model loading, provider calls, or model discovery in tool files.")
         print()
         for failure in failures:
             print(failure)
