@@ -39,7 +39,9 @@ def main(image, input_data=None):
 - **Streaming etiquette:** when run per frame, return `""` when nothing changed, or
   the user hears the same thing every ~500ms. Streaming output is capped at ~15 words.
 - **Model-backed work:** treat capability categories as declarations, not
-  implementation requirements. Use the backend-provided capability calls and
+  implementation requirements. Assume each generated tool implements one
+  user-facing task; do not plan subtasks or chain multiple model calls unless
+  the user explicitly asks for that. Use the backend-provided capability calls and
   trust the existing backend capability layer and centralized model router. Do
   not implement routing, create routers, create capability registries, create
   detector/OCR/LLM wrappers, concrete detector functions, model-backed

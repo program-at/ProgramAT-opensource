@@ -14,10 +14,12 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("Capability Pipeline", template)
-        self.assertIn("Capability categories are declarations, not implementation requirements", template)
+        self.assertIn("one user-facing task", template)
+        self.assertIn("Do not plan subtasks", template)
         self.assertIn("centralized backend model router through the approved wrapper from `model_router_client`", template)
         self.assertIn("object_localization", template)
+        self.assertNotIn("Capability Pipeline", template)
+        self.assertNotIn("Outputs from earlier stages", template)
         self.assertNotIn("should either utilize Yolo11", template)
         self.assertNotIn("Google Vision", template)
         self.assertIn("call `YOLO(...)`", template)
