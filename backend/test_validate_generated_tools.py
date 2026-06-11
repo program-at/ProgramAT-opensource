@@ -24,20 +24,27 @@ class TestValidateGeneratedTools(unittest.TestCase):
 from ultralytics import YOLO
 
 DEFAULT_MODEL = "some-provider/model"
+COCO_CLASSES = ["car", "bus"]
 
 class ModelRouter:
     pass
 
-model = YOLO("local-model.pt")
+def detect_vehicles(image):
+    model = YOLO("yolo11n.pt")
+    return model(image)
 """,
         )
 
         failures = validate_generated_tools.validate_files([path])
 
+        self.assertTrue(any("direct ultralytics import" in failure for failure in failures))
         self.assertTrue(any("direct YOLO import" in failure for failure in failures))
+        self.assertTrue(any("direct YOLO call" in failure for failure in failures))
+        self.assertTrue(any("hardcoded YOLO model name" in failure for failure in failures))
         self.assertTrue(any("DEFAULT_MODEL constant" in failure for failure in failures))
         self.assertTrue(any("local ModelRouter class" in failure for failure in failures))
-        self.assertTrue(any("direct .pt model loading" in failure for failure in failures))
+        self.assertTrue(any("COCO class list" in failure for failure in failures))
+        self.assertTrue(any("model file reference" in failure for failure in failures))
 
     def test_allows_approved_model_router_client_import(self):
         path = self._write_temp_tool(
