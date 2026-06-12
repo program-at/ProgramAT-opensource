@@ -9,7 +9,8 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-MODEL = 'gemini-3.5-flash'
+#MODEL = 'gemini-3.5-flash'
+MODEL = 'gemini-3-flash-preview'
 PROMPT = (
     "Summarize what is happening in this video, including any relevant audio context. "
     "Be concise (2-4 sentences). Focus on the actions, subjects, and setting."
