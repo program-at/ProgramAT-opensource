@@ -18,10 +18,12 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
+  ActivityIndicator,
 } from 'react-native';
 import { useTheme } from './ThemeContext';
 import WebSocketService from './WebSocketService';
 import TextToSpeechService from './TextToSpeechService';
+import VideoRecorderModal from './VideoRecorderModal';
 
 interface TextInputProps {
   serverFeedback?: string;
@@ -47,16 +49,76 @@ export default function TextInputComponent({
   const [error, setError] = useState('');
   const inputRef = useRef<RNTextInput>(null);
 
+  // Video attachment state (create mode only)
+  const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [isVideoRecorderOpen, setIsVideoRecorderOpen] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+
   const isCreateMode = !selectedIssue;
+
+  /** Convert the WebSocket URL to an HTTP base URL for REST endpoints. */
+  const getHttpBaseUrl = (): string => {
+    const wsUrl = WebSocketService.getServerUrl(); // e.g. 'ws://1.2.3.4:8081'
+    return wsUrl.replace(/^wss?/, 'http');
+  };
+
+  const handleSubmitWithVideo = async () => {
+    const baseUrl = getHttpBaseUrl();
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
+      if (videoUri) {
+        formData.append('video', {
+          uri: videoUri,
+          type: 'video/mp4',
+          name: 'recording.mp4',
+        } as any);
+      }
+
+      const response = await fetch(`${baseUrl}/submit-creation`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'created') {
+        TextToSpeechService.speak(`Issue ${result.issue_number} created`);
+        setInputText('');
+        setVideoUri(null);
+        Keyboard.dismiss();
+      } else {
+        setError(result.error ?? 'Submission failed. Please try again.');
+      }
+    } catch {
+      setError('Could not reach the server. Check your connection.');
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   const handleTextChange = (text: string) => {
     setInputText(text);
     setError('');
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputText.trim()) {
       setError('Please enter some text');
+      return;
+    }
+
+    // Create mode + video attached → submit via HTTP multipart
+    if (isCreateMode && videoUri) {
+      await handleSubmitWithVideo();
       return;
     }
 
@@ -66,19 +128,19 @@ export default function TextInputComponent({
     }
 
     setError('');
-    
+
     // If switching to create mode or already in create mode, send mode first
     if (isCreateMode) {
       WebSocketService.sendIssueSelection('create');
     }
-    
+
     // Send the text (without the prefix, backend now knows the mode)
     console.log('[TextInput] Sending text in', isCreateMode ? 'CREATE' : 'UPDATE', 'mode:', inputText);
     WebSocketService.sendText(inputText.trim());
 
     // Clear input after sending
     setInputText('');
-    
+
     // Dismiss keyboard
     Keyboard.dismiss();
   };
@@ -216,6 +278,43 @@ export default function TextInputComponent({
             </View>
           )}
 
+          {/* Video attachment row — create mode only */}
+          {isCreateMode && (
+            <View style={styles.videoRow}>
+              {videoUri ? (
+                <>
+                  <View style={[styles.videoAttachedBadge, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}>
+                    <Text style={[styles.videoAttachedText, { color: theme.text }]}>📹 Video attached</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setIsVideoRecorderOpen(true)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Re-record video">
+                    <Text style={[styles.videoActionText, { color: theme.primary }]}>Re-record</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setVideoUri(null)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove video attachment">
+                    <Text style={[styles.videoActionText, { color: theme.error }]}>Remove</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <TouchableOpacity
+                  style={[styles.addVideoButton, { borderColor: theme.border, backgroundColor: theme.backgroundSecondary }]}
+                  onPress={() => setIsVideoRecorderOpen(true)}
+                  accessible={true}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add video recording"
+                  accessibilityHint="Opens camera to record a video to attach to this submission">
+                  <Text style={[styles.addVideoText, { color: theme.text }]}>📹  Add Video</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+
           <View style={styles.buttonContainer}>
             <TouchableOpacity
               style={[styles.button, styles.clearButton, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}
@@ -233,19 +332,34 @@ export default function TextInputComponent({
                 styles.button, 
                 styles.sendButton, 
                 { backgroundColor: theme.primary }, 
-                !inputText.trim() && styles.buttonDisabled
+                (!inputText.trim() || isSending) && styles.buttonDisabled
               ]}
               onPress={handleSend}
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() || isSending}
               accessible={true}
-              accessibilityLabel="Send text"
+              accessibilityLabel={isSending ? 'Submitting…' : (isCreateMode && videoUri ? 'Submit with video' : 'Send text')}
               accessibilityHint="Sends the text to the server"
               accessibilityRole="button"
-              accessibilityState={{ disabled: !inputText.trim() }}>
-              <Text style={[styles.buttonText, styles.sendButtonText]}>Send</Text>
+              accessibilityState={{ disabled: !inputText.trim() || isSending }}>
+              {isSending
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={[styles.buttonText, styles.sendButtonText]}>
+                    {isCreateMode && videoUri ? 'Submit' : 'Send'}
+                  </Text>
+              }
             </TouchableOpacity>
           </View>
         </ScrollView>
+
+        {/* Video recorder overlay — create mode only */}
+        <VideoRecorderModal
+          visible={isVideoRecorderOpen}
+          onVideoRecorded={(path) => {
+            setVideoUri(path);
+            setIsVideoRecorderOpen(false);
+          }}
+          onCancel={() => setIsVideoRecorderOpen(false)}
+        />
     </KeyboardAvoidingView>
   );
 }
@@ -428,5 +542,42 @@ const styles = StyleSheet.create({
   },
   sendButtonText: {
     color: '#fff',
+  },
+  // Video attachment row
+  videoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  addVideoButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addVideoText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  videoAttachedBadge: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  videoAttachedText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  videoActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: 4,
   },
 });
