@@ -109,7 +109,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8081 #port for listening
+PORT = 8080 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -3942,6 +3942,59 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         return web.json_response({'status': 'error', 'error': str(e)}, status=500)
 
 
+async def handle_test_video_summary(request: web.Request) -> web.Response:
+    """
+    POST /test-video-summary
+    Developer testing endpoint: accepts a 'video' multipart field, summarizes it
+    via Gemini, and returns the summary — no GitHub issue is created.
+    Returns JSON: {status: 'ok', summary: str} or {status: 'error', error: str}
+    """
+    video_bytes = None
+    video_suffix = '.mp4'
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'test.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /test-video-summary: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not video_bytes:
+        return web.json_response({'status': 'error', 'error': 'No video field provided'}, status=400)
+
+    tmp_path = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='vidtest_')
+        with os.fdopen(tmp_fd, 'wb') as fh:
+            fh.write(video_bytes)
+        logger.info("Test video saved to %s (%d bytes)", tmp_path, len(video_bytes))
+
+        summary = await summarize_video(tmp_path)
+
+        if summary:
+            return web.json_response({'status': 'ok', 'summary': summary})
+        else:
+            return web.json_response(
+                {'status': 'error', 'error': 'Gemini returned no summary — check GEMINI_API_KEY and video format.'},
+                status=500,
+            )
+
+    except Exception as e:
+        logger.error("test-video-summary handler failed: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 # New helper to process/save incoming text
 def process_text(text_payload, model: str = None) -> dict:
     """
@@ -5653,6 +5706,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
     app.router.add_post('/submit-creation', handle_creation_submit)
+    app.router.add_post('/test-video-summary', handle_test_video_summary)
     app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
 
     runner = web.AppRunner(app)

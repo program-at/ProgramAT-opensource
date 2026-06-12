@@ -1,0 +1,292 @@
+/**
+ * VideoSummaryTestScreen
+ * Developer testing screen: record a video, send it to the server, and display
+ * the Gemini summary — without creating a GitHub issue.
+ * Accessed from Settings.
+ */
+
+import React, { useState } from 'react';
+import {
+  StyleSheet,
+  Text,
+  View,
+  TouchableOpacity,
+  ScrollView,
+  ActivityIndicator,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTheme } from './ThemeContext';
+import WebSocketService from './WebSocketService';
+import VideoRecorderModal from './VideoRecorderModal';
+
+interface VideoSummaryTestScreenProps {
+  onBack: () => void;
+}
+
+export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScreenProps) {
+  const { theme } = useTheme();
+  const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [isRecorderOpen, setIsRecorderOpen] = useState(false);
+  const [isTesting, setIsTesting] = useState(false);
+  const [summary, setSummary] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const getHttpBase = (): string =>
+    WebSocketService.getServerUrl().replace(/^wss?/, 'http');
+
+  const handleTest = async () => {
+    if (!videoUri) return;
+
+    const baseUrl = getHttpBase();
+    if (!baseUrl) {
+      setErrorMsg('Server URL not configured — connect in Settings first.');
+      return;
+    }
+
+    setIsTesting(true);
+    setSummary(null);
+    setErrorMsg(null);
+
+    try {
+      const formData = new FormData();
+      formData.append('video', {
+        uri: videoUri,
+        type: 'video/mp4',
+        name: 'test.mp4',
+      } as any);
+
+      const response = await fetch(`${baseUrl}/test-video-summary`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'ok') {
+        setSummary(result.summary || '(No summary returned)');
+      } else {
+        setErrorMsg(result.error ?? 'Server returned an error.');
+      }
+    } catch {
+      setErrorMsg('Could not reach the server. Check your connection.');
+    } finally {
+      setIsTesting(false);
+    }
+  };
+
+  return (
+    <SafeAreaView
+      style={[styles.container, { backgroundColor: theme.background }]}
+      edges={['bottom']}>
+      {/* Header */}
+      <View style={[styles.header, { borderBottomColor: theme.border }]}>
+        <TouchableOpacity
+          onPress={onBack}
+          style={styles.backButton}
+          accessible={true}
+          accessibilityRole="button"
+          accessibilityLabel="Back to Settings">
+          <Text style={[styles.backText, { color: theme.primary }]}>‹ Settings</Text>
+        </TouchableOpacity>
+        <Text style={[styles.title, { color: theme.text }]}>Video Summary Test</Text>
+        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
+          Record a video and verify the Gemini summary without creating an issue.
+        </Text>
+      </View>
+
+      <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
+
+        {/* Step 1 — Record */}
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>Step 1 — Record</Text>
+
+          {videoUri ? (
+            <View style={styles.videoReadyRow}>
+              <Text style={[styles.videoReadyText, { color: theme.text }]}>📹  Video ready</Text>
+              <TouchableOpacity
+                onPress={() => setIsRecorderOpen(true)}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Re-record video">
+                <Text style={[styles.actionLink, { color: theme.primary }]}>Re-record</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => { setVideoUri(null); setSummary(null); setErrorMsg(null); }}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Remove video">
+                <Text style={[styles.actionLink, { color: theme.error }]}>Remove</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.recordButton, { backgroundColor: theme.primary }]}
+              onPress={() => setIsRecorderOpen(true)}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Record a video"
+              accessibilityHint="Opens the camera to record a test video">
+              <Text style={styles.recordButtonText}>📹  Record Video</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+
+        {/* Step 2 — Test */}
+        <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>Step 2 — Generate Summary</Text>
+          <TouchableOpacity
+            style={[
+              styles.testButton,
+              { backgroundColor: theme.success },
+              (!videoUri || isTesting) && styles.buttonDisabled,
+            ]}
+            onPress={handleTest}
+            disabled={!videoUri || isTesting}
+            accessible={true}
+            accessibilityRole="button"
+            accessibilityLabel={isTesting ? 'Generating summary…' : 'Send to Gemini and summarize'}
+            accessibilityState={{ disabled: !videoUri || isTesting }}>
+            {isTesting ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Text style={styles.testButtonText}>Send to Gemini</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* Result */}
+        {(summary !== null || errorMsg !== null) && (
+          <View style={[
+            styles.card,
+            styles.resultCard,
+            {
+              backgroundColor: theme.card,
+              borderColor: errorMsg ? theme.error : theme.success,
+            },
+          ]}>
+            <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>
+              {errorMsg ? 'Error' : 'Summary'}
+            </Text>
+            <Text
+              style={[
+                styles.resultText,
+                { color: errorMsg ? theme.error : theme.text },
+              ]}
+              selectable>
+              {errorMsg ?? summary}
+            </Text>
+          </View>
+        )}
+      </ScrollView>
+
+      {/* Camera overlay */}
+      <VideoRecorderModal
+        visible={isRecorderOpen}
+        onVideoRecorded={path => {
+          setVideoUri(path);
+          setIsRecorderOpen(false);
+          setSummary(null);
+          setErrorMsg(null);
+        }}
+        onCancel={() => setIsRecorderOpen(false)}
+      />
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1 },
+  // Header
+  header: {
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+  },
+  backButton: {
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  backText: {
+    fontSize: 17,
+    fontWeight: '500',
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  subtitle: {
+    fontSize: 13,
+  },
+  // Body
+  body: { flex: 1 },
+  bodyContent: {
+    padding: 20,
+    gap: 16,
+  },
+  card: {
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  resultCard: {
+    borderWidth: 2,
+  },
+  stepLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 12,
+  },
+  // Video row
+  videoReadyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  videoReadyText: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  actionLink: {
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: 2,
+  },
+  // Buttons
+  recordButton: {
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  recordButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  testButton: {
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  testButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  buttonDisabled: {
+    opacity: 0.5,
+  },
+  // Result
+  resultText: {
+    fontSize: 15,
+    lineHeight: 22,
+  },
+});

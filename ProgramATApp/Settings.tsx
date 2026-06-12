@@ -24,6 +24,7 @@ import WebSocketService from './WebSocketService';
 import { getModelPreference, setModelPreference } from './ModelPreference';
 import { useTheme } from './ThemeContext';
 import ModelPickerScreen from './ModelPickerScreen';
+import VideoSummaryTestScreen from './VideoSummaryTestScreen';
 
 const SERVER_URL_KEY = '@server_url';
 
@@ -44,6 +45,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
   const [serverDefaultModel, setServerDefaultModel] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
+  const [showVideoTest, setShowVideoTest] = useState(false);
 
   // Loading state for the Register Device button.
   const [isRegistering, setIsRegistering] = useState(false);
@@ -255,6 +257,10 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
         onSelect={applyModel}
       />
     );
+  }
+
+  if (showVideoTest) {
+    return <VideoSummaryTestScreen onBack={() => setShowVideoTest(false)} />;
   }
 
   return (
@@ -545,6 +551,25 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
               ) : (
                 <Text style={styles.debugButtonText}>Register Device</Text>
               )}
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Developer Tools Section */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionTitle, { color: theme.text }]} accessibilityRole="header">Developer Tools</Text>
+          <View style={[styles.settingCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <Text style={[styles.settingDescription, styles.debugDescription, { color: theme.textSecondary }]}>
+              Test video recording and Gemini summarization without creating a GitHub issue.
+            </Text>
+            <TouchableOpacity
+              style={[styles.debugButton, styles.debugButtonLast, { backgroundColor: theme.primary }]}
+              onPress={() => setShowVideoTest(true)}
+              accessible={true}
+              accessibilityRole="button"
+              accessibilityLabel="Test video summary"
+              accessibilityHint="Opens a screen to record a video and see the Gemini summary">
+              <Text style={styles.debugButtonText}>Test Video Summary</Text>
             </TouchableOpacity>
           </View>
         </View>
