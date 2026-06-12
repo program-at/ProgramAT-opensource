@@ -243,16 +243,16 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     return result
 
 
-# Building block exports
-__all__ = [
-    'main',
-    'reset_tracking',
-]
-
-
 def reset_tracking():
     """Reset all tracking state. Useful between aisles or test runs."""
     global _frame_counter, _result_history, _last_result
     _frame_counter = 0
     _result_history.clear()
     _last_result = ""
+
+
+# Building block exports
+__all__ = [
+    'main',
+    'reset_tracking',
+]

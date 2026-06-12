@@ -186,7 +186,12 @@ def test_main_with_shelf_image():
     print(f"  Result: '{result}'")
 
     if result:
-        result_text = result if isinstance(result, str) else result.get('text', '')
+        if isinstance(result, str):
+            result_text = result
+        elif isinstance(result, dict):
+            result_text = result.get('text', '')
+        else:
+            result_text = str(result)
         word_count = len(result_text.split())
         print(f"  Word count: {word_count}")
         assert word_count <= 20, f"Response too long ({word_count} words): {result_text}"
@@ -209,9 +214,13 @@ def test_main_with_grabbed_image():
 
     if result:
         if isinstance(result, dict):
-            assert result.get('audio', {}).get('type') == 'success', \
+            assert isinstance(result.get('audio'), dict), \
+                "Grab result dict should contain 'audio' key"
+            assert result['audio'].get('type') == 'success', \
                 "Grab should use success audio type"
             print(f"  Audio type: {result['audio']['type']} (expected 'success')")
+        elif isinstance(result, str):
+            print(f"  String result (no grab detected): '{result}'")
     print("  PASSED\n")
 
 
