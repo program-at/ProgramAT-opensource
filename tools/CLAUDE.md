@@ -41,14 +41,13 @@ def main(image, input_data=None):
 - **Model-backed work:** treat capability categories as declarations, not
   implementation requirements. Assume each generated tool implements one
   user-facing task; do not plan subtasks or chain multiple model calls unless
-  the user explicitly asks for that. Use the backend-provided capability calls and
-  trust the existing backend capability layer and centralized model router. Do
+  the user explicitly asks for that. Use the existing backend model router
+  through the existing tool-facing client. Do
   not implement routing, create routers, create capability registries, create
   detector/OCR/LLM wrappers, concrete detector functions, model-backed
   inference, model loading, or provider calls inside a generated tool.
-  Import `routed_llm_call`, `routed_vision_call`, `routed_object_detection`, or
-  `routed_ocr_call` from `model_router_client` only as existing backend
-  entrypoints. Supported categories for new tools include
+  Import `llm_call` from `model_router_client` as the existing backend entrypoint.
+  Supported categories for new tools include
   `simple_parsing`, `object_detection`, `object_localization`,
   `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`,
   `code_generation`, and `general_reasoning`. Include
@@ -57,8 +56,8 @@ def main(image, input_data=None):
   `DEFAULT_MODEL` constants, `COCO_CLASSES`, direct `litellm.completion()`
   calls, `YOLO(...)` calls, detector library imports, provider SDK imports,
   `.pt` file loading, or model-file discovery logic. If the approved API cannot
-  support the needed capability, add support to the centralized router or
-  `model_router_client` instead of implementing it inside the tool.
+  support the needed capability, add support to the centralized backend router
+  instead of implementing it inside the tool.
 - **Imports:** `import litellm_utils` bare (the server makes `tools/` the import
   root). Wrap optional dependencies in `try/except ImportError` — missing pip
   packages are auto-installed by the backend.
