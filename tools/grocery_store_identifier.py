@@ -26,9 +26,8 @@ Configuration Options (via input_data):
 
 import cv2
 import numpy as np
-from typing import Dict, Optional, Any
+from typing import Dict, List, Optional, Any
 import os
-import io
 from PIL import Image
 from collections import deque
 
@@ -52,11 +51,25 @@ DEFAULT_SKIP_FRAMES = 5   # Process every Nth frame in streaming mode
 SIMILARITY_THRESHOLD = 0.65  # Word-level Jaccard similarity for repeat suppression
 MAX_HISTORY = 6           # Number of recent announcements to track
 MAX_IMAGE_SIZE = (1024, 1024)
+_CACHE_KEY = 'grocery_store_state'
 
-# Global state for tracking across streaming frames
-_frame_counter = 0
-_result_history: deque = deque(maxlen=MAX_HISTORY)
-_last_result = ""
+
+def _get_state() -> Dict[str, Any]:
+    """
+    Return the persistent state dict from yolo_model_cache.
+
+    The backend injects yolo_model_cache as a mutable dict that is shared
+    across all streaming frame executions, making it the correct place to
+    store any state that must survive between frames (frame counter, history).
+    """
+    cache = globals().get('yolo_model_cache', {})
+    if _CACHE_KEY not in cache:
+        cache[_CACHE_KEY] = {
+            'frame_counter': 0,
+            'result_history': deque(maxlen=MAX_HISTORY),
+            'last_result': '',
+        }
+    return cache[_CACHE_KEY]
 
 
 def _resize_image(image: np.ndarray, max_size: tuple = MAX_IMAGE_SIZE) -> np.ndarray:
@@ -85,9 +98,9 @@ def _calculate_similarity(text1: str, text2: str) -> float:
     return len(intersection) / len(union) if union else 0.0
 
 
-def _is_duplicate(text: str) -> bool:
+def _is_duplicate(text: str, history: deque) -> bool:
     """Return True if text is too similar to a recent announcement."""
-    for prev in _result_history:
+    for prev in history:
         if _calculate_similarity(text, prev) >= SIMILARITY_THRESHOLD:
             return True
     return False
@@ -186,18 +199,19 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         {'audio': {'type': 'success', 'text': 'You grabbed Cheerios, 3.50', ...}, 'text': ...}
         ""  — nothing new detected this frame
     """
-    global _frame_counter, _result_history, _last_result
-
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
         return "No camera image available"
 
     config = input_data if isinstance(input_data, dict) else {}
 
+    # Retrieve persistent state (survives across streaming frames via yolo_model_cache)
+    state = _get_state()
+
     # Allow caller to reset tracking (e.g. when user moves to a new aisle)
     if config.get('reset', False):
-        _frame_counter = 0
-        _result_history.clear()
-        _last_result = ""
+        state['frame_counter'] = 0
+        state['result_history'].clear()
+        state['last_result'] = ''
         return "Grocery scanner reset"
 
     model = config.get(
@@ -207,10 +221,10 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     api_key = config.get('api_key')
     skip_frames = int(config.get('skip_frames', DEFAULT_SKIP_FRAMES))
 
-    _frame_counter += 1
+    state['frame_counter'] += 1
 
     # Skip frames to reduce API costs in streaming mode
-    if _frame_counter % skip_frames != 0:
+    if state['frame_counter'] % skip_frames != 0:
         return ""
 
     if not LITELLM_AVAILABLE:
@@ -222,11 +236,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         return ""
 
     # Suppress repetitive announcements
-    if _is_duplicate(result):
+    if _is_duplicate(result, state['result_history']):
         return ""
 
-    _result_history.append(result)
-    _last_result = result
+    state['result_history'].append(result)
+    state['last_result'] = result
 
     # Distinguish grab confirmations with a success audio cue
     if result.lower().startswith('you grabbed'):
@@ -245,10 +259,10 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
 
 def reset_tracking():
     """Reset all tracking state. Useful between aisles or test runs."""
-    global _frame_counter, _result_history, _last_result
-    _frame_counter = 0
-    _result_history.clear()
-    _last_result = ""
+    state = _get_state()
+    state['frame_counter'] = 0
+    state['result_history'].clear()
+    state['last_result'] = ''
 
 
 # Building block exports

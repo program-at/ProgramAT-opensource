@@ -11,6 +11,12 @@ import numpy as np
 # Add tools directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'tools'))
 
+import grocery_store_identifier
+
+# Inject a yolo_model_cache into the module so _get_state() has a persistent dict,
+# mirroring what the backend server does when exec()ing tools.
+grocery_store_identifier.yolo_model_cache = {}
+
 from grocery_store_identifier import (
     _calculate_similarity,
     _is_duplicate,
@@ -107,14 +113,14 @@ def test_duplicate_detection():
     print("Testing _is_duplicate()...")
     reset_tracking()
 
-    from grocery_store_identifier import _result_history
-    _result_history.append("Cheerios, 3.50")
+    from collections import deque
+    history = deque(maxlen=6)
+    history.append("Cheerios, 3.50")
 
-    assert _is_duplicate("Cheerios, 3.50"), "Should detect exact duplicate"
+    assert _is_duplicate("Cheerios, 3.50", history), "Should detect exact duplicate"
     # Near-duplicate: same product with slightly different phrasing (enough shared words)
-    assert _is_duplicate("Cheerios, 3.50 dollars"), "Should detect near-duplicate with extra word"
-    assert not _is_duplicate("Lucky Charms, 4 dollars"), "Should not flag new item"
-    reset_tracking()
+    assert _is_duplicate("Cheerios, 3.50 dollars", history), "Should detect near-duplicate with extra word"
+    assert not _is_duplicate("Lucky Charms, 4 dollars", history), "Should not flag new item"
     print("  PASSED\n")
 
 
