@@ -59,6 +59,61 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _code_fingerprint(code: str) -> str:
+    """Return a short stable fingerprint for inline tool code."""
+    import hashlib
+    return hashlib.sha256((code or "").encode("utf-8", errors="replace")).hexdigest()[:12]
+
+
+def _tool_source_metadata(tool: dict | None = None, message: dict | None = None) -> dict:
+    """Normalize tool source information for exec-time diagnostics."""
+    tool = tool or {}
+    message = message or {}
+
+    def first(*keys, default=None):
+        for key in keys:
+            if key in message and message.get(key) not in (None, ""):
+                return message.get(key)
+            if key in tool and tool.get(key) not in (None, ""):
+                return tool.get(key)
+        return default
+
+    tool_name = first("tool_name", "name", default="unknown")
+    source_type = first("tool_source_type", "source", default="client_inline")
+    source_path = first("tool_source_path", "path", default="")
+    repository = first("tool_source_repository", "repository", default=GITHUB_REPO or "")
+    pr_number = first("tool_source_pr", "pr_number", default=None)
+    source_sha = first("tool_source_sha", "source_sha", "sha", "commit_sha", default="")
+    cache_status = first("tool_cache_status", "cache_status", default="client_inline")
+
+    code = first("tool_code", "code", default="")
+    if not source_sha and code:
+        source_sha = f"inline-sha256:{_code_fingerprint(code)}"
+
+    return {
+        "tool_name": tool_name,
+        "source_type": source_type,
+        "source_path": source_path,
+        "repository": repository,
+        "pr_number": pr_number,
+        "source_sha": source_sha,
+        "cache_status": cache_status,
+        "code_fingerprint": _code_fingerprint(code),
+    }
+
+
+def _log_tool_exec_source(tool: dict | None = None, message: dict | None = None) -> None:
+    metadata = _tool_source_metadata(tool, message)
+    logger.info("Executing tool: %s", metadata["tool_name"])
+    logger.info("Source type: %s", metadata["source_type"])
+    logger.info("Source path: %s", metadata["source_path"] or "unknown")
+    logger.info("Repository: %s", metadata["repository"] or "unknown")
+    logger.info("PR: %s", metadata["pr_number"] if metadata["pr_number"] is not None else "none")
+    logger.info("SHA: %s", metadata["source_sha"] or "unknown")
+    logger.info("Cache status: %s", metadata["cache_status"])
+    logger.info("Code fingerprint: %s", metadata["code_fingerprint"])
+
+
 def _normalize_custom_gpt_value(value) -> str:
     """Normalize custom_gpt answers into 'yes', 'no', or ''."""
     if isinstance(value, bool):
@@ -598,6 +653,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     sys.stdout = stdout_capture
                     try:
                         # Execute tool code
+                        _log_tool_exec_source(tool)
                         logger.info(f"About to exec() tool code for {client_id}")
                         exec(tool_code, exec_globals, exec_locals)
                         logger.info(f"Successfully exec()d tool code for {client_id}")
@@ -2135,6 +2191,9 @@ def get_local_tools_for_pr_merge() -> list:
             local_tools.append({
                 'name': tool_name,
                 'path': f'tools/{py_file.name}',
+                'source_path': str(py_file.resolve()),
+                'repository': 'local_checkout',
+                'cache_status': 'not_cached',
                 'description': description,
                 'code': code,
                 'language': 'python',
@@ -2282,6 +2341,11 @@ def fetch_pr_tools_from_github(pr, repo) -> list:
             tools.append({
                 'name': tool_name,
                 'path': file_info['path'],
+                'source_path': f"github://{GITHUB_REPO}@{pr.head.sha}/{file_info['path']}",
+                'repository': GITHUB_REPO,
+                'sha': file_info.get('sha', ''),
+                'commit_sha': pr.head.sha,
+                'cache_status': 'github_api_blob_fetch',
                 'description': description,
                 'code': code,
                 'language': language,
@@ -2482,10 +2546,16 @@ def fetch_branch_tools(branch_name: str = 'main') -> list:
                 tools.append({
                     'name': tool_name,
                     'path': file_info['path'],
+                    'source_path': f"github://{GITHUB_REPO}@{commit_sha}/{file_info['path']}",
+                    'repository': GITHUB_REPO,
+                    'sha': file_info.get('sha', ''),
+                    'commit_sha': commit_sha,
+                    'cache_status': 'github_api_blob_fetch',
                     'description': description,
                     'code': code,
                     'language': language,
                     'branch_name': branch_name,
+                    'source': 'github_branch',
                     'is_production': True
                 })
                 logger.info(f"Added production tool: {tool_name} from {file_info['path']} (branch {branch_name})")
@@ -2606,9 +2676,15 @@ def fetch_issue_tools(issue_number: int) -> list:
                 tools.append({
                     'name': tool_name,
                     'path': f'custom_gpt/{tool_name}.py',
+                    'source_path': f'custom_gpt/issue_{issue_number}/{tool_name}.py',
+                    'repository': GITHUB_REPO,
+                    'sha': '',
+                    'commit_sha': '',
+                    'cache_status': 'synthetic_no_exec',
                     'description': issue_title,
                     'code': '# Custom GPT tool - uses Gemini Live, no code execution\ndef main(image, input_data):\n    return {"success": True, "text": "This tool uses Gemini Live mode"}',
                     'language': 'python',
+                    'source': 'custom_gpt_issue',
                     'pr_number': None,
                     'pr_title': None,
                     'branch_name': None,
@@ -2737,9 +2813,15 @@ def fetch_issue_tools(issue_number: int) -> list:
                         tools.append({
                             'name': tool_name,
                             'path': file_info['path'],
+                            'source_path': f"github://{GITHUB_REPO}@{pr.head.sha}/{file_info['path']}",
+                            'repository': GITHUB_REPO,
+                            'sha': file_info.get('sha', ''),
+                            'commit_sha': pr.head.sha,
+                            'cache_status': 'github_api_blob_fetch',
                             'description': description,
                             'code': code,
                             'language': language,
+                            'source': 'github_issue_pr',
                             'pr_number': pr.number,
                             'pr_title': pr.title,
                             'branch_name': pr.head.ref,
@@ -4077,6 +4159,13 @@ async def handle_client(websocket):
                     active_streaming_tools[client_id] = {
                         'tool': {
                             'name': data.get('tool_name', 'unknown'),
+                            'path': data.get('tool_path', ''),
+                            'source': data.get('tool_source_type', data.get('source', 'client_inline')),
+                            'source_path': data.get('tool_source_path', data.get('tool_path', '')),
+                            'repository': data.get('tool_source_repository', ''),
+                            'pr_number': data.get('tool_source_pr'),
+                            'sha': data.get('tool_source_sha', ''),
+                            'cache_status': data.get('tool_cache_status', 'client_inline'),
                             'code': data.get('tool_code', ''),
                             'language': data.get('tool_language', 'python'),
                             'input': data.get('input', ''),
@@ -4916,6 +5005,7 @@ async def handle_client(websocket):
                                     # Redirect stdout to capture print statements
                                     sys.stdout = stdout_capture
                                     try:
+                                        _log_tool_exec_source(message=data)
                                         exec(tool_code, exec_globals, exec_locals)
                                     finally:
                                         sys.stdout = old_stdout

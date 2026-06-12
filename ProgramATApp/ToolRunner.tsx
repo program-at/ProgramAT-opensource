@@ -44,6 +44,12 @@ interface Tool {
   code?: string;
   source_code?: string;
   language?: string;
+  source?: string;
+  source_path?: string;
+  repository?: string;
+  sha?: string;
+  commit_sha?: string;
+  cache_status?: string;
   pr_number?: number;
   pr_title?: string;
   branch_name?: string;
@@ -925,6 +931,12 @@ export default function ToolRunner({
       type: 'run_tool',
       tool_name: selectedTool.name,
       tool_path: selectedTool.path,
+      tool_source_type: selectedTool.source || 'client_inline',
+      tool_source_path: selectedTool.source_path || selectedTool.path,
+      tool_source_repository: selectedTool.repository || '',
+      tool_source_pr: selectedTool.pr_number,
+      tool_source_sha: selectedTool.commit_sha || selectedTool.sha || '',
+      tool_cache_status: selectedTool.cache_status || 'client_inline',
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
@@ -977,6 +989,13 @@ export default function ToolRunner({
     const message: any = {
       type: 'start_streaming_tool',
       tool_name: selectedTool.name,
+      tool_path: selectedTool.path,
+      tool_source_type: selectedTool.source || 'client_inline',
+      tool_source_path: selectedTool.source_path || selectedTool.path,
+      tool_source_repository: selectedTool.repository || '',
+      tool_source_pr: selectedTool.pr_number,
+      tool_source_sha: selectedTool.commit_sha || selectedTool.sha || '',
+      tool_cache_status: selectedTool.cache_status || 'client_inline',
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',

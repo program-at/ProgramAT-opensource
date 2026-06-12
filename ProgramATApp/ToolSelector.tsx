@@ -25,6 +25,12 @@ interface Tool {
   description?: string;
   code?: string;
   language?: string;
+  source?: string;
+  source_path?: string;
+  repository?: string;
+  sha?: string;
+  commit_sha?: string;
+  cache_status?: string;
   pr_number?: number;
   pr_title?: string;
   branch_name?: string;
