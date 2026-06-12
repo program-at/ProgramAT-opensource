@@ -16,6 +16,7 @@ PROMPT = (
     "Summarize what is happening in this video, including any relevant audio context. "
     "Break down the examples in presented in the video to articulate what kinds of input should generate specific outputs"
     "In the event the user is describing a hypothetical scenario/pretending with things in their environment, your description should match what they are pretending things are, not the actual item in the mock up"
+    "If the user specifies a particular relationship between an action they take/a thing that comes onscreen and an output produced, include that relationship in your description"
     "Conclude with a sentence summarizing the key functionality and behavior of the desired tool"
 )
 POLL_INTERVAL = 2.0   # seconds between file-state checks
