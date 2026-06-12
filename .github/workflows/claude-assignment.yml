@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write the code for this tool inside the tools folder. Before coding, include a Capability Pipeline. Treat capability categories as declarations, not implementation requirements. Trust the existing backend capability layer and centralized model router; do not implement routing, create routers or wrappers, or choose providers/models. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that. For any model-backed operation, generated tools must call the centralized backend model router through the approved model_router_client wrapper. Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files. If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -65,9 +65,11 @@ jobs:
             Issue body: ${{ github.event.issue.body }}
             Requirements:
             - Write the code for this tool inside the tools folder.
-            - Include a Capability Pipeline before implementation.
-            - Treat capability categories as declarations, not implementation requirements.
-            - Trust the existing backend capability layer and centralized model router; do not implement routing, create routers or wrappers, or choose providers/models.
+            - Assume the tool implements one user-facing task.
+            - Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that.
+            - For any model-backed operation, call the centralized backend model router through the approved model_router_client wrapper.
+            - Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files.
+            - If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool.
             - Follow the existing repository structure and style.
             - Make the smallest reasonable implementation.
             - Do not modify unrelated files.

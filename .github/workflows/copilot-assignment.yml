@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite the code for this tool inside the tools folder. Before coding, include a Capability Pipeline with the smallest number of stages needed; create a new stage only when capability, modality, latency requirement, or output type changes, and reuse earlier stage outputs in later stages. Capability categories are declarations, not implementation requirements. Trust the existing backend capability layer and centralized model router. Do not implement routing, create routers or wrappers, choose providers/models, or call `litellm.completion()` directly from the tool unless no backend capability path exists.";
+            const extraLine = "\n\nWrite the code for this tool inside the tools folder. Assume the tool implements one user-facing task. Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that. For any model-backed operation, generated tools must call the centralized backend model router through the approved wrapper. Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files. Do not import detector libraries, provider SDKs, `litellm`, or `YOLO`; do not define `COCO_CLASSES`, hardcode model names, load `.pt` files, or call `litellm.completion()`/`YOLO(...)`. If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,
@@ -47,8 +47,3 @@ jobs:
         with:
           issue_number: ${{ github.event.issue.number }}
           github_token: ${{ secrets.COPILOT_PAT }}
-
-
-
-
-
