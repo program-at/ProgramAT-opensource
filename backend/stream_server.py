@@ -39,7 +39,9 @@ import copilot_db
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
 from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
+from video_summarizer import summarize_video
 import re
+import tempfile
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -3816,6 +3818,130 @@ async def test_door_recognition(request: web.Request):
         )
 
 
+# =============================================================================
+# Creation Submit Endpoint
+# =============================================================================
+
+async def handle_creation_submit(request: web.Request) -> web.Response:
+    """
+    POST /submit-creation
+    Accepts multipart/form-data with:
+      - 'metadata'  (JSON string): creation fields; must include 'text' (transcript)
+      - 'video'     (bytes, optional): mp4/mov video to summarize via Gemini Files API
+
+    Parses the transcript, optionally appends a video summary, and creates a GitHub issue.
+    Returns JSON: {status, issue_number, issue_url, video_summary}
+    """
+    if not GITHUB_TOKEN:
+        return web.json_response({'status': 'error', 'error': 'GitHub not configured'}, status=503)
+
+    # --- Parse multipart ---
+    text = ''
+    video_bytes = None
+    video_suffix = '.mp4'
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'metadata':
+                raw = await part.read(decode=True)
+                try:
+                    meta = json.loads(raw)
+                    text = meta.get('text', '')
+                except Exception:
+                    text = raw.decode('utf-8', errors='replace')
+            elif part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'upload.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /submit-creation: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not text or not text.strip():
+        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+
+    # --- Summarize video if present ---
+    video_summary = ''
+    if video_bytes:
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='creation_')
+            with os.fdopen(tmp_fd, 'wb') as fh:
+                fh.write(video_bytes)
+            logger.info("Saved uploaded video to %s (%d bytes)", tmp_path, len(video_bytes))
+            video_summary = await summarize_video(tmp_path)
+        except Exception:
+            logger.error("Video temp-file handling failed", exc_info=True)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # --- Parse transcript and fill template ---
+    try:
+        active_model = LLM_MODEL
+        parsed_data = await asyncio.to_thread(
+            parse_transcript_with_ai, text.strip(), None, active_model
+        )
+
+        template_file = TEMPLATE_DIR / 'visual_at.md'
+        if template_file.exists():
+            template_content = template_file.read_text(encoding='utf-8')
+            if template_content.startswith('---'):
+                parts = template_content.split('---', 2)
+                if len(parts) >= 3:
+                    template_content = parts[2].strip()
+            body = await asyncio.to_thread(fill_template, template_content, parsed_data)
+        else:
+            body = (
+                f"**Transcript:**\n{text}\n\n"
+                f"**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
+            )
+
+        if video_summary:
+            body += f"\n\n## Video Summary\n\n{video_summary}"
+
+        title = parsed_data.get('title', text[:100])
+        if isinstance(title, list):
+            title = ' '.join(str(t) for t in title)
+        else:
+            title = str(title)
+        if len(title) > 256:
+            title = title[:253] + '...'
+
+    except Exception as e:
+        logger.error("Template fill failed in /submit-creation: %s", e, exc_info=True)
+        return web.json_response(
+            {'status': 'error', 'error': 'Failed to process issue data'}, status=500
+        )
+
+    # --- Create GitHub issue ---
+    try:
+        def _create_issue():
+            g = Github(GITHUB_TOKEN)
+            repo = g.get_repo(GITHUB_REPO)
+            return repo.create_issue(title=title, body=body, labels=['enhancement'])
+
+        issue = await asyncio.to_thread(_create_issue)
+        logger.info(
+            "Created GitHub issue #%d via /submit-creation: %s", issue.number, title[:60]
+        )
+
+        return web.json_response({
+            'status': 'created',
+            'issue_number': issue.number,
+            'issue_url': issue.html_url,
+            'video_summary': video_summary,
+        })
+
+    except Exception as e:
+        logger.error("GitHub issue creation failed in /submit-creation: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+
 # New helper to process/save incoming text
 def process_text(text_payload, model: str = None) -> dict:
     """
@@ -5526,6 +5652,7 @@ async def main():
     app.router.add_get('/', websocket_handler)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
+    app.router.add_post('/submit-creation', handle_creation_submit)
     app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
 
     runner = web.AppRunner(app)
