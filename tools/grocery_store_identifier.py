@@ -28,22 +28,18 @@ import cv2
 import numpy as np
 from typing import Dict, List, Optional, Any
 import os
+import io
 from PIL import Image
 from collections import deque
 
 try:
-    import litellm
-    LITELLM_AVAILABLE = True
+    from google import genai
+    from google.genai import types as genai_types
+    GENAI_AVAILABLE = True
 except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
-
-from litellm_utils import (
-    resolve_model_name,
-    resolve_api_key,
-    extract_text,
-    pil_image_to_data_uri,
-)
+    genai = None
+    genai_types = None
+    GENAI_AVAILABLE = False
 
 # Constants
 DEFAULT_MODEL = 'gemini-3-flash-preview'
@@ -52,6 +48,7 @@ SIMILARITY_THRESHOLD = 0.65  # Word-level Jaccard similarity for repeat suppress
 MAX_HISTORY = 6           # Number of recent announcements to track
 MAX_IMAGE_SIZE = (1024, 1024)
 _CACHE_KEY = 'grocery_store_state'
+_CLIENT_KEY = 'grocery_genai_client'
 
 
 def _get_state() -> Dict[str, Any]:
@@ -70,6 +67,23 @@ def _get_state() -> Dict[str, Any]:
             'last_result': '',
         }
     return cache[_CACHE_KEY]
+
+
+def _get_client(api_key: Optional[str]) -> Any:
+    """
+    Return a cached google.genai Client, creating it if needed.
+
+    The client is stored in yolo_model_cache so it is reused across frames
+    rather than re-instantiated on every call.
+    """
+    cache = globals().get('yolo_model_cache', {})
+    resolved_key = api_key or os.environ.get('GEMINI_API_KEY', '')
+    cached = cache.get(_CLIENT_KEY)
+    if cached and cached.get('key') == resolved_key:
+        return cached['client']
+    client = genai.Client(api_key=resolved_key)
+    cache[_CLIENT_KEY] = {'client': client, 'key': resolved_key}
+    return client
 
 
 def _resize_image(image: np.ndarray, max_size: tuple = MAX_IMAGE_SIZE) -> np.ndarray:
@@ -135,34 +149,35 @@ def _analyze_frame(
 
     Returns an empty string on API error, missing key, or when no items are found.
     """
-    if not LITELLM_AVAILABLE:
+    if not GENAI_AVAILABLE:
         return ""
 
-    resolved_key = resolve_api_key(model_name, api_key or "")
+    resolved_key = api_key or os.environ.get('GEMINI_API_KEY', '')
     if not resolved_key:
         return ""
 
     try:
         processed = _resize_image(image)
         pil_img = _convert_to_pil(processed)
-        image_uri = pil_image_to_data_uri(pil_img)
-        prompt = _build_prompt()
-        resolved_model = resolve_model_name(model_name)
 
-        response = litellm.completion(
-            model=resolved_model,
-            messages=[{
-                'role': 'user',
-                'content': [
-                    {'type': 'text', 'text': prompt},
-                    {'type': 'image_url', 'image_url': {'url': image_uri}},
-                ],
-            }],
-            api_key=resolved_key,
-            max_tokens=60,
+        # Encode image as JPEG bytes for the Gemini API
+        buf = io.BytesIO()
+        pil_img.save(buf, format='JPEG', quality=85)
+        image_bytes = buf.getvalue()
+
+        prompt = _build_prompt()
+        client = _get_client(resolved_key)
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=[
+                prompt,
+                genai_types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
+            ],
+            config=genai_types.GenerateContentConfig(max_output_tokens=60),
         )
 
-        result = extract_text(response).strip().strip("'\"")
+        result = (response.text or '').strip().strip("'\"")
 
         # Treat explicit empty / null-like responses as silence
         if result.lower() in ('', 'none', 'n/a', 'nothing', 'no items found'):
@@ -227,8 +242,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     if state['frame_counter'] % skip_frames != 0:
         return ""
 
-    if not LITELLM_AVAILABLE:
-        return "Grocery identifier requires the litellm package"
+    if not GENAI_AVAILABLE:
+        return "Grocery identifier requires the google-genai package"
 
     result = _analyze_frame(image, api_key=api_key, model_name=model)
 
