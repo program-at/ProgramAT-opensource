@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 #MODEL = 'gemini-3.5-flash'
 MODEL = 'gemini-3-flash-preview'
 PROMPT = (
+    "This video should provide an example of how a hypothetical tool for visual assistance should work"
     "Summarize what is happening in this video, including any relevant audio context. "
-    "Be concise (2-4 sentences). Focus on the actions, subjects, and setting."
+    "Break down the examples in presented in the video to articulate what kinds of input should generate specific outputs"
+    "Conclude with a sentence summarizing the key functionality and behavior of the desired tool"
 )
 POLL_INTERVAL = 2.0   # seconds between file-state checks
 POLL_TIMEOUT  = 120.0  # max seconds to wait for file to become ACTIVE
