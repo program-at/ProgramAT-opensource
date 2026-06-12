@@ -30,7 +30,7 @@ from litellm_utils import (
     extract_text,
     pil_image_to_data_uri,
 )
-from model_router import llm_call
+from model_router_client import llm_call
 
 # Constants
 GEMINI_CONFIDENCE_SCORE = 0.9

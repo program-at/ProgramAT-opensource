@@ -46,19 +46,19 @@ def detect_vehicles(image):
         self.assertTrue(any("COCO class list" in failure for failure in failures))
         self.assertTrue(any("model file reference" in failure for failure in failures))
 
-    def test_allows_approved_model_router_client_import(self):
+    def test_allows_model_router_client_import(self):
         path = self._write_temp_tool(
             "good_generated_tool.py",
             """
-from model_router_client import routed_vision_call
+from model_router_client import llm_call
 
 TASK_CATEGORY = "visual_reasoning"
 
 def main(image, input_data=None):
-    return routed_vision_call(
-        task=TASK_CATEGORY,
-        image=image,
-        prompt="Describe the relevant scene details.",
+    return llm_call(
+        task_category=TASK_CATEGORY,
+        messages=[{"role": "user", "content": "Describe the relevant scene details."}],
+        images=[image],
         metadata={"tool_name": "good_generated_tool"},
     )
 """,

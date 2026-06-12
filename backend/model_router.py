@@ -749,6 +749,7 @@ def llm_call(
     images: Optional[Iterable[Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     task: Optional[str] = None,
+    task_category: Optional[str] = None,
 ):
     """Route a request through model-level semantic routes and call LiteLLM."""
     if not LITELLM_AVAILABLE:
@@ -756,7 +757,7 @@ def llm_call(
 
     image_items = list(images or [])
     route_metadata = dict(metadata or {})
-    capability = capability or task
+    capability = capability or task or task_category
     if not capability:
         raise ValueError("llm_call requires a capability or task category")
     messages = messages or []
