@@ -15,6 +15,7 @@ PROMPT = (
     "This video should provide an example of how a hypothetical tool for visual assistance should work"
     "Summarize what is happening in this video, including any relevant audio context. "
     "Break down the examples in presented in the video to articulate what kinds of input should generate specific outputs"
+    "In the event the user is describing a hypothetical scenario/pretending with things in their environment, your description should match what they are pretending things are, not the actual item in the mock up"
     "Conclude with a sentence summarizing the key functionality and behavior of the desired tool"
 )
 POLL_INTERVAL = 2.0   # seconds between file-state checks
