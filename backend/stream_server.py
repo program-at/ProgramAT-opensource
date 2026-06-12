@@ -38,6 +38,7 @@ from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
+from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
 import re
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -5525,6 +5526,7 @@ async def main():
     app.router.add_get('/', websocket_handler)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
+    app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -5550,6 +5552,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
+        asyncio.run(cleanup_webrtc_peers())
     except Exception as e:
         logger.error(f"Server error: {e}")
         raise

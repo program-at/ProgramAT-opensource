@@ -18,4 +18,6 @@ dependencies = [
     "scipy",
     "ultralytics>=8.0.0",
     "websockets>=12.0",
+    "aiortc>=1.9.0",
+    "av>=12.0.0",
 ]
