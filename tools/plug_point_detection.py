@@ -74,6 +74,7 @@ def detect_outlets(image: np.ndarray, confidence_threshold: float = DEFAULT_CONF
                 'model': YOLO('yolov8s-world.pt'),
                 'classes': None
             }
+            globals()['yolo_model_cache'] = model_cache
 
         model_info = model_cache[cache_key]
         yolo_model = model_info['model']
@@ -144,9 +145,19 @@ def get_clock_position(center_x: int, center_y: int, frame_width: int, frame_hei
     if h_region == 'center' and v_region == 'top':
         return 12
     if h_region == 'right':
-        return {('top', 'right'): 1, ('middle', 'right'): 2, ('bottom', 'right'): 3}[(v_region, h_region)]
+        if v_region == 'top':
+            return 1
+        elif v_region == 'middle':
+            return 2
+        else:  # bottom
+            return 3
     if h_region == 'left':
-        return {('top', 'left'): 11, ('middle', 'left'): 10, ('bottom', 'left'): 9}[(v_region, h_region)]
+        if v_region == 'top':
+            return 11
+        elif v_region == 'middle':
+            return 10
+        else:  # bottom
+            return 9
     # Center-middle or center-bottom → treat as 12
     return 12
 
