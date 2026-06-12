@@ -101,6 +101,33 @@ class TestSemanticModelRouter(unittest.TestCase):
 
         self.assertEqual(completion.call_args.kwargs["model"], "openai/gpt-4o")
 
+    def test_llm_call_encodes_numpy_ndarray_image(self):
+        try:
+            import numpy as np
+        except ImportError:
+            self.skipTest("numpy is not installed")
+
+        fake_litellm = SimpleNamespace()
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        image[0, 0] = [255, 0, 0]
+
+        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
+             patch.object(model_router, "litellm", fake_litellm), \
+             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
+            model_router.llm_call(
+                task_category="visual_understanding",
+                messages=[{"role": "user", "content": "Describe this image."}],
+                images=[image],
+                metadata={
+                    "tool_name": "ndarray_image_test",
+                    "route_text": "describe a camera frame",
+                },
+            )
+
+        content = completion.call_args.kwargs["messages"][-1]["content"]
+        image_part = next(part for part in content if part.get("type") == "image_url")
+        self.assertTrue(image_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
     def test_llm_call_falls_back_from_non_llm_backend(self):
         fake_litellm = SimpleNamespace()
 

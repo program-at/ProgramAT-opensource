@@ -702,13 +702,30 @@ def _image_to_data_uri(image: Any) -> str:
 
     try:
         from PIL import Image
+        try:
+            import numpy as np
+        except ImportError:
+            np = None
+
+        if np is not None and isinstance(image, np.ndarray):
+            array = image
+            if array.ndim == 2:
+                image = Image.fromarray(array)
+            elif array.ndim == 3 and array.shape[2] == 3:
+                image = Image.fromarray(array[:, :, ::-1].copy())
+            elif array.ndim == 3 and array.shape[2] == 4:
+                image = Image.fromarray(array[:, :, [2, 1, 0, 3]].copy())
+            else:
+                raise TypeError(f"Unsupported ndarray shape for llm_call image: {array.shape}")
 
         if isinstance(image, Image.Image):
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
             buffer = io.BytesIO()
             image.save(buffer, format="JPEG", quality=85)
             encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
             return f"data:image/jpeg;base64,{encoded}"
-    except Exception:
+    except ImportError:
         pass
 
     raise TypeError(f"Unsupported image type for llm_call: {type(image).__name__}")
