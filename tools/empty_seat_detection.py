@@ -1,25 +1,22 @@
 """
 Empty Seat Detection Tool for Visually Impaired Users
 
-Helps blind or low vision users identify empty seats in a room by detecting chairs
-and determining which ones are occupied vs empty.
+Helps blind or low vision users identify the nearest empty chair in a room.
 
 Features:
 - Detects chairs using YOLO11 and COCO dataset
 - Identifies occupied vs empty seats by detecting nearby people
-- Reports count and general location of empty seats
-- Provides navigation guidance to help users find seating
+- Reports the count of empty chairs and the nearest chair's clock-face direction
+- Supports concise streaming responses
 - Audio-optimized output for text-to-speech
 
 Example Usage:
 User enters a room and activates the tool. The tool scans and reports:
-"There are 5 empty seats. Two are to your left, three are in the front right."
-Then provides directional cues like "Turn slightly left and walk forward."
+"Two empty chairs, nearest at eleven o'clock."
 
 This tool runs on the backend server and receives camera frames from the mobile app.
 """
 
-import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
@@ -30,6 +27,43 @@ CHAIR_CLASS = 'chair'
 PERSON_CLASS = 'person'
 COUCH_CLASS = 'couch'
 BENCH_CLASS = 'bench'
+STREAMING_WORD_LIMIT = 15
+
+CLOCK_FACE_LABELS = {
+    1: "one o'clock",
+    2: "two o'clock",
+    3: "three o'clock",
+    9: "nine o'clock",
+    10: "ten o'clock",
+    11: "eleven o'clock",
+    12: "twelve o'clock",
+}
+
+COUNT_WORDS = {
+    0: "No",
+    1: "One",
+    2: "Two",
+    3: "Three",
+    4: "Four",
+    5: "Five",
+    6: "Six",
+    7: "Seven",
+    8: "Eight",
+    9: "Nine",
+    10: "Ten",
+    11: "Eleven",
+    12: "Twelve",
+}
+
+
+def get_shared_cache() -> Dict[str, Any]:
+    """Return the shared cache used by the backend, with a local fallback for tests."""
+    cache = globals().get('yolo_model_cache')
+    if isinstance(cache, dict):
+        return cache
+    cache = {}
+    globals()['yolo_model_cache'] = cache
+    return cache
 
 # Spatial constants for determining if a chair is occupied
 OCCUPANCY_THRESHOLD = 0.4  # Person bbox must overlap at least 40% with chair to be considered occupied
@@ -75,10 +109,14 @@ def detect_objects(image: np.ndarray, confidence_threshold: float = DEFAULT_CONF
     try:
         # Import ultralytics YOLO
         from ultralytics import YOLO
-        
-        # Load YOLO11 model (will auto-download on first use)
-        # Using YOLO11n (nano) for speed on CPU
-        model = YOLO('yolo11n.pt')
+
+        model_cache = get_shared_cache()
+        cache_key = 'empty_seat_detection_yolo11n'
+
+        if cache_key not in model_cache:
+            model_cache[cache_key] = YOLO('yolo11n.pt')
+
+        model = model_cache[cache_key]
         
         # Run inference
         results = model(image, conf=confidence_threshold, verbose=False)
@@ -119,6 +157,60 @@ def detect_objects(image: np.ndarray, confidence_threshold: float = DEFAULT_CONF
         pass
     
     return detections
+
+
+def get_clock_position(center_x: int, center_y: int, frame_width: int, frame_height: int) -> int:
+    """
+    Map an object's position to the visible clock-face directions.
+    
+    Returns only 1-3 and 9-12 because other directions are behind the camera.
+    """
+    norm_x = center_x / frame_width
+    norm_y = center_y / frame_height
+
+    if norm_x < 0.33:
+        h_region = 'left'
+    elif norm_x < 0.67:
+        h_region = 'center'
+    else:
+        h_region = 'right'
+
+    if norm_y < 0.33:
+        v_region = 'top'
+    elif norm_y < 0.67:
+        v_region = 'middle'
+    else:
+        v_region = 'bottom'
+
+    if h_region == 'center':
+        return 12
+    if h_region == 'right':
+        return {'top': 1, 'middle': 2, 'bottom': 3}[v_region]
+    return {'top': 11, 'middle': 10, 'bottom': 9}[v_region]
+
+
+def get_nearest_empty_chair(empty_chairs: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Return the nearest empty chair using image position and size as proxies for distance."""
+    if not empty_chairs:
+        return None
+
+    return max(
+        empty_chairs,
+        key=lambda chair: (
+            chair['bbox'][1] + chair['bbox'][3],
+            chair['bbox'][2] * chair['bbox'][3],
+        ),
+    )
+
+
+def format_clock_position(clock_position: int) -> str:
+    """Return a spoken clock-face label."""
+    return CLOCK_FACE_LABELS.get(clock_position, "twelve o'clock")
+
+
+def format_count(count: int) -> str:
+    """Return a spoken count word for small numbers."""
+    return COUNT_WORDS.get(count, str(count))
 
 
 def calculate_iou(bbox1: List[int], bbox2: List[int]) -> float:
@@ -349,66 +441,68 @@ def create_audio_description(
     Returns:
         Audio-friendly description string
     """
+    del occupied_seats, grouped_seats, include_navigation
+
     empty_count = len(empty_seats)
-    
-    if total_seats == 0:
-        return "No seats detected in view"
-    
-    if empty_count == 0:
-        return f"I see {total_seats} seat{'s' if total_seats > 1 else ''}, but all appear to be occupied"
-    
-    # Start description
+
+    if total_seats == 0 or empty_count == 0:
+        return "No empty chairs in view."
+
+    nearest_chair = get_nearest_empty_chair(empty_seats)
+    if nearest_chair is None:
+        return "No empty chairs in view."
+
+    clock_position = get_clock_position(
+        nearest_chair['center'][0],
+        nearest_chair['center'][1],
+        width,
+        height
+    )
+    clock_label = format_clock_position(clock_position)
+
     if empty_count == 1:
-        desc_parts = ["There is 1 empty seat"]
-    else:
-        desc_parts = [f"There are {empty_count} empty seats"]
-    
-    # Add location information
-    if grouped_seats:
-        locations = []
-        for location, seats in sorted(grouped_seats.items(), key=lambda x: len(x[1]), reverse=True):
-            count = len(seats)
-            if count == 1:
-                locations.append(f"one on the {location}")
-            else:
-                locations.append(f"{count} on the {location}")
-        
-        if locations:
-            if len(locations) == 1:
-                desc_parts.append(": " + locations[0])
-            elif len(locations) == 2:
-                desc_parts.append(": " + " and ".join(locations))
-            else:
-                desc_parts.append(": " + ", ".join(locations[:-1]) + ", and " + locations[-1])
-    
-    description = "".join(desc_parts)
-    
-    # Add navigation guidance
-    if include_navigation and empty_seats:
-        navigation = generate_navigation_guidance(empty_seats, grouped_seats, width, height)
-        if navigation:
-            description += ". " + navigation
-    
-    return description
+        return f"One empty chair at {clock_label}."
+
+    return f"{format_count(empty_count)} empty chairs, nearest at {clock_label}."
+
+
+def get_streaming_state(empty_chairs: List[Dict[str, Any]], width: int, height: int) -> Tuple[int, Optional[int]]:
+    """Create a compact state tuple for streaming deduplication."""
+    nearest_chair = get_nearest_empty_chair(empty_chairs)
+    if nearest_chair is None:
+        return (0, None)
+
+    return (
+        len(empty_chairs),
+        get_clock_position(nearest_chair['center'][0], nearest_chair['center'][1], width, height),
+    )
+
+
+def limit_streaming_words(message: str) -> str:
+    """Trim streaming responses to the repository word limit."""
+    words = message.split()
+    if len(words) <= STREAMING_WORD_LIMIT:
+        return message
+    return " ".join(words[:STREAMING_WORD_LIMIT])
 
 
 def main(image: np.ndarray, input_data: Any = None) -> str:
     """
     Main entry point for empty seat detection tool.
     
-    Detects chairs in the scene, determines which are empty, and provides
-    audio-friendly guidance about seat availability and location.
+    Detects chairs in the scene, determines which are empty, and reports
+    the nearest empty chair using clock-face guidance.
     
     Args:
         image: Camera frame as numpy array (BGR format from OpenCV)
         input_data: Optional configuration:
             - confidence: Detection threshold (default 0.5)
-            - include_navigation: Include navigation guidance (default True)
-            - occupancy_threshold: IoU threshold for occupancy detection (default 0.4)
+            - include_navigation: Preserved for backward compatibility
+            - is_streaming: Limit output to concise streaming responses
     
     Returns:
         Audio-friendly description string suitable for text-to-speech.
-        Example: "There are 5 empty seats: two on the left, three on the front right. Turn left and walk forward about 10 feet."
+        Example: "Two empty chairs, nearest at eleven o'clock."
     """
     # Handle None or invalid image
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
@@ -422,6 +516,7 @@ def main(image: np.ndarray, input_data: Any = None) -> str:
     # Get configuration parameters
     confidence = config.get('confidence', DEFAULT_CONFIDENCE)
     include_navigation = config.get('include_navigation', True)
+    is_streaming = config.get('is_streaming', False)
     
     # Get frame dimensions
     height, width = image.shape[:2]
@@ -430,17 +525,16 @@ def main(image: np.ndarray, input_data: Any = None) -> str:
     detections = detect_objects(image, confidence)
     
     if not detections:
-        return "No objects detected. Please ensure the camera is pointed at the room with seating"
+        return "No empty chairs in view."
     
-    # Filter for seats (chairs, couches, benches)
-    seat_classes = {CHAIR_CLASS, COUCH_CLASS, BENCH_CLASS}
-    seats = [d for d in detections if d['class_name'] in seat_classes]
+    # This tool specifically guides the user to empty chairs.
+    seats = [d for d in detections if d['class_name'] == CHAIR_CLASS]
     
     # Filter for people
     people = [d for d in detections if d['class_name'] == PERSON_CLASS]
     
     if not seats:
-        return "No seats detected in view. Please scan the room to find seating areas"
+        return "No empty chairs in view."
     
     # Determine which seats are empty
     empty_seats = []
@@ -465,7 +559,16 @@ def main(image: np.ndarray, input_data: Any = None) -> str:
         height=height,
         include_navigation=include_navigation
     )
-    
+
+    if is_streaming:
+        stream_cache = get_shared_cache()
+        state_key = 'empty_seat_detection_last_state'
+        current_state = get_streaming_state(empty_seats, width, height)
+        if stream_cache.get(state_key) == current_state:
+            return ""
+        stream_cache[state_key] = current_state
+        return limit_streaming_words(description)
+
     return description
 
 
@@ -473,10 +576,17 @@ def main(image: np.ndarray, input_data: Any = None) -> str:
 __all__ = [
     'main',
     'detect_objects',
+    'get_shared_cache',
     'is_chair_occupied',
+    'get_clock_position',
+    'get_nearest_empty_chair',
     'get_position_description',
     'group_seats_by_location',
     'generate_navigation_guidance',
     'create_audio_description',
+    'format_clock_position',
+    'format_count',
+    'get_streaming_state',
+    'limit_streaming_words',
     'calculate_iou'
 ]
