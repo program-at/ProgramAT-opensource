@@ -84,6 +84,7 @@ class EmptySeatDetectionTests(unittest.TestCase):
             {'class_name': 'person', 'bbox': [460, 120, 90, 140], 'center': [505, 190]},
         ]
 
+        # Mock detections so the test stays deterministic and does not depend on YOLO downloads.
         with patch('empty_seat_detection.detect_objects', return_value=detections):
             result = main(image)
 
@@ -95,6 +96,7 @@ class EmptySeatDetectionTests(unittest.TestCase):
             {'class_name': 'chair', 'bbox': [250, 220, 120, 180], 'center': [310, 310]},
         ]
 
+        # Mock detections so the test exercises streaming state without model side effects.
         with patch('empty_seat_detection.detect_objects', return_value=detections):
             first = main(image, {'is_streaming': True})
             second = main(image, {'is_streaming': True})

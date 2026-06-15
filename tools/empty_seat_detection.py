@@ -197,7 +197,9 @@ def get_nearest_empty_chair(empty_chairs: List[Dict[str, Any]]) -> Optional[Dict
     return max(
         empty_chairs,
         key=lambda chair: (
+            # Chairs whose bottom edge is lower in the frame are usually closer to the user.
             chair['bbox'][1] + chair['bbox'][3],
+            # Larger chairs are typically closer when two detections share a similar height.
             chair['bbox'][2] * chair['bbox'][3],
         ),
     )
@@ -441,8 +443,6 @@ def create_audio_description(
     Returns:
         Audio-friendly description string
     """
-    del occupied_seats, grouped_seats, include_navigation
-
     empty_count = len(empty_seats)
 
     if total_seats == 0 or empty_count == 0:
