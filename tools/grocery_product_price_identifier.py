@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+import json
+from urllib import request, error
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -15,6 +17,7 @@ MAX_WHOLE_DOLLAR_PRICE = 100.0
 NEAR_PRICE_SCORE_BONUS = 1
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
+DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview'
 LOGGER = logging.getLogger(__name__)
 
 try:
@@ -252,6 +255,63 @@ def parse_product_and_price(ocr_text: str, fallback_class: str) -> Dict[str, Opt
     return {'name': name, 'price': price}
 
 
+def assist_product_name_with_language_model(
+    ocr_text: str,
+    detection_label: str,
+    current_name: str,
+    api_key: Optional[str] = None,
+    model: str = DEFAULT_GEMINI_MODEL
+) -> str:
+    if not ocr_text:
+        return current_name
+    if api_key is None:
+        api_key = os.environ.get('GEMINI_API_KEY', '').strip()
+    if not api_key:
+        LOGGER.debug("Skipping language-model name assist because GEMINI_API_KEY is not configured")
+        return current_name
+
+    prompt = (
+        "You are helping identify a retail item from camera OCR and image-detected label. "
+        "Return only a concise product name (max 6 words). "
+        f"Image label: {detection_label}\n"
+        f"OCR text: {ocr_text}\n"
+        f"Current guess: {current_name}"
+    )
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 16}
+    }
+    payload = json.dumps(body).encode('utf-8')
+    req = request.Request(endpoint, data=payload, method='POST')
+    req.add_header('Content-Type', 'application/json')
+
+    try:
+        with request.urlopen(req, timeout=2.5) as response:
+            raw = response.read().decode('utf-8')
+        data = json.loads(raw)
+        text = (
+            data.get('candidates', [{}])[0]
+            .get('content', {})
+            .get('parts', [{}])[0]
+            .get('text', '')
+            .strip()
+        )
+        if not text:
+            LOGGER.info("Language-model assist returned empty text; using OCR/image result")
+            return current_name
+        assisted = text.splitlines()[0].strip(" .,:;!-")
+        assisted_words = assisted.split()
+        if not assisted_words:
+            return current_name
+        assisted_name = ' '.join(assisted_words[:MAX_PRODUCT_NAME_WORDS])
+        LOGGER.info("Language-model assist refined product name from '%s' to '%s'", current_name, assisted_name)
+        return assisted_name
+    except (error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
+        LOGGER.exception("Language-model name assist failed; keeping OCR/image product name")
+        return current_name
+
+
 def _build_message(name: str, price: Optional[str], track_mode: bool) -> str:
     if price:
         message = f"{name}, price {price}."
@@ -282,9 +342,17 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     config = input_data if isinstance(input_data, dict) else {}
     confidence = float(config.get('confidence', DEFAULT_CONFIDENCE))
     track_mode = bool(config.get('track_mode', DEFAULT_TRACK_MODE))
+    use_language_model = bool(config.get('use_language_model', True))
+    llm_model = str(config.get('llm_model', DEFAULT_GEMINI_MODEL))
+    llm_api_key = config.get('llm_api_key')
     language = config.get('language', 'en')
     api_key = config.get('api_key')
-    LOGGER.info("Starting store-item product/price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
+    LOGGER.info(
+        "Starting store-item product/price processing (track_mode=%s, confidence=%.2f, use_language_model=%s)",
+        track_mode,
+        confidence,
+        use_language_model
+    )
 
     detections = detect_products(image, confidence_threshold=confidence)
     if not detections:
@@ -306,6 +374,14 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region.shape[1], region.shape[0])
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
+    if parsed.get('name') and use_language_model:
+        parsed['name'] = assist_product_name_with_language_model(
+            ocr_text=ocr_text,
+            detection_label=focus['class_name'],
+            current_name=parsed['name'],
+            api_key=llm_api_key,
+            model=llm_model
+        )
     LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
 
     message = _build_message(parsed['name'] or focus['class_name'], parsed['price'], track_mode)
@@ -336,5 +412,6 @@ __all__ = [
     'extract_text_from_region',
     'extract_price',
     'extract_product_name',
-    'parse_product_and_price'
+    'parse_product_and_price',
+    'assist_product_name_with_language_model'
 ]
