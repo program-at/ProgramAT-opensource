@@ -109,7 +109,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8081 #port for listening
+PORT = 8080 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -2933,7 +2933,7 @@ def should_mention_copilot(text: str) -> bool:
         if keyword in text_lower:
             return True
     
-    # Default to mentioning copilot if unsure (better to over-mention than under-mention)
+    # Default: always mention @copilot so it stays aware of issue updates.
     return True
 
 
@@ -3000,33 +3000,9 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                 'pr_number': pr_number,
                 'pr_url': pr_url
             }
-            import websockets
-            websockets.broadcast(connected_clients, json.dumps(success_data))
-            
-            # If we mentioned @copilot, start polling for the Copilot session
-            if mention_copilot and connected_clients:
-                # Get the first connected client's websocket and derive its ID
-                for ws in connected_clients:
-                    try:
-                        ws_client_id = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
-                        
-                        if pr_number:
-                            # If there's already a PR, poll that specific PR for a session
-                            logger.info(f"@copilot mentioned on PR #{pr_number}, starting direct session polling")
-                            asyncio.create_task(
-                                poll_for_copilot_session_on_pr(pr_number, ws, ws_client_id)
-                            )
-                            logger.info(f"Started Copilot session polling for PR #{pr_number}")
-                        else:
-                            # If there's no PR yet, wait for Copilot to create one
-                            logger.info(f"@copilot mentioned on issue #{issue_number}, waiting for PR creation")
-                            asyncio.create_task(
-                                poll_for_copilot_session(issue_number, ws, ws_client_id)
-                            )
-                            logger.info(f"Started Copilot session polling for issue #{issue_number}")
-                        break  # Only start one polling task
-                    except Exception as e:
-                        logger.error(f"Error starting Copilot poll for @copilot comment: {e}")
+            await _broadcast_ws(success_data)
+            # @copilot was mentioned in the comment — no automatic log streaming.
+            # Copilot session logs are only streamed when the user explicitly requests them.
         
     except Exception as e:
         import traceback
@@ -3356,6 +3332,25 @@ def _log_to_all_sessions(level: str, message: str):
         session_log.log(level, message)
 
 
+async def _broadcast_ws(data: dict) -> None:
+    """Broadcast a JSON payload to every connected aiohttp WebSocket client.
+
+    Uses aiohttp's send_str() — NOT the websockets-library broadcast() which
+    is incompatible with aiohttp WebSocketResponse objects.
+    """
+    if not connected_clients:
+        return
+    msg = json.dumps(data)
+    coros = []
+    for client in list(connected_clients):
+        try:
+            coros.append(client.send_str(msg))
+        except Exception:
+            pass
+    if coros:
+        await asyncio.gather(*coros, return_exceptions=True)
+
+
 async def create_github_issue(text: str):
     """
     Create a GitHub issue OR update an existing one based on selected mode.
@@ -3414,8 +3409,7 @@ async def create_github_issue(text: str):
                     'message': issue_list_msg,
                     'issues': available_issues[:10]
                 }
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(list_data))
+                await _broadcast_ws(list_data)
             return
         
         # Handle update mode selection
@@ -3432,8 +3426,7 @@ async def create_github_issue(text: str):
                     'issue_number': selected_issue['number'],
                     'issue_title': selected_issue['title']
                 }
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(confirm_data))
+                await _broadcast_ws(confirm_data)
             
             logger.info(f"Switched to update mode for issue #{selected_issue['number']}")
             return
@@ -3488,8 +3481,7 @@ async def create_github_issue(text: str):
                     'missing_fields': missing_fields
                 }
                 # Send to all connected clients
-                import websockets
-                websockets.broadcast(connected_clients, json.dumps(feedback_data))
+                await _broadcast_ws(feedback_data)
             
             # Don't create issue yet, wait for more info
             logger.info("Issue incomplete, waiting for user to provide more details")
@@ -3558,8 +3550,7 @@ async def create_github_issue(text: str):
                 'issue_number': issue.number,
                 'issue_url': issue.html_url
             }
-            import websockets
-            websockets.broadcast(connected_clients, json.dumps(success_data))
+            await _broadcast_ws(success_data)
             
             # Start polling for Copilot session for each connected client
             for ws in connected_clients:
