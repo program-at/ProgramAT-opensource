@@ -74,4 +74,4 @@ if __name__ == '__main__':
     test_parsing_helpers()
     test_store_item_scope_defaults()
     test_main_with_mocks()
-    print('All grocery product-price tests passed.')
+    print('All store product-price tests passed.')
