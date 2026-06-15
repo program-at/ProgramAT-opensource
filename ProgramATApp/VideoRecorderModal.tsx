@@ -13,8 +13,9 @@ import {
   StyleSheet,
   SafeAreaView,
   Alert,
+  Linking,
 } from 'react-native';
-import { Camera, useCameraDevice, useCameraPermission } from 'react-native-vision-camera';
+import { Camera, useCameraDevice, useCameraPermission, useMicrophonePermission } from 'react-native-vision-camera';
 
 interface VideoRecorderModalProps {
   visible: boolean;
@@ -29,17 +30,21 @@ export default function VideoRecorderModal({
 }: VideoRecorderModalProps) {
   const cameraRef = useRef<Camera>(null);
   const device = useCameraDevice('back');
-  const { hasPermission, requestPermission } = useCameraPermission();
+  const { hasPermission: hasCameraPermission, requestPermission: requestCameraPermission } = useCameraPermission();
+  const { hasPermission: hasMicPermission, requestPermission: requestMicPermission } = useMicrophonePermission();
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Request permission when modal opens
+  // Request both camera and microphone permissions when modal opens
   useEffect(() => {
-    if (visible && !hasPermission) {
-      requestPermission();
-    }
-  }, [visible, hasPermission, requestPermission]);
+    if (!visible) return;
+    const requestAll = async () => {
+      if (!hasCameraPermission) await requestCameraPermission();
+      if (!hasMicPermission) await requestMicPermission();
+    };
+    requestAll();
+  }, [visible, hasCameraPermission, hasMicPermission, requestCameraPermission, requestMicPermission]);
 
   // Reset state when modal opens; clean up timer on unmount
   useEffect(() => {
@@ -96,14 +101,24 @@ export default function VideoRecorderModal({
 
   if (!visible) return null;
 
-  if (!hasPermission) {
+  if (!hasCameraPermission || !hasMicPermission) {
+    const missingCamera = !hasCameraPermission;
+    const missingMic = !hasMicPermission;
+    const message = missingCamera && missingMic
+      ? 'Camera and microphone access are required to record video. Please enable them in Settings.'
+      : missingCamera
+        ? 'Camera permission is required to record a video. Please enable it in Settings.'
+        : 'Microphone permission is required to record video with audio. Please enable it in Settings.';
     return (
       <Modal visible={visible} animationType="slide">
         <SafeAreaView style={styles.fallback}>
-          <Text style={styles.fallbackText}>
-            Camera permission is required to record a video.
-          </Text>
-          <TouchableOpacity style={styles.cancelPill} onPress={onCancel}>
+          <Text style={styles.fallbackText}>{message}</Text>
+          <TouchableOpacity
+            style={styles.cancelPill}
+            onPress={() => Linking.openURL('app-settings:')}>
+            <Text style={styles.cancelPillText}>Open Settings</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.cancelPill, { marginTop: 12 }]} onPress={onCancel}>
             <Text style={styles.cancelPillText}>Cancel</Text>
           </TouchableOpacity>
         </SafeAreaView>
