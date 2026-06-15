@@ -306,9 +306,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Selected focus product class=%s confidence=%.2f", focus['class_name'], focus.get('confidence', 0.0))
 
     region = crop_focus_region(image, focus['bbox'])
-    region_w = region.shape[1]
-    region_h = region.shape[0]
-    LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region_w, region_h)
+    LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region.shape[1], region.shape[0])
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
     LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
