@@ -18,6 +18,7 @@ NEAR_PRICE_SCORE_BONUS = 1
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview'
+DEFAULT_LLM_TIMEOUT_SECONDS = 5.0
 LOGGER = logging.getLogger(__name__)
 
 try:
@@ -260,7 +261,8 @@ def assist_product_name_with_language_model(
     detection_label: str,
     current_name: str,
     api_key: Optional[str] = None,
-    model: str = DEFAULT_GEMINI_MODEL
+    model: str = DEFAULT_GEMINI_MODEL,
+    timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
 ) -> str:
     if not ocr_text:
         return current_name
@@ -277,7 +279,7 @@ def assist_product_name_with_language_model(
         f"OCR text: {ocr_text}\n"
         f"Current guess: {current_name}"
     )
-    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 16}
@@ -285,9 +287,10 @@ def assist_product_name_with_language_model(
     payload = json.dumps(body).encode('utf-8')
     req = request.Request(endpoint, data=payload, method='POST')
     req.add_header('Content-Type', 'application/json')
+    req.add_header('x-goog-api-key', api_key)
 
     try:
-        with request.urlopen(req, timeout=2.5) as response:
+        with request.urlopen(req, timeout=max(0.5, float(timeout_seconds))) as response:
             raw = response.read().decode('utf-8')
         data = json.loads(raw)
         text = (
@@ -307,8 +310,13 @@ def assist_product_name_with_language_model(
         assisted_name = ' '.join(assisted_words[:MAX_PRODUCT_NAME_WORDS])
         LOGGER.info("Language-model assist refined product name from '%s' to '%s'", current_name, assisted_name)
         return assisted_name
-    except (error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError):
-        LOGGER.exception("Language-model name assist failed; keeping OCR/image product name")
+    except (error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError) as exc:
+        LOGGER.warning(
+            "Language-model name assist failed (%s); keeping OCR/image product name '%s'",
+            type(exc).__name__,
+            current_name
+        )
+        LOGGER.debug("Language-model assist exception details", exc_info=True)
         return current_name
 
 
@@ -345,6 +353,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     use_language_model = bool(config.get('use_language_model', True))
     llm_model = str(config.get('llm_model', DEFAULT_GEMINI_MODEL))
     llm_api_key = config.get('llm_api_key')
+    llm_timeout_seconds = float(config.get('llm_timeout_seconds', DEFAULT_LLM_TIMEOUT_SECONDS))
     language = config.get('language', 'en')
     api_key = config.get('api_key')
     LOGGER.info(
@@ -380,7 +389,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             detection_label=focus['class_name'],
             current_name=parsed['name'],
             api_key=llm_api_key,
-            model=llm_model
+            model=llm_model,
+            timeout_seconds=llm_timeout_seconds
         )
     LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
 
