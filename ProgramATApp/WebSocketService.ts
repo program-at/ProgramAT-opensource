@@ -995,6 +995,16 @@ class WebSocketService {
    */
   connectReview(url: string = Config.REVIEW_SERVER_URL): Promise<void> {
     return new Promise((resolve, reject) => {
+      // DEBUG: show what URL is being used and what the config says
+      try {
+        console.log('[WebSocketService] connectReview called. param url=', url, ' Config.REVIEW_SERVER_URL=', Config.REVIEW_SERVER_URL);
+        if (url && url !== Config.REVIEW_SERVER_URL) {
+          console.warn('[WebSocketService] connectReview: passed url differs from Config.REVIEW_SERVER_URL. Using passed url.');
+        }
+      } catch (e) {
+        console.warn('[WebSocketService] Error printing debug info in connectReview', e);
+      }
+     
       if (this.reviewWs?.readyState === WebSocket.OPEN) {
         resolve();
         return;
