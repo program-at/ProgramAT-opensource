@@ -18,6 +18,7 @@ This tool runs on the backend server and receives camera frames from the mobile 
 """
 
 import numpy as np
+import time
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
@@ -28,6 +29,7 @@ PERSON_CLASS = 'person'
 COUCH_CLASS = 'couch'
 BENCH_CLASS = 'bench'
 STREAMING_WORD_LIMIT = 15
+STREAMING_REPEAT_INTERVAL_SECONDS = 5.0
 
 CLOCK_FACE_LABELS = {
     1: "one o'clock",
@@ -194,14 +196,17 @@ def get_nearest_empty_chair(empty_chairs: List[Dict[str, Any]]) -> Optional[Dict
     if not empty_chairs:
         return None
 
+    def proximity_key(chair: Dict[str, Any]) -> Tuple[int, int]:
+        _, y, width, height = chair['bbox']
+        # A lower bottom edge usually means the chair is physically closer in the camera view.
+        bottom_edge = y + height
+        # When bottom edges are similar, the larger detection is usually the nearer chair.
+        area = width * height
+        return bottom_edge, area
+
     return max(
         empty_chairs,
-        key=lambda chair: (
-            # Chairs whose bottom edge is lower in the frame are usually closer to the user.
-            chair['bbox'][1] + chair['bbox'][3],
-            # Larger chairs are typically closer when two detections share a similar height.
-            chair['bbox'][2] * chair['bbox'][3],
-        ),
+        key=proximity_key,
     )
 
 
@@ -483,7 +488,7 @@ def limit_streaming_words(message: str) -> str:
     words = message.split()
     if len(words) <= STREAMING_WORD_LIMIT:
         return message
-    return " ".join(words[:STREAMING_WORD_LIMIT])
+    return " ".join(words[:STREAMING_WORD_LIMIT]).rstrip(".!,?") + "..."
 
 
 def main(image: np.ndarray, input_data: Any = None) -> str:
@@ -564,9 +569,18 @@ def main(image: np.ndarray, input_data: Any = None) -> str:
         stream_cache = get_shared_cache()
         state_key = 'empty_seat_detection_last_state'
         current_state = get_streaming_state(empty_seats, width, height)
-        if stream_cache.get(state_key) == current_state:
+        now = time.monotonic()
+        previous = stream_cache.get(state_key)
+        if (
+            isinstance(previous, dict)
+            and previous.get('state') == current_state
+            and now - previous.get('timestamp', 0.0) < STREAMING_REPEAT_INTERVAL_SECONDS
+        ):
             return ""
-        stream_cache[state_key] = current_state
+        stream_cache[state_key] = {
+            'state': current_state,
+            'timestamp': now,
+        }
         return limit_streaming_words(description)
 
     return description
