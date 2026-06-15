@@ -74,7 +74,9 @@ class EmptySeatDetectionTests(unittest.TestCase):
 
     def test_streaming_word_limit_caps_output(self):
         message = "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"
-        self.assertEqual(len(limit_streaming_words(message).split()), 15)
+        trimmed = limit_streaming_words(message)
+        self.assertEqual(len(trimmed.split()), 15)
+        self.assertTrue(trimmed.endswith("..."))
 
     def test_main_reports_empty_chair_clockface(self):
         image = np.zeros((480, 640, 3), dtype=np.uint8)

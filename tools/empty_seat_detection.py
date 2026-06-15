@@ -28,8 +28,8 @@ CHAIR_CLASS = 'chair'
 PERSON_CLASS = 'person'
 COUCH_CLASS = 'couch'
 BENCH_CLASS = 'bench'
-STREAMING_WORD_LIMIT = 15
-STREAMING_REPEAT_INTERVAL_SECONDS = 5.0
+STREAMING_WORD_LIMIT = 15  # Keep live spoken updates brief enough for fast TTS playback.
+STREAMING_REPEAT_INTERVAL_SECONDS = 5.0  # Avoid repeating the same chair cue every frame.
 
 CLOCK_FACE_LABELS = {
     1: "one o'clock",
@@ -212,7 +212,7 @@ def get_nearest_empty_chair(empty_chairs: List[Dict[str, Any]]) -> Optional[Dict
 
 def format_clock_position(clock_position: int) -> str:
     """Return a spoken clock-face label."""
-    return CLOCK_FACE_LABELS.get(clock_position, "twelve o'clock")
+    return CLOCK_FACE_LABELS.get(clock_position, "unknown direction")
 
 
 def format_count(count: int) -> str:
