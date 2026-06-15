@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 
-DEFAULT_CONFIDENCE = 0.25
+DEFAULT_CONFIDENCE = 0.35
 DEFAULT_TRACK_MODE = True
 MAX_PRODUCT_NAME_WORDS = 6
 MAX_STREAMING_WORDS = 15
@@ -269,8 +269,6 @@ def assist_product_name_with_language_model(
     model: str = DEFAULT_GEMINI_MODEL,
     timeout_seconds: float = DEFAULT_LLM_TIMEOUT_SECONDS
 ) -> str:
-    if not ocr_text:
-        return current_name
     if api_key is None:
         api_key = os.environ.get('GEMINI_API_KEY', '').strip()
     if not api_key:
@@ -281,7 +279,7 @@ def assist_product_name_with_language_model(
         "You are helping identify a retail item from camera OCR and image-detected label. "
         "Return only a concise product name (max 6 words). "
         f"Image label: {detection_label}\n"
-        f"OCR text: {ocr_text}\n"
+        f"OCR text: {ocr_text or 'none'}\n"
         f"Current guess: {current_name}"
     )
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
