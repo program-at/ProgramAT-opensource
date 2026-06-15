@@ -74,8 +74,56 @@ def test_main_with_mocks():
         tool.extract_text_from_region = original_extract
 
 
+def test_detect_products_uses_model_label_names():
+    image = np.ones((64, 64, 3), dtype=np.uint8)
+
+    class _FakeTensor:
+        def __init__(self, values):
+            self._values = np.array(values, dtype=float)
+
+        def __getitem__(self, index):
+            return _FakeTensor(self._values[index])
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._values
+
+        def __int__(self):
+            return int(self._values.item())
+
+        def __float__(self):
+            return float(self._values.item())
+
+    class _FakeBox:
+        def __init__(self):
+            self.cls = _FakeTensor([0])
+            self.conf = _FakeTensor([0.88])
+            self.xyxy = _FakeTensor([[4, 6, 28, 32]])
+
+    class _FakeResult:
+        def __init__(self):
+            self.boxes = [_FakeBox()]
+            self.names = {0: "snack package"}
+
+    class _FakeModel:
+        def __call__(self, *_args, **_kwargs):
+            return [_FakeResult()]
+
+    original_loader = tool._get_or_load_yolo_model
+    try:
+        tool._get_or_load_yolo_model = lambda: _FakeModel()
+        detections = tool.detect_products(image, confidence_threshold=0.1)
+        assert len(detections) == 1
+        assert detections[0]['class_name'] == "snack package"
+    finally:
+        tool._get_or_load_yolo_model = original_loader
+
+
 if __name__ == '__main__':
     test_parsing_helpers()
     test_store_item_scope_defaults()
     test_main_with_mocks()
+    test_detect_products_uses_model_label_names()
     print('All store product-price tests passed.')
