@@ -135,7 +135,7 @@ def crop_focus_region(image: np.ndarray, bbox: List[int], padding_ratio: float =
 
 def _vision_client(api_key: Optional[str] = None) -> Optional[Any]:
     if not VISION_API_AVAILABLE:
-        LOGGER.debug("Google Vision not available in environment")
+        LOGGER.info("Google Vision not available in environment")
         return None
 
     if api_key is None:
@@ -306,7 +306,12 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Selected focus product class=%s confidence=%.2f", focus['class_name'], focus.get('confidence', 0.0))
 
     region = crop_focus_region(image, focus['bbox'])
-    region_h, region_w = region.shape[:2] if region.ndim >= 2 else (0, 0)
+    if region.ndim >= 2:
+        region_w = region.shape[1]
+        region_h = region.shape[0]
+    else:
+        region_w = 0
+        region_h = 0
     LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region_w, region_h)
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
