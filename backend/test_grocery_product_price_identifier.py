@@ -107,6 +107,36 @@ def test_main_uses_language_model_assist_when_enabled():
         tool.assist_product_name_with_language_model = original_assist
 
 
+def test_assist_product_name_with_language_model_parses_response():
+    class _FakeResponse:
+        def __init__(self, body: str):
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self._body.encode('utf-8')
+
+    original_urlopen = tool.request.urlopen
+    try:
+        tool.request.urlopen = lambda *_args, **_kwargs: _FakeResponse(
+            '{"candidates":[{"content":{"parts":[{"text":"Kirkland Spring Water"}]}}]}'
+        )
+        result = tool.assist_product_name_with_language_model(
+            ocr_text="Kirkland Water\n$1.99",
+            detection_label="bottle",
+            current_name="Kirkland Water",
+            api_key="test-key",
+        )
+        assert result == "Kirkland Spring Water"
+    finally:
+        tool.request.urlopen = original_urlopen
+
+
 def test_detect_products_uses_model_label_names():
     image = np.ones((64, 64, 3), dtype=np.uint8)
 
@@ -159,5 +189,6 @@ if __name__ == '__main__':
     test_store_item_detection_and_label_parsing_defaults()
     test_main_with_mocks()
     test_main_uses_language_model_assist_when_enabled()
+    test_assist_product_name_with_language_model_parses_response()
     test_detect_products_uses_model_label_names()
     print('All store product-price tests passed.')
