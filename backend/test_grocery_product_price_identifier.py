@@ -26,7 +26,7 @@ def test_parsing_helpers():
     assert whole_dollar['price'] == '$5.00'
 
 
-def test_store_item_scope_defaults():
+def test_store_item_detection_and_label_parsing_defaults():
     assert tool.DEFAULT_CONFIDENCE == 0.25
     assert not hasattr(tool, 'COCO_CLASSES')
     assert not hasattr(tool, 'STORE_ITEM_CLASSES')
@@ -123,7 +123,7 @@ def test_detect_products_uses_model_label_names():
 
 if __name__ == '__main__':
     test_parsing_helpers()
-    test_store_item_scope_defaults()
+    test_store_item_detection_and_label_parsing_defaults()
     test_main_with_mocks()
     test_detect_products_uses_model_label_names()
     print('All store product-price tests passed.')

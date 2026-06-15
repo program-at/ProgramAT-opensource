@@ -223,8 +223,8 @@ def extract_product_name(text: str) -> Optional[str]:
     if not cleaned_lines:
         return None
 
-    def _line_score(entry: tuple[int, str]) -> tuple:
-        """Return score tuple: letters, -digits, price-neighbor bonus, words, and length."""
+    def _line_score(entry: tuple[int, str]) -> tuple[int, int, int, int, int]:
+        """Score lines lexicographically to prefer descriptive label text over numeric lines."""
         index, line = entry
         letters = digits = 0
         for char in line:
