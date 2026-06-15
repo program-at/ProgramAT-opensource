@@ -26,6 +26,13 @@ def test_parsing_helpers():
     assert whole_dollar['price'] == '$5.00'
 
 
+def test_store_item_scope_defaults():
+    assert tool.DEFAULT_CONFIDENCE == 0.25
+    assert 'banana' in tool.STORE_ITEM_CLASSES
+    assert 'book' in tool.STORE_ITEM_CLASSES
+    assert 'cell phone' in tool.STORE_ITEM_CLASSES
+
+
 def test_main_with_mocks():
     image = np.ones((480, 640, 3), dtype=np.uint8) * 255
 
@@ -65,5 +72,6 @@ def test_main_with_mocks():
 
 if __name__ == '__main__':
     test_parsing_helpers()
+    test_store_item_scope_defaults()
     test_main_with_mocks()
     print('All grocery product-price tests passed.')

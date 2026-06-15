@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 
-DEFAULT_CONFIDENCE = 0.35
+DEFAULT_CONFIDENCE = 0.25
 DEFAULT_TRACK_MODE = True
 MAX_PRODUCT_NAME_WORDS = 6
 MAX_STREAMING_WORDS = 15
@@ -31,9 +31,14 @@ COCO_CLASSES = [
     'toothbrush'
 ]
 
-GROCERY_CLASSES = {
-    'bottle', 'cup', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-    'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake'
+STORE_ITEM_CLASSES = {
+    'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'sports ball',
+    'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
+    'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana',
+    'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza',
+    'donut', 'cake', 'potted plant', 'laptop', 'mouse', 'remote', 'keyboard',
+    'cell phone', 'microwave', 'oven', 'toaster', 'book', 'clock', 'vase',
+    'scissors', 'teddy bear', 'hair drier', 'toothbrush'
 }
 
 try:
@@ -57,10 +62,10 @@ def _get_or_load_yolo_model() -> Any:
 
     cache = _get_shared_cache()
     if YOLO_MODEL_CACHE_KEY not in cache:
-        LOGGER.info("Loading YOLO model for grocery detection")
+        LOGGER.info("Loading YOLO model for store-item detection")
         cache[YOLO_MODEL_CACHE_KEY] = YOLO('yolo11n.pt')
     else:
-        LOGGER.debug("Reusing cached YOLO model for grocery detection")
+        LOGGER.debug("Reusing cached YOLO model for store-item detection")
     return cache[YOLO_MODEL_CACHE_KEY]
 
 
@@ -73,7 +78,7 @@ def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CON
         model = _get_or_load_yolo_model()
         results = model(image, conf=confidence_threshold, verbose=False)
     except Exception:
-        LOGGER.exception("YOLO grocery detection failed")
+        LOGGER.exception("YOLO store-item detection failed")
         return []
 
     detections: List[Dict[str, Any]] = []
@@ -82,7 +87,7 @@ def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CON
         for box in boxes:
             class_id = int(box.cls[0])
             class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else f"object_{class_id}"
-            if class_name not in GROCERY_CLASSES:
+            if class_name not in STORE_ITEM_CLASSES:
                 continue
 
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
@@ -94,7 +99,7 @@ def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CON
                 'bbox': [x, y, w, h],
                 'center': [x + w // 2, y + h // 2],
             })
-    LOGGER.info("Detected %d grocery candidates", len(detections))
+    LOGGER.info("Detected %d store-item candidates", len(detections))
     return detections
 
 
@@ -287,14 +292,14 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     track_mode = bool(config.get('track_mode', DEFAULT_TRACK_MODE))
     language = config.get('language', 'en')
     api_key = config.get('api_key')
-    LOGGER.info("Starting grocery product price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
+    LOGGER.info("Starting store-item product/price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
 
     detections = detect_products(image, confidence_threshold=confidence)
     if not detections:
-        LOGGER.info("No grocery detections found in frame")
+        LOGGER.info("No store-item detections found in frame")
         if track_mode:
             return ""
-        return "No grocery product in focus."
+        return "No store item in focus."
 
     frame_h, frame_w = image.shape[:2]
     focus = get_focus_product(detections, frame_w, frame_h)
@@ -302,7 +307,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         LOGGER.info("No focus product selected from detections")
         if track_mode:
             return ""
-        return "No grocery product in focus."
+        return "No store item in focus."
     LOGGER.info("Selected focus product class=%s confidence=%.2f", focus['class_name'], focus.get('confidence', 0.0))
 
     region = crop_focus_region(image, focus['bbox'])
