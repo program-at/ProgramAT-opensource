@@ -224,12 +224,14 @@ def extract_product_name(text: str) -> Optional[str]:
         return None
 
     def _line_score(entry: tuple[int, str]) -> tuple:
-        """Prefer descriptive label lines, then boost lines adjacent to price text."""
+        """Return score tuple: letters, -digits, price-neighbor bonus, words, and length."""
         index, line = entry
         letters = digits = 0
         for char in line:
-            letters += int(char.isalpha())
-            digits += int(char.isdigit())
+            if char.isalpha():
+                letters += 1
+            elif char.isdigit():
+                digits += 1
         words = len(line.split())
         near_price_bonus = NEAR_PRICE_SCORE_BONUS if (
             (index > 0 and PRICE_PATTERN.search(raw_lines[index - 1])) or

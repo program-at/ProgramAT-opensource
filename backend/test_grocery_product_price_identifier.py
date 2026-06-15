@@ -28,8 +28,8 @@ def test_parsing_helpers():
 
 def test_store_item_scope_defaults():
     assert tool.DEFAULT_CONFIDENCE == 0.25
-    assert 'COCO_CLASSES' not in tool.__dict__
-    assert 'STORE_ITEM_CLASSES' not in tool.__dict__
+    assert not hasattr(tool, 'COCO_CLASSES')
+    assert not hasattr(tool, 'STORE_ITEM_CLASSES')
 
     label_first = "Big Promo Header\nStore Brand Chips\n$2.49\n2 for 4"
     parsed = tool.parse_product_and_price(label_first, 'object_0')
