@@ -1,5 +1,6 @@
 import os
 import re
+import logging
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -13,6 +14,7 @@ MAX_STREAMING_WORDS = 15
 MAX_WHOLE_DOLLAR_PRICE = 100.0
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
+LOGGER = logging.getLogger(__name__)
 
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
@@ -55,18 +57,23 @@ def _get_or_load_yolo_model() -> Any:
 
     cache = _get_shared_cache()
     if YOLO_MODEL_CACHE_KEY not in cache:
+        LOGGER.info("Loading YOLO model for grocery detection")
         cache[YOLO_MODEL_CACHE_KEY] = YOLO('yolo11n.pt')
+    else:
+        LOGGER.debug("Reusing cached YOLO model for grocery detection")
     return cache[YOLO_MODEL_CACHE_KEY]
 
 
 def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CONFIDENCE) -> List[Dict[str, Any]]:
     if image is None or image.size == 0:
+        LOGGER.warning("detect_products called with empty image")
         return []
 
     try:
         model = _get_or_load_yolo_model()
         results = model(image, conf=confidence_threshold, verbose=False)
     except Exception:
+        LOGGER.exception("YOLO grocery detection failed")
         return []
 
     detections: List[Dict[str, Any]] = []
@@ -87,6 +94,7 @@ def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CON
                 'bbox': [x, y, w, h],
                 'center': [x + w // 2, y + h // 2],
             })
+    LOGGER.info("Detected %d grocery candidates", len(detections))
     return detections
 
 
@@ -127,6 +135,7 @@ def crop_focus_region(image: np.ndarray, bbox: List[int], padding_ratio: float =
 
 def _vision_client(api_key: Optional[str] = None) -> Optional[Any]:
     if not VISION_API_AVAILABLE:
+        LOGGER.debug("Google Vision not available in environment")
         return None
 
     if api_key is None:
@@ -137,25 +146,31 @@ def _vision_client(api_key: Optional[str] = None) -> Optional[Any]:
         import json
 
         if api_key and os.path.isfile(api_key):
+            LOGGER.debug("Creating Google Vision client from service-account file")
             credentials = service_account.Credentials.from_service_account_file(api_key)
             return vision.ImageAnnotatorClient(credentials=credentials)
         if api_key and api_key.startswith('{'):
+            LOGGER.debug("Creating Google Vision client from service-account JSON string")
             credentials_dict = json.loads(api_key)
             credentials = service_account.Credentials.from_service_account_info(credentials_dict)
             return vision.ImageAnnotatorClient(credentials=credentials)
+        LOGGER.debug("Creating default Google Vision client")
         return vision.ImageAnnotatorClient()
     except Exception:
+        LOGGER.exception("Failed to initialize Google Vision client")
         return None
 
 
 def _extract_text_google_vision(image: np.ndarray, api_key: Optional[str] = None, language: str = 'en') -> str:
     client = _vision_client(api_key)
     if client is None:
+        LOGGER.info("Skipping Google Vision OCR because no client is available")
         return ''
 
     try:
         success, encoded = cv2.imencode('.jpg', image)
         if not success:
+            LOGGER.warning("Failed to encode focus region for Google Vision OCR")
             return ''
 
         vision_image = vision.Image(content=encoded.tobytes())
@@ -163,9 +178,12 @@ def _extract_text_google_vision(image: np.ndarray, api_key: Optional[str] = None
         response = client.text_detection(image=vision_image, image_context=context)
         error_message = getattr(getattr(response, 'error', None), 'message', '')
         if error_message or not response.text_annotations:
+            LOGGER.info("Google Vision OCR returned no text for focus region")
             return ''
+        LOGGER.info("Google Vision OCR succeeded for focus region")
         return response.text_annotations[0].description.strip()
     except Exception:
+        LOGGER.exception("Google Vision OCR failed")
         return ''
 
 
@@ -174,8 +192,10 @@ def _extract_text_tesseract(image: np.ndarray) -> str:
         import pytesseract
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if len(image.shape) == 3 else image
         text = pytesseract.image_to_string(rgb)
+        LOGGER.info("Tesseract OCR completed for focus region")
         return text.strip()
     except Exception:
+        LOGGER.exception("Tesseract OCR failed")
         return ''
 
 
@@ -183,6 +203,7 @@ def extract_text_from_region(region: np.ndarray, api_key: Optional[str] = None, 
     text = _extract_text_google_vision(region, api_key=api_key, language=language)
     if text:
         return text
+    LOGGER.info("Falling back to Tesseract OCR for focus region")
     return _extract_text_tesseract(region)
 
 
@@ -258,6 +279,7 @@ def _state_cache() -> Dict[str, Any]:
 
 def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+        LOGGER.warning("grocery_product_price_identifier.main received invalid image")
         return "No camera image available"
 
     config = input_data if isinstance(input_data, dict) else {}
@@ -265,9 +287,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     track_mode = bool(config.get('track_mode', DEFAULT_TRACK_MODE))
     language = config.get('language', 'en')
     api_key = config.get('api_key')
+    LOGGER.info("Starting grocery product-price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
 
     detections = detect_products(image, confidence_threshold=confidence)
     if not detections:
+        LOGGER.info("No grocery detections found in frame")
         if track_mode:
             return ""
         return "No grocery product in focus."
@@ -275,20 +299,26 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     frame_h, frame_w = image.shape[:2]
     focus = get_focus_product(detections, frame_w, frame_h)
     if not focus:
+        LOGGER.info("No focus product selected from detections")
         if track_mode:
             return ""
         return "No grocery product in focus."
+    LOGGER.info("Selected focus product class=%s confidence=%.2f", focus['class_name'], focus.get('confidence', 0.0))
 
     region = crop_focus_region(image, focus['bbox'])
+    LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region.shape[1] if region.ndim >= 2 else 0, region.shape[0] if region.ndim >= 2 else 0)
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
+    LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
 
     message = _build_message(parsed['name'] or focus['class_name'], parsed['price'], track_mode)
 
     state = _state_cache()
     if track_mode and message == state.get('last_message', ''):
+        LOGGER.debug("Suppressing repeated announcement in track mode")
         return ""
     state['last_message'] = message
+    LOGGER.info("Returning grocery product-price response")
 
     return {
         'audio': {
