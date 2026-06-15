@@ -72,6 +72,8 @@ export default function TextInputComponent({
     setIsSending(true);
     setError('');
 
+    let shouldFallbackToWebSocket = false;
+
     try {
       const formData = new FormData();
       formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
@@ -91,17 +93,34 @@ export default function TextInputComponent({
       const result = await response.json();
 
       if (result.status === 'created') {
-        TextToSpeechService.speak(`Issue ${result.issue_number} created`);
+        const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
+        TextToSpeechService.speak(`Issue ${result.issue_number} created.${videoNote}`);
         setInputText('');
         setVideoUri(null);
         Keyboard.dismiss();
-      } else {
-        setError(result.error ?? 'Submission failed. Please try again.');
+        return;
       }
+
+      // Server returned an error — fall back to WebSocket so AI parsing still applies
+      shouldFallbackToWebSocket = true;
     } catch {
-      setError('Could not reach the server. Check your connection.');
+      // Network error — fall back to WebSocket so AI parsing still applies
+      shouldFallbackToWebSocket = true;
     } finally {
       setIsSending(false);
+    }
+
+    if (shouldFallbackToWebSocket) {
+      if (!WebSocketService.isConnected()) {
+        setError('Submission failed and server not connected. Please try again.');
+        return;
+      }
+      TextToSpeechService.speak('Video submission failed. Processing your text.');
+      setVideoUri(null);
+      WebSocketService.sendIssueSelection('create');
+      WebSocketService.sendText(inputText.trim());
+      setInputText('');
+      Keyboard.dismiss();
     }
   };
 

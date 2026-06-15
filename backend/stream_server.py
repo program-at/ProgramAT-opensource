@@ -109,7 +109,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8080 #port for listening
+PORT = 8081 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -3881,6 +3881,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                     pass
 
     # --- Parse transcript and fill template ---
+    # AI parsing always runs regardless of whether video summarization succeeded.
     try:
         active_model = LLM_MODEL
         parsed_data = await asyncio.to_thread(
@@ -3913,9 +3914,10 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             title = title[:253] + '...'
 
     except Exception as e:
-        logger.error("Template fill failed in /submit-creation: %s", e, exc_info=True)
+        logger.error("AI parsing/template fill failed in /submit-creation: %s", e, exc_info=True)
         return web.json_response(
-            {'status': 'error', 'error': 'Failed to process issue data'}, status=500
+            {'status': 'error', 'error': 'Failed to process issue data', 'video_failed': not bool(video_summary) and bool(video_bytes)},
+            status=500
         )
 
     # --- Create GitHub issue ---
