@@ -287,7 +287,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     track_mode = bool(config.get('track_mode', DEFAULT_TRACK_MODE))
     language = config.get('language', 'en')
     api_key = config.get('api_key')
-    LOGGER.info("Starting grocery product-price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
+    LOGGER.info("Starting grocery product price processing (track_mode=%s, confidence=%.2f)", track_mode, confidence)
 
     detections = detect_products(image, confidence_threshold=confidence)
     if not detections:
@@ -306,12 +306,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Selected focus product class=%s confidence=%.2f", focus['class_name'], focus.get('confidence', 0.0))
 
     region = crop_focus_region(image, focus['bbox'])
-    if region.ndim >= 2:
-        region_w = region.shape[1]
-        region_h = region.shape[0]
-    else:
-        region_w = 0
-        region_h = 0
+    region_w = region.shape[1]
+    region_h = region.shape[0]
     LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region_w, region_h)
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
