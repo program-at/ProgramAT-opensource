@@ -16,31 +16,6 @@ YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 LOGGER = logging.getLogger(__name__)
 
-COCO_CLASSES = [
-    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
-    'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
-    'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
-    'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
-    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
-    'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
-    'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
-    'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
-    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
-    'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
-    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
-    'toothbrush'
-]
-
-STORE_ITEM_CLASSES = {
-    'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'sports ball',
-    'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-    'bottle', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl', 'banana',
-    'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza',
-    'donut', 'cake', 'potted plant', 'laptop', 'mouse', 'remote', 'keyboard',
-    'cell phone', 'microwave', 'oven', 'toaster', 'book', 'clock', 'vase',
-    'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-}
-
 try:
     from google.cloud import vision
     VISION_API_AVAILABLE = True
@@ -84,11 +59,10 @@ def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CON
     detections: List[Dict[str, Any]] = []
     for result in results:
         boxes = result.boxes
+        model_names = getattr(result, 'names', {}) or {}
         for box in boxes:
             class_id = int(box.cls[0])
-            class_name = COCO_CLASSES[class_id] if 0 <= class_id < len(COCO_CLASSES) else f"object_{class_id}"
-            if class_name not in STORE_ITEM_CLASSES:
-                continue
+            class_name = model_names.get(class_id, f"object_{class_id}")
 
             x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
             x, y = int(x1), int(y1)
@@ -233,8 +207,9 @@ def extract_product_name(text: str) -> Optional[str]:
     if not text:
         return None
 
+    raw_lines = [line.strip() for line in text.splitlines() if line.strip()]
     cleaned_lines = []
-    for raw_line in text.splitlines():
+    for index, raw_line in enumerate(raw_lines):
         line = ' '.join(raw_line.strip().split())
         if not line:
             continue
@@ -242,12 +217,23 @@ def extract_product_name(text: str) -> Optional[str]:
             line = PRICE_PATTERN.sub('', line).strip(' -:')
         if len(line) < 2:
             continue
-        cleaned_lines.append(line)
+        cleaned_lines.append((index, line))
 
     if not cleaned_lines:
         return None
 
-    best = max(cleaned_lines, key=lambda s: len(s))
+    def _line_score(entry: tuple[int, str]) -> tuple:
+        index, line = entry
+        letters = sum(1 for c in line if c.isalpha())
+        digits = sum(1 for c in line if c.isdigit())
+        words = len(line.split())
+        near_price_bonus = 1 if (
+            (index > 0 and PRICE_PATTERN.search(raw_lines[index - 1])) or
+            (index + 1 < len(raw_lines) and PRICE_PATTERN.search(raw_lines[index + 1]))
+        ) else 0
+        return letters, -digits, near_price_bonus, words, len(line)
+
+    best = max(cleaned_lines, key=_line_score)[1]
     words = best.split()
     return ' '.join(words[:MAX_PRODUCT_NAME_WORDS])
 

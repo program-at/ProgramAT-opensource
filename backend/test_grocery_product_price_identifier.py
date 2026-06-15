@@ -28,9 +28,13 @@ def test_parsing_helpers():
 
 def test_store_item_scope_defaults():
     assert tool.DEFAULT_CONFIDENCE == 0.25
-    assert 'banana' in tool.STORE_ITEM_CLASSES
-    assert 'book' in tool.STORE_ITEM_CLASSES
-    assert 'cell phone' in tool.STORE_ITEM_CLASSES
+    assert 'COCO_CLASSES' not in tool.__dict__
+    assert 'STORE_ITEM_CLASSES' not in tool.__dict__
+
+    label_first = "Big Promo Header\nStore Brand Chips\n$2.49\n2 for 4"
+    parsed = tool.parse_product_and_price(label_first, 'object_0')
+    assert parsed['name'] == 'Store Brand Chips'
+    assert parsed['price'] == '$2.49'
 
 
 def test_main_with_mocks():
