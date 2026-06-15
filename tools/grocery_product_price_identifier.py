@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import json
+import socket
 from urllib import request, error
 from typing import Any, Dict, List, Optional
 
@@ -19,6 +20,9 @@ YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview'
 DEFAULT_LLM_TIMEOUT_SECONDS = 5.0
+MIN_LLM_TIMEOUT_SECONDS = 0.5
+LLM_TEMPERATURE = 0.2
+LLM_MAX_OUTPUT_TOKENS = 16
 LOGGER = logging.getLogger(__name__)
 
 try:
@@ -282,7 +286,7 @@ def assist_product_name_with_language_model(
     endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 16}
+        "generationConfig": {"temperature": LLM_TEMPERATURE, "maxOutputTokens": LLM_MAX_OUTPUT_TOKENS}
     }
     payload = json.dumps(body).encode('utf-8')
     req = request.Request(endpoint, data=payload, method='POST')
@@ -290,7 +294,7 @@ def assist_product_name_with_language_model(
     req.add_header('x-goog-api-key', api_key)
 
     try:
-        with request.urlopen(req, timeout=max(0.5, float(timeout_seconds))) as response:
+        with request.urlopen(req, timeout=max(MIN_LLM_TIMEOUT_SECONDS, float(timeout_seconds))) as response:
             raw = response.read().decode('utf-8')
         data = json.loads(raw)
         text = (
@@ -310,7 +314,7 @@ def assist_product_name_with_language_model(
         assisted_name = ' '.join(assisted_words[:MAX_PRODUCT_NAME_WORDS])
         LOGGER.info("Language-model assist refined product name from '%s' to '%s'", current_name, assisted_name)
         return assisted_name
-    except (error.URLError, TimeoutError, json.JSONDecodeError, KeyError, IndexError, ValueError) as exc:
+    except (error.URLError, socket.timeout, json.JSONDecodeError, KeyError, IndexError, ValueError) as exc:
         LOGGER.warning(
             "Language-model name assist failed (%s); keeping OCR/image product name '%s'",
             type(exc).__name__,
