@@ -8,6 +8,11 @@ import numpy as np
 
 DEFAULT_CONFIDENCE = 0.35
 DEFAULT_TRACK_MODE = True
+MAX_PRODUCT_NAME_WORDS = 6
+MAX_STREAMING_WORDS = 15
+MAX_WHOLE_DOLLAR_PRICE = 100.0
+YOLO_MODEL_CACHE_KEY = 'yolo11n'
+STATE_CACHE_KEY = 'grocery_product_price_state'
 
 COCO_CLASSES = [
     'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
@@ -36,7 +41,9 @@ except ImportError:
     VISION_API_AVAILABLE = False
 
 
-PRICE_PATTERN = re.compile(r"(?:\$\s*)?(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})")
+PRICE_PATTERN = re.compile(
+    r"(?:\$\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+(?:\.\d{2})?)|(?<!\d)(\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2})(?!\d))"
+)
 
 
 def _get_shared_cache() -> Dict[str, Any]:
@@ -47,10 +54,9 @@ def _get_or_load_yolo_model() -> Any:
     from ultralytics import YOLO
 
     cache = _get_shared_cache()
-    cache_key = 'grocery_product_price_yolo11n'
-    if cache_key not in cache:
-        cache[cache_key] = YOLO('yolo11n.pt')
-    return cache[cache_key]
+    if YOLO_MODEL_CACHE_KEY not in cache:
+        cache[YOLO_MODEL_CACHE_KEY] = YOLO('yolo11n.pt')
+    return cache[YOLO_MODEL_CACHE_KEY]
 
 
 def detect_products(image: np.ndarray, confidence_threshold: float = DEFAULT_CONFIDENCE) -> List[Dict[str, Any]]:
@@ -155,7 +161,8 @@ def _extract_text_google_vision(image: np.ndarray, api_key: Optional[str] = None
         vision_image = vision.Image(content=encoded.tobytes())
         context = vision.ImageContext(language_hints=[language])
         response = client.text_detection(image=vision_image, image_context=context)
-        if response.error.message or not response.text_annotations:
+        error_message = getattr(getattr(response, 'error', None), 'message', '')
+        if error_message or not response.text_annotations:
             return ''
         return response.text_annotations[0].description.strip()
     except Exception:
@@ -186,8 +193,12 @@ def extract_price(text: str) -> Optional[str]:
     if not match:
         return None
 
-    amount = match.group(1)
+    amount = (match.group(1) or match.group(2) or '').replace(',', '')
+    if not amount:
+        return None
     if '.' not in amount:
+        if float(amount) > MAX_WHOLE_DOLLAR_PRICE:
+            return None
         amount = f"{amount}.00"
     return f"${amount}"
 
@@ -212,7 +223,7 @@ def extract_product_name(text: str) -> Optional[str]:
 
     best = max(cleaned_lines, key=lambda s: len(s))
     words = best.split()
-    return ' '.join(words[:6])
+    return ' '.join(words[:MAX_PRODUCT_NAME_WORDS])
 
 
 def parse_product_and_price(ocr_text: str, fallback_class: str) -> Dict[str, Optional[str]]:
@@ -233,17 +244,16 @@ def _build_message(name: str, price: Optional[str], track_mode: bool) -> str:
         return message
 
     words = message.split()
-    if len(words) <= 15:
+    if len(words) <= MAX_STREAMING_WORDS:
         return message
-    return ' '.join(words[:15])
+    return ' '.join(words[:MAX_STREAMING_WORDS])
 
 
 def _state_cache() -> Dict[str, Any]:
     cache = _get_shared_cache()
-    key = 'grocery_product_price_state'
-    if key not in cache:
-        cache[key] = {'last_message': ''}
-    return cache[key]
+    if STATE_CACHE_KEY not in cache:
+        cache[STATE_CACHE_KEY] = {'last_message': ''}
+    return cache[STATE_CACHE_KEY]
 
 
 def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:

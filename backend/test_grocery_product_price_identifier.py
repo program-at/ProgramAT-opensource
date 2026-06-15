@@ -22,11 +22,16 @@ def test_parsing_helpers():
     assert no_price['name'] == 'Fresh Apples'
     assert no_price['price'] is None
 
+    whole_dollar = tool.parse_product_and_price("Bread Special $5", 'sandwich')
+    assert whole_dollar['price'] == '$5.00'
+
 
 def test_main_with_mocks():
     image = np.ones((480, 640, 3), dtype=np.uint8) * 255
 
-    tool.yolo_model_cache = {}
+    if 'yolo_model_cache' not in tool.__dict__:
+        tool.__dict__['yolo_model_cache'] = {}
+    tool._get_shared_cache().clear()
 
     original_detect = tool.detect_products
     original_extract = tool.extract_text_from_region
