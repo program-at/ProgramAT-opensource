@@ -3882,10 +3882,20 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
 
     # --- Parse transcript and fill template ---
     # AI parsing always runs regardless of whether video summarization succeeded.
+    # When a video summary is available, augment the transcript so the AI can
+    # use the demonstrated behaviour (example_usage, solution, etc.).
+    parse_input = text.strip()
+    if video_summary:
+        parse_input = (
+            f"{text.strip()}\n\n"
+            f"[Video demonstration summary – use this to populate example_usage "
+            f"and any other relevant fields]:\n{video_summary}"
+        )
+
     try:
         active_model = LLM_MODEL
         parsed_data = await asyncio.to_thread(
-            parse_transcript_with_ai, text.strip(), None, active_model
+            parse_transcript_with_ai, parse_input, None, active_model
         )
 
         template_file = TEMPLATE_DIR / 'visual_at.md'
