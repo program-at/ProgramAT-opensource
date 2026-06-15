@@ -3333,20 +3333,21 @@ def _log_to_all_sessions(level: str, message: str):
 
 
 async def _broadcast_ws(data: dict) -> None:
-    """Broadcast a JSON payload to every connected aiohttp WebSocket client.
+    """Broadcast a JSON payload to every connected AiohttpWebSocketAdapter client.
 
-    Uses aiohttp's send_str() — NOT the websockets-library broadcast() which
-    is incompatible with aiohttp WebSocketResponse objects.
+    Clients in `connected_clients` are AiohttpWebSocketAdapter instances whose
+    only send interface is `.send(str)` — NOT `.send_str()`.  Using the wrong
+    method raises AttributeError which was silently swallowed, so nothing was
+    ever delivered.  This matches the pattern already used by broadcast_stats().
     """
     if not connected_clients:
         return
     msg = json.dumps(data)
     coros = []
     for client in list(connected_clients):
-        try:
-            coros.append(client.send_str(msg))
-        except Exception:
-            pass
+        send = getattr(client, 'send', None)
+        if callable(send):
+            coros.append(send(msg))
     if coros:
         await asyncio.gather(*coros, return_exceptions=True)
 
