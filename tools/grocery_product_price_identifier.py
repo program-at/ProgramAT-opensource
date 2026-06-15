@@ -12,6 +12,7 @@ DEFAULT_TRACK_MODE = True
 MAX_PRODUCT_NAME_WORDS = 6
 MAX_STREAMING_WORDS = 15
 MAX_WHOLE_DOLLAR_PRICE = 100.0
+NEAR_PRICE_SCORE_BONUS = 1
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 LOGGER = logging.getLogger(__name__)
@@ -223,11 +224,14 @@ def extract_product_name(text: str) -> Optional[str]:
         return None
 
     def _line_score(entry: tuple[int, str]) -> tuple:
+        """Prefer descriptive label lines, then boost lines adjacent to price text."""
         index, line = entry
-        letters = sum(1 for c in line if c.isalpha())
-        digits = sum(1 for c in line if c.isdigit())
+        letters = digits = 0
+        for char in line:
+            letters += int(char.isalpha())
+            digits += int(char.isdigit())
         words = len(line.split())
-        near_price_bonus = 1 if (
+        near_price_bonus = NEAR_PRICE_SCORE_BONUS if (
             (index > 0 and PRICE_PATTERN.search(raw_lines[index - 1])) or
             (index + 1 < len(raw_lines) and PRICE_PATTERN.search(raw_lines[index + 1]))
         ) else 0
