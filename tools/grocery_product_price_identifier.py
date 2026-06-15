@@ -252,12 +252,13 @@ def extract_product_name(text: str) -> Optional[str]:
     return ' '.join(words[:MAX_PRODUCT_NAME_WORDS])
 
 
-def parse_product_and_price(ocr_text: str, fallback_class: str) -> Dict[str, Optional[str]]:
+def parse_product_and_price(ocr_text: str, fallback_class: str) -> Dict[str, Any]:
     price = extract_price(ocr_text)
     name = extract_product_name(ocr_text)
+    name_from_ocr = bool(name)
     if not name:
         name = fallback_class.replace('_', ' ')
-    return {'name': name, 'price': price}
+    return {'name': name, 'price': price, 'name_from_ocr': name_from_ocr}
 
 
 def assist_product_name_with_language_model(
@@ -387,7 +388,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region.shape[1], region.shape[0])
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
-    if parsed.get('name') and use_language_model:
+    if parsed.get('name') and use_language_model and not parsed.get('name_from_ocr'):
+        LOGGER.info("Using language-model assist to refine image label fallback name")
         parsed['name'] = assist_product_name_with_language_model(
             ocr_text=ocr_text,
             detection_label=focus['class_name'],
@@ -396,6 +398,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             model=llm_model,
             timeout_seconds=llm_timeout_seconds
         )
+    elif parsed.get('name') and use_language_model:
+        LOGGER.info("Skipping language-model assist because OCR already provided product name")
     LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
 
     message = _build_message(parsed['name'] or focus['class_name'], parsed['price'], track_mode)
