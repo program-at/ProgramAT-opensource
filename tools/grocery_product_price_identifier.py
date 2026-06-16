@@ -17,6 +17,7 @@ MAX_STREAMING_WORDS = 15
 MAX_WHOLE_DOLLAR_PRICE = 100.0
 NEAR_PRICE_SCORE_BONUS = 1
 PRICE_RELATION_MAX_DISTANCE = 2
+MAX_SHORT_NUMERIC_LEAD_WORDS = 3
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview'
@@ -250,7 +251,7 @@ def extract_product_name(text: str) -> Optional[str]:
         words = line.split()
         if not words:
             return False
-        if any(char.isalpha() for char in words[0]) is False and len(words) <= 3:
+        if not any(char.isalpha() for char in words[0]) and len(words) <= MAX_SHORT_NUMERIC_LEAD_WORDS:
             return False
         if '%' in line:
             return False
@@ -275,6 +276,7 @@ def extract_product_name(text: str) -> Optional[str]:
     price_line_indexes = [idx for idx, raw_line in enumerate(raw_lines) if PRICE_PATTERN.search(raw_line)]
     if price_line_indexes:
         cleaned_by_index = {index: line for index, line in cleaned_lines}
+        # (line_index, line_text, distance_from_price_line, is_same_or_above_price_line_flag)
         related_candidates: List[tuple[int, str, int, int]] = []
         for price_idx in price_line_indexes:
             same_line = cleaned_by_index.get(price_idx)
@@ -288,9 +290,14 @@ def extract_product_name(text: str) -> Optional[str]:
                 if below and _looks_like_name_line(below):
                     related_candidates.append((price_idx + offset, below, offset, 0))
         if related_candidates:
+            # Prefer same/above lines near price first, then textual quality scoring.
+            def _price_related_key(entry: tuple[int, str, int, int]) -> tuple[int, int, int, int, int, int, int]:
+                line_index, line_text, distance, is_same_or_above = entry
+                return (is_same_or_above, -distance) + _line_score((line_index, line_text))
+
             best = max(
                 related_candidates,
-                key=lambda entry: (entry[3], -entry[2]) + _line_score((entry[0], entry[1]))
+                key=_price_related_key
             )[1]
             LOGGER.debug("Selected OCR product name from price-related label text: %s", best)
             words = best.split()
