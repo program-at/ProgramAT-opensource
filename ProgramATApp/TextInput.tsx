@@ -124,6 +124,75 @@ export default function TextInputComponent({
     }
   };
 
+  const handleUpdateWithVideo = async () => {
+    const baseUrl = getHttpBaseUrl();
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+    if (!selectedIssue) {
+      setError('No issue selected');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('metadata', JSON.stringify({
+        text: inputText.trim(),
+        issue_number: selectedIssue.number,
+      }));
+      if (videoUri) {
+        formData.append('video', {
+          uri: videoUri,
+          type: 'video/mp4',
+          name: 'recording.mp4',
+        } as any);
+      }
+
+      const response = await fetch(`${baseUrl}/submit-update`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const result = await response.json();
+
+      if (result.status === 'updated') {
+        const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
+        TextToSpeechService.speak(`Update sent to issue.${videoNote}`);
+        setInputText('');
+        setVideoUri(null);
+        Keyboard.dismiss();
+      } else {
+        // Fall back to WebSocket with text only
+        TextToSpeechService.speak('Video failed. Sending text update.');
+        setVideoUri(null);
+        if (WebSocketService.isConnected()) {
+          WebSocketService.sendText(inputText.trim());
+          setInputText('');
+          Keyboard.dismiss();
+        } else {
+          setError(result.error ?? 'Submission failed. Please try again.');
+        }
+      }
+    } catch {
+      // Network error — fall back to WebSocket text-only
+      TextToSpeechService.speak('Video failed. Sending text update.');
+      setVideoUri(null);
+      if (WebSocketService.isConnected()) {
+        WebSocketService.sendText(inputText.trim());
+        setInputText('');
+        Keyboard.dismiss();
+      } else {
+        setError('Could not reach the server. Check your connection.');
+      }
+    } finally {
+      setIsSending(false);
+    }
+  };
+
   const handleTextChange = (text: string) => {
     setInputText(text);
     setError('');
@@ -135,9 +204,15 @@ export default function TextInputComponent({
       return;
     }
 
-    // Create mode + video attached → submit via HTTP multipart
+    // Create mode + video attached → submit via HTTP multipart (with AI parsing)
     if (isCreateMode && videoUri) {
       await handleSubmitWithVideo();
+      return;
+    }
+
+    // Update mode + video attached → submit via HTTP multipart (appends summary)
+    if (!isCreateMode && videoUri) {
+      await handleUpdateWithVideo();
       return;
     }
 
@@ -297,9 +372,8 @@ export default function TextInputComponent({
             </View>
           )}
 
-          {/* Video attachment row — create mode only */}
-          {isCreateMode && (
-            <View style={styles.videoRow}>
+          {/* Video attachment row — available in both create and update modes */}
+          <View style={styles.videoRow}>
               {videoUri ? (
                 <>
                   <View style={[styles.videoAttachedBadge, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}>
@@ -332,7 +406,6 @@ export default function TextInputComponent({
                 </TouchableOpacity>
               )}
             </View>
-          )}
 
           <View style={styles.buttonContainer}>
             <TouchableOpacity

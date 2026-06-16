@@ -3946,6 +3946,106 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         return web.json_response({'status': 'error', 'error': str(e)}, status=500)
 
 
+async def handle_update_submit(request: web.Request) -> web.Response:
+    """
+    POST /submit-update
+    Accepts multipart/form-data with:
+      - 'metadata'  (JSON): must include 'text' and 'issue_number'
+      - 'video'     (bytes, optional): video whose Gemini summary is appended directly
+                    to the comment text — no AI field-parsing, just concatenation.
+
+    Posts a comment to the GitHub issue and broadcasts issue_updated to clients.
+    """
+    if not GITHUB_TOKEN:
+        return web.json_response({'status': 'error', 'error': 'GitHub not configured'}, status=503)
+
+    text = ''
+    issue_number = None
+    video_bytes = None
+    video_suffix = '.mp4'
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'metadata':
+                raw = await part.read(decode=True)
+                try:
+                    meta = json.loads(raw)
+                    text = meta.get('text', '')
+                    issue_number = meta.get('issue_number')
+                except Exception:
+                    text = raw.decode('utf-8', errors='replace')
+            elif part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'upload.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /submit-update: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not text or not text.strip():
+        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+    if not issue_number:
+        return web.json_response({'status': 'error', 'error': 'No issue_number provided'}, status=400)
+
+    # --- Summarize video if present (best-effort) ---
+    video_summary = ''
+    if video_bytes:
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='update_')
+            with os.fdopen(tmp_fd, 'wb') as fh:
+                fh.write(video_bytes)
+            logger.info("Saved update video to %s (%d bytes)", tmp_path, len(video_bytes))
+            video_summary = await summarize_video(tmp_path)
+        except Exception:
+            logger.error("Video summarization failed in /submit-update", exc_info=True)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # --- Build comment: text + appended video summary ---
+    comment = text.strip()
+    if video_summary:
+        comment += f"\n\n---\n**Video Summary:**\n{video_summary}"
+
+    # --- Post to GitHub ---
+    try:
+        # Always @copilot on updates so it stays aware of new context/video summaries.
+        final_comment = f"{comment}\n\n@copilot"
+
+        def _post_comment():
+            g = Github(GITHUB_TOKEN)
+            repo = g.get_repo(GITHUB_REPO)
+            issue = repo.get_issue(int(issue_number))
+            issue.create_comment(final_comment)
+            return issue.html_url
+
+        issue_url = await asyncio.to_thread(_post_comment)
+        logger.info("Posted comment to issue #%s via /submit-update", issue_number)
+
+        await _broadcast_ws({
+            'type': 'issue_updated',
+            'message': f"Comment added to issue #{issue_number}",
+            'issue_number': int(issue_number),
+            'issue_url': issue_url,
+        })
+
+        return web.json_response({
+            'status': 'updated',
+            'issue_number': int(issue_number),
+            'issue_url': issue_url,
+            'video_summary': video_summary,
+        })
+
+    except Exception as e:
+        logger.error("Failed to post comment in /submit-update: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+
 async def handle_test_video_summary(request: web.Request) -> web.Response:
     """
     POST /test-video-summary
@@ -5710,6 +5810,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
     app.router.add_post('/submit-creation', handle_creation_submit)
+    app.router.add_post('/submit-update', handle_update_submit)
     app.router.add_post('/test-video-summary', handle_test_video_summary)
     app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
 
