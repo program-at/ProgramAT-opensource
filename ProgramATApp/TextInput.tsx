@@ -20,6 +20,7 @@ import {
   KeyboardAvoidingView,
   ActivityIndicator,
 } from 'react-native';
+import { launchImageLibrary } from 'react-native-image-picker';
 import { useTheme } from './ThemeContext';
 import WebSocketService from './WebSocketService';
 import TextToSpeechService from './TextToSpeechService';
@@ -49,9 +50,10 @@ export default function TextInputComponent({
   const [error, setError] = useState('');
   const inputRef = useRef<RNTextInput>(null);
 
-  // Video attachment state (create mode only)
+  // Video attachment state
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [isVideoRecorderOpen, setIsVideoRecorderOpen] = useState(false);
+  const [isPickingFromLibrary, setIsPickingFromLibrary] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
   const isCreateMode = !selectedIssue;
@@ -60,6 +62,23 @@ export default function TextInputComponent({
   const getHttpBaseUrl = (): string => {
     const wsUrl = WebSocketService.getServerUrl(); // e.g. 'ws://1.2.3.4:8081'
     return wsUrl.replace(/^wss?/, 'http');
+  };
+
+  const handlePickFromLibrary = async () => {
+    setIsPickingFromLibrary(true);
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'video',
+        videoQuality: 'high',
+      });
+      if (result.didCancel || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (asset.uri) {
+        setVideoUri(asset.uri);
+      }
+    } finally {
+      setIsPickingFromLibrary(false);
+    }
   };
 
   const handleSubmitWithVideo = async () => {
@@ -374,7 +393,14 @@ export default function TextInputComponent({
 
           {/* Video attachment row — available in both create and update modes */}
           <View style={styles.videoRow}>
-              {videoUri ? (
+              {isPickingFromLibrary ? (
+                <View style={styles.pickingRow}>
+                  <ActivityIndicator size="small" color={theme.primary} />
+                  <Text style={[styles.pickingText, { color: theme.textSecondary }]}>
+                    Attaching video from library…
+                  </Text>
+                </View>
+              ) : videoUri ? (
                 <>
                   <View style={[styles.videoAttachedBadge, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}>
                     <Text style={[styles.videoAttachedText, { color: theme.text }]}>📹 Video attached</Text>
@@ -387,6 +413,13 @@ export default function TextInputComponent({
                     <Text style={[styles.videoActionText, { color: theme.primary }]}>Re-record</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
+                    onPress={handlePickFromLibrary}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pick different video from library">
+                    <Text style={[styles.videoActionText, { color: theme.primary }]}>Library</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
                     onPress={() => setVideoUri(null)}
                     accessible={true}
                     accessibilityRole="button"
@@ -395,15 +428,24 @@ export default function TextInputComponent({
                   </TouchableOpacity>
                 </>
               ) : (
-                <TouchableOpacity
-                  style={[styles.addVideoButton, { borderColor: theme.border, backgroundColor: theme.backgroundSecondary }]}
-                  onPress={() => setIsVideoRecorderOpen(true)}
-                  accessible={true}
-                  accessibilityRole="button"
-                  accessibilityLabel="Add video recording"
-                  accessibilityHint="Opens camera to record a video to attach to this submission">
-                  <Text style={[styles.addVideoText, { color: theme.text }]}>📹  Add Video</Text>
-                </TouchableOpacity>
+                <View style={styles.videoSourceRow}>
+                  <TouchableOpacity
+                    style={[styles.videoSourceButton, { backgroundColor: theme.primary }]}
+                    onPress={() => setIsVideoRecorderOpen(true)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Record a new video">
+                    <Text style={styles.videoSourceButtonText}>📹  Record Video</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.videoSourceButton, { backgroundColor: theme.backgroundSecondary, borderWidth: 1, borderColor: theme.border }]}
+                    onPress={handlePickFromLibrary}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Choose a video from your photo library">
+                    <Text style={[styles.videoSourceButtonText, { color: theme.text }]}>📁 Attach from Library</Text>
+                  </TouchableOpacity>
+                </View>
               )}
             </View>
 
@@ -671,5 +713,30 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     paddingVertical: 4,
+  },
+  pickingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+    flex: 1,
+  },
+  pickingText: {
+    fontSize: 15,
+    fontStyle: 'italic',
+  },
+  videoSourceRow: {
+    gap: 10,
+    flex: 1,
+  },
+  videoSourceButton: {
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  videoSourceButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
