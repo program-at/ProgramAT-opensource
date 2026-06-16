@@ -36,6 +36,17 @@ def test_store_item_detection_and_label_parsing_defaults():
     assert parsed['name'] == 'Store Brand Chips'
     assert parsed['price'] == '$2.49'
 
+    price_related_text = (
+        "WEEKLY SUPER SAVINGS BANNER\n"
+        "ULTRA STORE FAMILY VALUE DEAL\n"
+        "Lucky Charms\n"
+        "$4.00\n"
+        "Member price"
+    )
+    parsed_price_related = tool.parse_product_and_price(price_related_text, 'object_0')
+    assert parsed_price_related['name'] == 'Lucky Charms'
+    assert parsed_price_related['price'] == '$4.00'
+
 
 def test_main_with_mocks():
     image = np.ones((480, 640, 3), dtype=np.uint8) * 255

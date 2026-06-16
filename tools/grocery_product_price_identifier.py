@@ -16,6 +16,7 @@ MAX_PRODUCT_NAME_WORDS = 6
 MAX_STREAMING_WORDS = 15
 MAX_WHOLE_DOLLAR_PRICE = 100.0
 NEAR_PRICE_SCORE_BONUS = 1
+PRICE_RELATION_MAX_DISTANCE = 2
 YOLO_MODEL_CACHE_KEY = 'yolo11n'
 STATE_CACHE_KEY = 'grocery_product_price_state'
 DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview'
@@ -245,6 +246,16 @@ def extract_product_name(text: str) -> Optional[str]:
     if not cleaned_lines:
         return None
 
+    def _looks_like_name_line(line: str) -> bool:
+        words = line.split()
+        if not words:
+            return False
+        if any(char.isalpha() for char in words[0]) is False and len(words) <= 3:
+            return False
+        if '%' in line:
+            return False
+        return any(char.isalpha() for char in line)
+
     def _line_score(entry: tuple[int, str]) -> tuple[int, int, int, int, int]:
         """Score lines lexicographically to prefer descriptive label text over numeric lines."""
         index, line = entry
@@ -260,6 +271,30 @@ def extract_product_name(text: str) -> Optional[str]:
             (index + 1 < len(raw_lines) and PRICE_PATTERN.search(raw_lines[index + 1]))
         ) else 0
         return letters, -digits, near_price_bonus, words, len(line)
+
+    price_line_indexes = [idx for idx, raw_line in enumerate(raw_lines) if PRICE_PATTERN.search(raw_line)]
+    if price_line_indexes:
+        cleaned_by_index = {index: line for index, line in cleaned_lines}
+        related_candidates: List[tuple[int, str, int, int]] = []
+        for price_idx in price_line_indexes:
+            same_line = cleaned_by_index.get(price_idx)
+            if same_line and _looks_like_name_line(same_line):
+                related_candidates.append((price_idx, same_line, 0, 1))
+            for offset in range(1, PRICE_RELATION_MAX_DISTANCE + 1):
+                above = cleaned_by_index.get(price_idx - offset)
+                if above and _looks_like_name_line(above):
+                    related_candidates.append((price_idx - offset, above, offset, 1))
+                below = cleaned_by_index.get(price_idx + offset)
+                if below and _looks_like_name_line(below):
+                    related_candidates.append((price_idx + offset, below, offset, 0))
+        if related_candidates:
+            best = max(
+                related_candidates,
+                key=lambda entry: (entry[3], -entry[2]) + _line_score((entry[0], entry[1]))
+            )[1]
+            LOGGER.debug("Selected OCR product name from price-related label text: %s", best)
+            words = best.split()
+            return ' '.join(words[:MAX_PRODUCT_NAME_WORDS])
 
     best = max(cleaned_lines, key=_line_score)[1]
     words = best.split()
