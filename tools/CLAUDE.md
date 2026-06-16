@@ -46,7 +46,7 @@ def main(image, input_data=None):
   not implement routing, create routers, create capability registries, create
   detector/OCR/LLM wrappers, concrete detector functions, model-backed
   inference, model loading, or provider calls inside a generated tool.
-  Import `llm_call` from `model_router_client` as the existing backend entrypoint.
+  Import `copilot_llm_call` from `model_router_client` as the existing Copilot-routed backend entrypoint.
   Supported categories for new tools include
   `simple_parsing`, `object_detection`, `object_localization`,
   `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`,

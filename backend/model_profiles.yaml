@@ -1,117 +1,148 @@
 models:
-  gemini_flash:
-    model: gemini/gemini-3-flash-preview
-    description: Fast balanced general model for lightweight multimodal work and conversational follow-up.
-    routes:
-      - quick conversational follow-up without heavy reasoning
-      - general text and image assistance
-      - lightweight multimodal analysis when speed matters
-      - fallback for short assistant responses
-    vision: 4
-    coding: 3
-    reasoning: 2
-    latency: 5
-    cost: 5
+  Gemini-2.5-pro:
+    type: general_vlm
+    model: gemini/gemini-2.5-pro
+    latency_ms: 1200
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.736
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.000
+      spatial_relationship: 0.000
+      navigation: 0.672
+      camera_motion: 0.282
+      video: 0.000
 
-  gemini_flash_lite:
-    model: gemini/gemini-2.5-flash-lite
-    description: Lowest-latency Gemini model for simple text parsing, JSON extraction, issue selection, and concise summaries.
-    routes:
-      - parse voice transcripts into structured JSON
-      - extract fields from short user requests
-      - choose or retrieve an issue or tool from a list
-      - read text from signs, labels, documents, and images using OCR
-      - extract OCR text from a camera frame for text to speech
-      - summarize logs concisely for text to speech
-      - classify simple commands with minimal latency
-    vision: 2
-    coding: 2
-    reasoning: 2
-    latency: 5
-    cost: 5
+  GPT-4.1:
+    type: general_vlm
+    model: openai/gpt-4.1
+    latency_ms: 2500
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.698
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.780
+      spatial_relationship: 0.787
+      navigation: 0.558
+      camera_motion: 0.000
+      video: 0.000
 
-  llama:
-    model: groq/llama-3.1-8b-instant
-    description: Fast Groq-hosted lightweight Llama model for generating, modifying, debugging, and explaining code.
-    routes:
-      - generate code for a new assistive technology tool
-      - repair bugs or failing tests in Python or TypeScript
-      - refactor backend or mobile app code
-      - reason through implementation tradeoffs
-      - write detailed code explanations
-    vision: 2
-    coding: 4
-    reasoning: 4
-    latency: 5
-    cost: 5
+  Qwen2.5-VL-72B:
+    type: general_vlm
+    model: openrouter/qwen/qwen2.5-vl-72b-instruct
+    latency_ms: 1800
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.705
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.795
+      spatial_relationship: 0.753
+      navigation: 0.000
+      camera_motion: 0.274
+      video: 0.686
 
-  llava:
-    model: groq/meta-llama/llama-4-scout-17b-16e-instruct
-    description: Groq-hosted lightweight vision-language model for image understanding through the Groq API.
-    routes:
-      - answer simple questions about an image using a Groq vision language model
-      - describe visible objects, layout, and text-adjacent visual context from a camera frame
-      - low-latency visual understanding through Groq
-    vision: 4
-    coding: 2
-    reasoning: 3
-    latency: 5
-    cost: 5
+  Qwen2.5-VL-7B:
+    type: general_vlm
+    model: openrouter/qwen/qwen2.5-vl-7b-instruct
+    latency_ms: 900
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.641
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.770
+      spatial_relationship: 0.684
+      navigation: 0.000
+      camera_motion: 0.259
+      video: 0.628
 
-  gpt4o:
+  Gemini-2.0-flash:
+    type: general_vlm
+    model: gemini/gemini-2.0-flash
+    latency_ms: 700
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.694
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.000
+      spatial_relationship: 0.723
+      navigation: 0.000
+      camera_motion: 0.249
+      video: 0.710
+
+  GPT-4o:
+    type: general_vlm
     model: openai/gpt-4o
-    description: Vision-first multimodal model for image understanding and visual question answering.
-    routes:
-      - answer questions about an image
-      - describe a camera frame or scene
-      - identify objects, clothing, text, layout, or spatial relationships in an image
-      - analyze visual accessibility context
-      - combine image input with a user follow-up question
-    vision: 5
-    coding: 4
-    reasoning: 4
-    latency: 3
-    cost: 1
+    latency_ms: 1200
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.647
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.767
+      spatial_relationship: 0.765
+      navigation: 0.000
+      camera_motion: 0.298
+      video: 0.676
 
-  yolo11_detector:
-    model: local/yolo11n.pt
-    backend: local_detector
-    description: Local YOLO11 detector for pure object detection, localization, and counting over COCO-style object classes.
-    routes:
-      - detect common objects with bounding boxes
-      - localize known object classes in a camera frame
-      - count visible objects using a specialized detector
-      - fast object detection for navigation cues
-    vision: 5
-    coding: 0
-    reasoning: 0
-    latency: 5
-    cost: 5
+  LLaVA-OneVision-7B:
+    type: general_vlm
+    model: openrouter/llava/llava-onevision-qwen2-7b-ov
+    latency_ms: 650
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.619
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.767
+      spatial_relationship: 0.699
+      navigation: 0.000
+      camera_motion: 0.000
+      video: 0.000
 
-  yolo_world_detector:
-    model: local/yolov8s-world.pt
-    backend: local_detector
-    description: Local open-vocabulary YOLOWorld detector for pure detection/localization of labels outside COCO.
-    routes:
-      - detect a named object class that is not in COCO
-      - open vocabulary object localization
-      - localize unusual objects with bounding boxes
-    vision: 5
-    coding: 0
-    reasoning: 1
-    latency: 4
-    cost: 5
+  LLaVA-Video-7B:
+    type: general_vlm
+    model: openrouter/lmms-lab/llava-video-7b-qwen2
+    latency_ms: 750
+    source: benchmark
+    capabilities:
+      general_reasoning: 0.000
+      ocr: 0.000
+      object_detection: 0.000
+      map_web: 0.000
+      spatial_relationship: 0.000
+      navigation: 0.000
+      camera_motion: 0.241
+      video: 0.637
 
-  google_vision_ocr:
-    model: google_vision/text_detection
-    backend: ocr
-    description: Google Cloud Vision OCR for extracting text from signs, labels, documents, menus, and other camera frames.
-    routes:
-      - extract text from an image
-      - read signs labels menus documents and license plates
-      - OCR text detection with bounding boxes
-    vision: 4
-    coding: 0
-    reasoning: 0
-    latency: 4
-    cost: 3
+  YOLO-World:
+    type: specialized_expert
+    latency_ms: 80
+    source: specialized_expert
+    capabilities:
+      general_reasoning: 0.000
+      ocr: 0.000
+      object_detection: 1.000
+      map_web: 0.000
+      spatial_relationship: 0.000
+      navigation: 0.000
+      camera_motion: 0.000
+      video: 0.000
+
+  GoogleVisionOCR:
+    type: specialized_expert
+    latency_ms: 300
+    source: specialized_expert
+    capabilities:
+      general_reasoning: 0.000
+      ocr: 1.000
+      object_detection: 0.000
+      map_web: 0.000
+      spatial_relationship: 0.000
+      navigation: 0.000
+      camera_motion: 0.000
+      video: 0.000

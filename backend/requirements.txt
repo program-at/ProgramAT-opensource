@@ -12,5 +12,6 @@ PyYAML>=6.0.0
 pytesseract>=0.3.0
 scipy
 scikit-learn
+sentence-transformers
 ultralytics>=8.0.0
 google-cloud-secret-manager

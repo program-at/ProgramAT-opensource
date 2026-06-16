@@ -31,28 +31,33 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `ROUTING_MODE`: Optional model routing mode. Defaults to `semantic`, which compares the request against each model's `routes` in `model_profiles.yaml`. Legacy options are `fixed` and `score`.
+- `SYSTEM_LLM_MODEL`: Fixed infrastructure model used for parsing, template filling, issue generation, and other ProgramAT internal LLM work. Defaults to `gemini/gemini-2.0-flash-preview`.
 
-- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`.
-  - If a provider-specific model is selected, ensure the corresponding provider API key is present.
-- Code-generation routing uses Groq's lightweight Llama profile by default, so keep `GROQ_API_KEY` set. Override defaults with `LLAMA_MODEL` or `LLAVA_MODEL`.
+- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `MISTRAL_API_KEY`.
+  - System calls use the fixed system model.
+  - Copilot/tool-facing calls use the semantic router and the selected profile's `model` value from `backend/model_profiles.yaml`.
 - Local Ollama models remain optional. Set `OLLAMA_API_BASE` if you override a routed model to an Ollama model and your Ollama server is not at `http://localhost:11434`.
 
-### Semantic Model Routing
+### LLM Interfaces
 
-The backend routes LLM calls directly to model profiles. Each profile declares what that model is good at:
+ProgramAT separates fixed infrastructure LLM calls from Copilot-routed model selection.
+
+Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses the fixed `SYSTEM_LLM_MODEL` configuration and bypasses the semantic router.
+
+Copilot/tool-facing model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. This path uses semantic capability matching, YAML model profiles, and latency-aware scoring:
 
 ```yaml
 models:
-  gpt4o:
-    model: openai/gpt-4o
-    description: Vision-first multimodal model for image understanding.
-    routes:
-      - answer questions about an image
-      - describe a camera frame or scene
+  Gemini-2.5-pro:
+    type: general_vlm
+    model: gemini/gemini-2.5-pro
+    latency_ms: 1200
+    source: benchmark
+    capabilities:
+      general_reasoning: 1.0
 ```
 
-Add or edit `routes` under a model to change when that model is selected. Product code should call `llm_call(...)` and let the router pick the model.
+Add or edit `backend/model_profiles.yaml` and `backend/capability_profiles.yaml` to change Copilot routing behavior.
 
 ### Optional
 

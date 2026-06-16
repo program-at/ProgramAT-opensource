@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 # Load .env before importing modules that read routing/provider settings at import time.
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
-from model_router import detect_objects, llm_call, ocr_call, vision_call
+from model_router import system_llm_call
 from litellm_utils import (
     extract_text,
 )
@@ -50,12 +50,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from door_detection import main as door_recognition_main
-from model_router_client import (
-    routed_llm_call,
-    routed_object_detection,
-    routed_ocr_call,
-    routed_vision_call,
-)
+from model_router_client import copilot_llm_call as tool_copilot_llm_call
 
 # Configure logging
 logging.basicConfig(
@@ -520,14 +515,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
             'exec_globals_base': {
                 '__builtins__': __builtins__,
                 '__file__': str(Path(__file__).parent.parent / 'tools' / 'dynamic_tool.py'),
-                'llm_call': llm_call,
-                'vision_call': vision_call,
-                'detect_objects': detect_objects,
-                'ocr_call': ocr_call,
-                'routed_llm_call': routed_llm_call,
-                'routed_vision_call': routed_vision_call,
-                'routed_object_detection': routed_object_detection,
-                'routed_ocr_call': routed_ocr_call,
+                'copilot_llm_call': tool_copilot_llm_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -2976,7 +2964,7 @@ Return ONLY a valid JSON object:
   "confidence": <0.0 to 1.0>
 }}"""
 
-        response = llm_call(
+        response = system_llm_call(
             capability='tool_retrieval',
             messages=[{'role': 'user', 'content': prompt}],
         )
@@ -3225,7 +3213,7 @@ Return format:
   "missing_fields": ["field1", "field2"]  // Only truly missing/empty important fields. Use [] if all important fields have content.
 }}"""
 
-        response = llm_call(
+        response = system_llm_call(
             capability='text_parse',
             messages=[{'role': 'user', 'content': prompt}],
         )
@@ -5025,14 +5013,7 @@ async def handle_client(websocket):
                             exec_globals = {
                                 '__builtins__': __builtins__,
                                 '__file__': str(TOOLS_DIR / f'{Path(tool_name).name}.py'),
-                                'llm_call': llm_call,
-                                'vision_call': vision_call,
-                                'detect_objects': detect_objects,
-                                'ocr_call': ocr_call,
-                                'routed_llm_call': routed_llm_call,
-                                'routed_vision_call': routed_vision_call,
-                                'routed_object_detection': routed_object_detection,
-                                'routed_ocr_call': routed_ocr_call,
+                                'copilot_llm_call': tool_copilot_llm_call,
                                 'input_data': parsed_input,  # Use parsed input (dict or string)
                                 'image': frame_image,  # OpenCV image (numpy array)
                                 'image_base64': frame_base64,  # Base64 string
@@ -5318,9 +5299,9 @@ async def handle_client(websocket):
                             # Create prompt for follow-up question
                             prompt = f"You are analyzing this image. The user is asking a follow-up question: {question}\n\nPlease provide a helpful and concise answer based on what you can see in the image."
                             
-                            # Send the follow-up through LiteLLM using the task router
+                            # Send the follow-up through the fixed system LLM path.
                             try:
-                                response = llm_call(
+                                response = system_llm_call(
                                     capability='image_analysis',
                                     messages=[{'role': 'user', 'content': prompt}],
                                     images=[pil_image],
@@ -5328,7 +5309,7 @@ async def handle_client(websocket):
                                 answer = extract_text(response)
 
                                 logger.info(f"FOLLOW-UP: Generated answer length: {len(answer)}")
-                                logger.info("FOLLOW-UP: Successfully routed image+text through model_router")
+                                logger.info("FOLLOW-UP: Successfully answered image+text through system LLM")
                                 
                                 await websocket.send(json.dumps({
                                     'type': 'follow_up_response',

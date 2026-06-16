@@ -4,7 +4,7 @@ Gemini-based summarization for Copilot session logs.
 import logging
 from typing import List, Dict
 from litellm_utils import extract_text
-from model_router import llm_call
+from model_router import system_llm_call
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ Log entries:
 Summary (1-3 sentences describing what was accomplished):"""
     
     try:
-        response = llm_call(
+        response = system_llm_call(
             capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
         )
@@ -110,7 +110,7 @@ Log entries:
 Summary (one sentence only):"""
     
     try:
-        response = llm_call(
+        response = system_llm_call(
             capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
         )

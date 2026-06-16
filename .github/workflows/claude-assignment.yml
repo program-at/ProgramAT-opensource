@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that. For any LLM or VLM operation, generated tools must call the existing backend model router through the existing client with `from model_router_client import llm_call`, then `llm_call(task_category=..., messages=..., images=..., metadata=...)`. Do not implement detection, OCR, VLM, LLM, model loading, provider calls, new wrapper clients, or routing logic inside generated tool files. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that. For any LLM or VLM operation, generated tools must call the existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`, then `copilot_llm_call(task_category=..., messages=..., images=..., metadata=...)`. Do not implement detection, OCR, VLM, LLM, model loading, provider calls, new wrapper clients, or routing logic inside generated tool files. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -67,7 +67,7 @@ jobs:
             - Write the code for this tool inside the tools folder.
             - Assume the tool implements one user-facing task.
             - Do not plan subtasks or chain multiple model calls unless the user explicitly asks for that.
-            - For any LLM or VLM operation, call the existing backend model router through the existing client with `from model_router_client import llm_call`, then `llm_call(task_category=..., messages=..., images=..., metadata=...)`.
+            - For any LLM or VLM operation, call the existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`, then `copilot_llm_call(task_category=..., messages=..., images=..., metadata=...)`.
             - Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files.
             - If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool.
             - Follow the existing repository structure and style.

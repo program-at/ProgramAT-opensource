@@ -50,12 +50,12 @@ def detect_vehicles(image):
         path = self._write_temp_tool(
             "good_generated_tool.py",
             """
-from model_router_client import llm_call
+from model_router_client import copilot_llm_call
 
 TASK_CATEGORY = "visual_reasoning"
 
 def main(image, input_data=None):
-    return llm_call(
+    return copilot_llm_call(
         task_category=TASK_CATEGORY,
         messages=[{"role": "user", "content": "Describe the relevant scene details."}],
         images=[image],

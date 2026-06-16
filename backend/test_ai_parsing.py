@@ -16,7 +16,7 @@ class TestIssueTemplateGuidance(unittest.TestCase):
 
         self.assertIn("one user-facing task", template)
         self.assertIn("Do not plan subtasks", template)
-        self.assertIn("existing backend model router through the existing client with `from model_router_client import llm_call`", template)
+        self.assertIn("existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`", template)
         self.assertIn("object_localization", template)
         self.assertNotIn("Capability Pipeline", template)
         self.assertNotIn("Outputs from earlier stages", template)

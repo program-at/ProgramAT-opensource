@@ -1,9 +1,8 @@
-"""Tests for semantic model routing."""
+"""Tests for the semantic capability router."""
 
-import unittest
 from pathlib import Path
 import sys
-from types import SimpleNamespace
+import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -11,187 +10,169 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import model_router
 
 
-class TestSemanticModelRouter(unittest.TestCase):
-    def setUp(self):
-        self.original_mode = model_router.ROUTING_MODE
-        model_router.ROUTING_MODE = "semantic"
+class TestSemanticCapabilityRouter(unittest.TestCase):
+    def test_loads_profiles_and_capabilities_from_yaml(self):
+        capabilities = model_router.load_capability_descriptions()
+        profiles = model_router.load_model_profiles()
 
-    def tearDown(self):
-        model_router.ROUTING_MODE = self.original_mode
-
-    def test_routes_visual_requests_directly_to_vision_model(self):
-        route = model_router.get_route_info(
-            "image_analysis",
-            {"route_text": "answer a user's follow-up question about an image from the camera frame"},
+        self.assertIn("object_detection", capabilities)
+        self.assertIn("ocr", capabilities)
+        self.assertEqual(
+            capabilities["map_web"],
+            [
+                "Interpret a map or route diagram.",
+                "Read charts, tables, timetables, and schedules.",
+                "Understand webpage and app layouts.",
+                "Describe structured visual layouts such as calendars and departure boards.",
+            ],
         )
+        self.assertIn("YOLO-World", {profile.name for profile in profiles})
+        self.assertIn("GoogleVisionOCR", {profile.name for profile in profiles})
 
-        self.assertEqual(route["selected_profile"], "gpt4o")
+    def test_benchmark_profiles_use_benchmark_max_scaling(self):
+        profiles = {profile.name: profile for profile in model_router.load_model_profiles()}
 
-    def test_routes_code_requests_directly_to_coding_model(self):
-        route = model_router.get_route_info(
-            "code_generation",
-            {"route_text": "generate Python code for a new assistive technology tool and fix failing tests"},
-        )
+        self.assertEqual(profiles["LLaVA-OneVision-7B"].capabilities["ocr"], 0.622)
+        self.assertEqual(profiles["Qwen2.5-VL-7B"].capabilities["ocr"], 0.888)
+        self.assertEqual(profiles["Gemini-2.5-pro"].capabilities["general_reasoning"], 0.736)
 
-        self.assertEqual(route["selected_profile"], "llama")
-        self.assertEqual(route["selected_model"], "groq/llama-3.1-8b-instant")
+    def test_compute_capability_weights_uses_task_text(self):
+        weights = model_router.compute_capability_weights("Locate a specific item in the scene.")
 
-    def test_routes_text_json_requests_directly_to_fast_lite_model(self):
-        route = model_router.get_route_info(
-            "text_parse",
-            {"route_text": "parse a voice transcript into structured JSON fields for an issue"},
-        )
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertEqual(max(weights, key=weights.get), "object_detection")
+        self.assertGreater(weights["object_detection"], weights["ocr"])
 
-        self.assertEqual(route["selected_profile"], "gemini_flash_lite")
-        self.assertEqual(route["selected_model"], "gemini/gemini-2.5-flash-lite")
+    def test_compute_capability_weights_uses_top_two_average(self):
+        descriptions = {
+            "ocr": ["ocr one", "ocr two", "ocr three"],
+            "object_detection": ["object one"],
+        }
 
-    def test_routes_summaries_directly_to_fast_lite_model(self):
-        route = model_router.get_route_info(
-            "summarization",
-            {"route_text": "summarize Copilot logs concisely for text to speech"},
-        )
+        with patch.object(model_router, "_capability_similarities", return_value={
+            "ocr": [0.95, 0.90, 0.10],
+            "object_detection": [0.80],
+        }):
+            weights = model_router.compute_capability_weights("Read the label.", descriptions)
 
-        self.assertEqual(route["selected_profile"], "gemini_flash_lite")
+        self.assertGreater(weights["ocr"], weights["object_detection"])
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
 
-    def test_routes_new_task_categories(self):
-        simple_route = model_router.get_route_info(
-            "simple_parsing",
-            {"route_text": "classify a short command and extract fields"},
-        )
-        ocr_route = model_router.get_route_info(
-            "OCR",
-            {"route_text": "read text from a sign in the camera frame"},
-        )
-        detection_route = model_router.get_route_info(
-            "object_detection",
-            {"labels": ["car"], "route_text": "detect cars with bounding boxes"},
-        )
-        world_route = model_router.get_route_info(
-            "object_localization",
-            {"labels": ["door handle"], "route_text": "localize a door handle"},
-        )
-        visual_reasoning_route = model_router.get_route_info(
-            "visual_reasoning",
-            {"route_text": "reason about the spatial layout of objects in an image"},
-        )
+    def test_compute_capability_weights_applies_keyword_boosts(self):
+        descriptions = {
+            "ocr": ["ocr"],
+            "object_detection": ["object"],
+            "navigation": ["navigation"],
+            "spatial_relationship": ["spatial"],
+            "general_reasoning": ["general"],
+        }
 
-        self.assertEqual(simple_route["task_category"], "simple_parsing")
-        self.assertEqual(simple_route["selected_profile"], "gemini_flash_lite")
-        self.assertEqual(ocr_route["task_category"], "ocr")
-        self.assertEqual(ocr_route["selected_profile"], "google_vision_ocr")
-        self.assertEqual(detection_route["selected_profile"], "yolo11_detector")
-        self.assertEqual(world_route["selected_profile"], "yolo_world_detector")
-        self.assertEqual(visual_reasoning_route["task_category"], "visual_reasoning")
-        self.assertEqual(visual_reasoning_route["selected_profile"], "gpt4o")
-
-    def test_llm_call_accepts_task_alias(self):
-        fake_litellm = SimpleNamespace()
-
-        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
-             patch.object(model_router, "litellm", fake_litellm), \
-             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
-            model_router.llm_call(
-                task="visual_understanding",
-                messages=[{"role": "user", "content": "Describe the clothing."}],
-                metadata={
-                    "tool_name": "clothing_recognition",
-                    "route_text": "identify clothing in a camera frame",
-                },
+        with patch.object(model_router, "_capability_similarities", return_value={
+            "ocr": [0.20],
+            "object_detection": [0.20],
+            "navigation": [0.20],
+            "spatial_relationship": [0.20],
+            "general_reasoning": [0.20],
+        }):
+            weights = model_router.compute_capability_weights(
+                "Read the sign and go to the exit on the left.",
+                descriptions,
             )
 
-        self.assertEqual(completion.call_args.kwargs["model"], "openai/gpt-4o")
+        self.assertEqual(max(weights, key=weights.get), "ocr")
+        self.assertGreater(weights["navigation"], weights["general_reasoning"])
+        self.assertGreater(weights["spatial_relationship"], weights["general_reasoning"])
 
-    def test_llm_call_encodes_numpy_ndarray_image(self):
-        try:
-            import numpy as np
-        except ImportError:
-            self.skipTest("numpy is not installed")
-
-        fake_litellm = SimpleNamespace()
-        image = np.zeros((2, 2, 3), dtype=np.uint8)
-        image[0, 0] = [255, 0, 0]
-
-        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
-             patch.object(model_router, "litellm", fake_litellm), \
-             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
-            model_router.llm_call(
-                task_category="visual_understanding",
-                messages=[{"role": "user", "content": "Describe this image."}],
-                images=[image],
-                metadata={
-                    "tool_name": "ndarray_image_test",
-                    "route_text": "describe a camera frame",
-                },
-            )
-
-        content = completion.call_args.kwargs["messages"][-1]["content"]
-        image_part = next(part for part in content if part.get("type") == "image_url")
-        self.assertTrue(image_part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
-
-    def test_llm_call_falls_back_from_non_llm_backend(self):
-        fake_litellm = SimpleNamespace()
-
-        with patch.object(model_router, "LITELLM_AVAILABLE", True), \
-             patch.object(model_router, "litellm", fake_litellm), \
-             patch.object(fake_litellm, "completion", return_value={"choices": []}, create=True) as completion:
-            model_router.llm_call(
-                task="ocr",
-                messages=[{"role": "user", "content": "Clean up OCR text."}],
-                metadata={"tool_name": "ocr_cleanup"},
-            )
-
-        self.assertEqual(completion.call_args.kwargs["model"], "gemini/gemini-2.5-flash-lite")
-
-    def test_vision_call_routes_images_to_llm_call(self):
-        with patch.object(model_router, "llm_call", return_value={"choices": []}) as llm_call:
-            model_router.vision_call(
-                task="visual_reasoning",
-                image="abc123",
-                prompt="Find the correct vehicle.",
-                metadata={"tool_name": "uber_finder"},
-            )
-
-        self.assertEqual(llm_call.call_args.kwargs["task"], "visual_reasoning")
-        self.assertEqual(llm_call.call_args.kwargs["images"], ["abc123"])
-
-    def test_detect_objects_routes_to_detector_backend(self):
-        with patch.object(model_router, "_run_ultralytics_detector", return_value=[]) as run_detector:
-            result = model_router.detect_objects(
-                task="object_detection",
-                image=object(),
-                labels=["car"],
-                metadata={"tool_name": "car_counter"},
-            )
-
-        self.assertEqual(result, [])
-        self.assertEqual(run_detector.call_args.kwargs["model_name"], "local/yolo11n.pt")
-
-    def test_unknown_category_reports_fallback_model(self):
-        original_min_score = model_router.ROUTING_MIN_SCORE
-        model_router.ROUTING_MIN_SCORE = 1.0
-        try:
-            route = model_router.get_route_info(
-                "unknown_category",
-                {"route_text": "something unrelated"},
-            )
-        finally:
-            model_router.ROUTING_MIN_SCORE = original_min_score
-
-        self.assertEqual(route["fallback_profile"], "gemini_flash")
-        self.assertEqual(route["fallback_model"], "gemini/gemini-3-flash-preview")
-        self.assertIsNotNone(route["fallback_reason"])
-
-    def test_explicit_model_override_still_wins(self):
-        route = model_router.get_route_info(
-            "image_analysis",
-            {
-                "requested_model": "groq/meta-llama/llama-4-scout-17b-16e-instruct",
-                "route_text": "answer a visual question about an image",
-            },
+    def test_score_model_treats_missing_capabilities_as_zero(self):
+        profile = model_router.ModelProfile(
+            name="narrow",
+            type="specialized_expert",
+            latency_ms=100,
+            source="test",
+            capabilities={"object_detection": 1.0},
         )
 
-        self.assertEqual(route["selected_profile"], "llava")
-        self.assertEqual(route["selected_model"], "groq/meta-llama/llama-4-scout-17b-16e-instruct")
+        score = model_router.score_model(profile, {"object_detection": 0.4, "ocr": 0.6})
+
+        self.assertEqual(score, 0.4)
+
+    def test_rank_models_prefers_quality_before_latency(self):
+        descriptions = {"ocr": ["Read text from an image."]}
+        profiles = [
+            model_router.ModelProfile("strong_ocr", "general_vlm", 1000, "test", {"ocr": 1.0}),
+            model_router.ModelProfile("weak_fast_ocr", "general_vlm", 10, "test", {"ocr": 0.7}),
+        ]
+
+        result = model_router.rank_models("Read text from an image.", profiles, descriptions)
+
+        self.assertEqual(result["selected_model"], "strong_ocr")
+        self.assertGreater(result["selected"]["capability_score"], 0)
+
+    def test_rank_models_uses_latency_when_capability_is_equal(self):
+        descriptions = {"ocr": ["Read text from an image."]}
+        profiles = [
+            model_router.ModelProfile("slow_ocr", "general_vlm", 2000, "test", {"ocr": 0.9}),
+            model_router.ModelProfile("fast_ocr", "general_vlm", 100, "test", {"ocr": 0.9}),
+        ]
+
+        result = model_router.rank_models("Read text from an image.", profiles, descriptions)
+
+        self.assertEqual(result["selected_model"], "fast_ocr")
+
+    def test_default_routing_examples(self):
+        examples = {
+            "Read the medicine bottle label.": "Qwen2.5-VL-7B",
+            "What does this sign say?": "GoogleVisionOCR",
+            "Help me find my cup.": "YOLO-World",
+            "Locate the passenger door handle.": "YOLO-World",
+            "Describe what is happening in front of me.": "Gemini-2.0-flash",
+            "Guide me to the building entrance.": "Gemini-2.5-pro",
+            "Explain the relationship between the chair and the table.": "Gemini-2.0-flash",
+            "Analyze this video.": "Qwen2.5-VL-7B",
+        }
+
+        for task, selected_model in examples.items():
+            with self.subTest(task=task):
+                result = model_router.select_model(task)
+                self.assertEqual(result["selected_model"], selected_model)
+                self.assertAlmostEqual(sum(result["capability_weights"].values()), 1.0)
+                self.assertGreaterEqual(len(result["ranking"]), 3)
+                self.assertEqual(result["ranking"][0]["model"], selected_model)
+
+    def test_system_llm_call_uses_fixed_model_without_router(self):
+        with patch.object(model_router, "call_model", return_value={"choices": []}) as call_model, \
+             patch.object(model_router, "rank_models") as rank_models:
+            model_router.system_llm_call(messages=[{"role": "user", "content": "Parse this."}])
+
+        rank_models.assert_not_called()
+        self.assertEqual(call_model.call_args.args[0], model_router.SYSTEM_MODEL)
+
+    def test_copilot_llm_call_routes_then_calls_selected_profile_model(self):
+        profiles = [
+            model_router.ModelProfile(
+                name="FastCopilot",
+                type="general_vlm",
+                latency_ms=100,
+                source="test",
+                capabilities={"general_reasoning": 1.0},
+                model="gemini/gemini-2.0-flash",
+            )
+        ]
+        route = {
+            "selected_model": "FastCopilot",
+            "capability_weights": {"general_reasoning": 1.0},
+        }
+
+        with patch.object(model_router, "load_model_profiles", return_value=profiles), \
+             patch.object(model_router, "rank_models", return_value=route) as rank_models, \
+             patch.object(model_router, "call_model", return_value={"choices": []}) as call_model:
+            model_router.copilot_llm_call(
+                task="code_generation",
+                messages=[{"role": "user", "content": "Build a tool."}],
+            )
+
+        rank_models.assert_called_once()
+        self.assertEqual(call_model.call_args.args[0], "gemini/gemini-2.0-flash")
 
 
 if __name__ == "__main__":

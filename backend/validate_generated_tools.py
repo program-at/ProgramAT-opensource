@@ -98,7 +98,7 @@ def main(argv: List[str] | None = None) -> int:
 
     failures = validate_files(paths)
     if failures:
-        print("Generated tools must use from model_router_client import llm_call for LLM/VLM operations.")
+        print("Generated tools must use from model_router_client import copilot_llm_call for LLM/VLM operations.")
         print("Do not implement detection, OCR, VLM, LLM, model loading, provider calls, or model discovery in tool files.")
         print()
         for failure in failures:

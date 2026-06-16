@@ -1,78 +1,55 @@
 capabilities:
-  text_parse:
-    vision: 0
-    coding: 0
-    reasoning: 1
-    latency: 5
-
-  simple_parsing:
-    vision: 0
-    coding: 0
-    reasoning: 1
-    latency: 5
-
-  tool_retrieval:
-    vision: 0
-    coding: 0
-    reasoning: 2
-    latency: 5
-
-  image_analysis:
-    vision: 5
-    coding: 0
-    reasoning: 2
-    latency: 4
-
-  visual_understanding:
-    vision: 5
-    coding: 0
-    reasoning: 2
-    latency: 4
-
-  visual_reasoning:
-    vision: 5
-    coding: 0
-    reasoning: 4
-    latency: 3
+  general_reasoning:
+    - "Answer questions about a scene."
+    - "Explain what is happening."
+    - "Infer information from visual context."
+    - "Perform visual reasoning."
 
   ocr:
-    vision: 4
-    coding: 0
-    reasoning: 1
-    latency: 4
+    - "Read text from an image."
+    - "Tell me what this sign says."
+    - "What does this sign say?"
+    - "Read the text on a sign."
+    - "Tell me what the sign says."
+    - "Extract written information."
+    - "Read a label or document."
+    - "Read the medicine bottle label." 
+    - "Read medicine bottle label text."
+    - "Read a prescription or medication label."
 
   object_detection:
-    vision: 5
-    coding: 0
-    reasoning: 0
-    latency: 5
+    - "Help me find an object."
+    - "Locate a specific item."
+    - "Find a target object."
+    - "Find a cup, handle, door, or object in the scene."
+    - "Help me find my cup."
 
-  object_localization:
-    vision: 5
-    coding: 0
-    reasoning: 1
-    latency: 5
+  map_web:
+    - "Interpret a map or route diagram."
+    - "Read charts, tables, timetables, and schedules."
+    - "Understand webpage and app layouts."
+    - "Describe structured visual layouts such as calendars and departure boards."
 
-  summarization:
-    vision: 0
-    coding: 0
-    reasoning: 2
-    latency: 5
+  spatial_relationship:
+    - "Describe where objects are located."
+    - "Reason about relative positions."
+    - "Explain left, right, front, and behind."
+    - "Understand distances between objects."
+    - "Explain the relationship between objects."
 
-  code_generation:
-    vision: 0
-    coding: 5
-    reasoning: 4
-    latency: 2
+  navigation:
+    - "Guide me toward a destination."
+    - "Help me move through an environment."
+    - "Provide route assistance."
+    - "Navigate to a destination."
+    - "Guide me to an entrance."
 
-  code_repair:
-    vision: 0
-    coding: 5
-    reasoning: 5
-    latency: 2
+  camera_motion:
+    - "Understand camera movement."
+    - "Reason about viewpoint changes."
+    - "Analyze motion from camera movement."
 
-  general_reasoning:
-    vision: 1
-    coding: 1
-    reasoning: 4
-    latency: 3
+  video:
+    - "Analyze video content."
+    - "Understand events across frames."
+    - "Reason over temporal visual information."
