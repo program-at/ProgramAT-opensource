@@ -107,7 +107,7 @@ def test_main_uses_language_model_assist_for_label_fallback_name():
         tool.assist_product_name_with_language_model = original_assist
 
 
-def test_main_skips_language_model_assist_when_ocr_name_exists():
+def test_main_uses_language_model_assist_when_ocr_name_exists():
     image = np.ones((480, 640, 3), dtype=np.uint8) * 255
 
     if 'yolo_model_cache' not in tool.__dict__:
@@ -133,15 +133,15 @@ def test_main_skips_language_model_assist_when_ocr_name_exists():
 
         def _assist(**_kwargs):
             assist_called.append(True)
-            return "Should Not Be Used"
+            return "Kirkland Spring Water"
 
         tool.assist_product_name_with_language_model = _assist
 
         result = tool.main(image, {'track_mode': False, 'use_language_model': True})
         assert isinstance(result, dict)
-        assert "Kirkland Water" in result['text']
+        assert "Kirkland Spring Water" in result['text']
         assert "$1.99" in result['text']
-        assert not assist_called
+        assert assist_called
     finally:
         tool.detect_products = original_detect
         tool.extract_text_from_region = original_extract
@@ -300,7 +300,7 @@ if __name__ == '__main__':
     test_store_item_detection_and_label_parsing_defaults()
     test_main_with_mocks()
     test_main_uses_language_model_assist_for_label_fallback_name()
-    test_main_skips_language_model_assist_when_ocr_name_exists()
+    test_main_uses_language_model_assist_when_ocr_name_exists()
     test_main_uses_language_model_assist_for_non_coco_fallback_label()
     test_assist_product_name_with_language_model_parses_response()
     test_assist_product_name_with_language_model_runs_without_ocr_text()

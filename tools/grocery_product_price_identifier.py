@@ -296,6 +296,7 @@ def assist_product_name_with_language_model(
 
     prompt = (
         "You are helping identify a retail item from camera OCR and image-detected label. "
+        "Use both signals and infer the most likely product/item, not just OCR transcription. "
         "Return only a concise product name (max 6 words). "
         f"Image label: {detection_label}\n"
         f"OCR text: {ocr_text or 'none'}\n"
@@ -405,8 +406,10 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     LOGGER.info("Cropped focus region for OCR (w=%d, h=%d)", region.shape[1], region.shape[0])
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
-    if parsed.get('name') and use_language_model and not parsed.get('name_from_ocr'):
-        if _is_coco_class_name(focus['class_name']):
+    if parsed.get('name') and use_language_model:
+        if parsed.get('name_from_ocr'):
+            LOGGER.info("Using language-model assist to identify/refine product from OCR + image label")
+        elif _is_coco_class_name(focus['class_name']):
             LOGGER.info("Using language-model assist with COCO fallback label '%s'", focus['class_name'])
         else:
             LOGGER.info(
@@ -421,8 +424,6 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             model=llm_model,
             timeout_seconds=llm_timeout_seconds
         )
-    elif parsed.get('name') and use_language_model:
-        LOGGER.info("Skipping language-model assist because OCR already provided product name")
     LOGGER.info("Parsed product result name=%s price=%s", parsed.get('name'), parsed.get('price'))
 
     message = _build_message(parsed['name'] or focus['class_name'], parsed['price'], track_mode)
