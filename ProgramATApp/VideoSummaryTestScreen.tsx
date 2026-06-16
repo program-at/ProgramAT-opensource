@@ -1,7 +1,7 @@
 /**
  * VideoSummaryTestScreen
- * Developer testing screen: record a video, send it to the server, and display
- * the Gemini summary — without creating a GitHub issue.
+ * Developer testing screen: record a video OR pick one from the library, send it
+ * to the server, and display the Gemini summary — without creating a GitHub issue.
  * Accessed from Settings.
  */
 
@@ -15,6 +15,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { launchImageLibrary } from 'react-native-image-picker';
 import { useTheme } from './ThemeContext';
 import WebSocketService from './WebSocketService';
 import VideoRecorderModal from './VideoRecorderModal';
@@ -26,10 +27,33 @@ interface VideoSummaryTestScreenProps {
 export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScreenProps) {
   const { theme } = useTheme();
   const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [videoSource, setVideoSource] = useState<'recorded' | 'library' | null>(null);
   const [isRecorderOpen, setIsRecorderOpen] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const clearVideo = () => {
+    setVideoUri(null);
+    setVideoSource(null);
+    setSummary(null);
+    setErrorMsg(null);
+  };
+
+  const handlePickFromLibrary = async () => {
+    const result = await launchImageLibrary({
+      mediaType: 'video',
+      videoQuality: 'high',
+    });
+    if (result.didCancel || !result.assets?.length) return;
+    const asset = result.assets[0];
+    if (asset.uri) {
+      setVideoUri(asset.uri);
+      setVideoSource('library');
+      setSummary(null);
+      setErrorMsg(null);
+    }
+  };
 
   const getHttpBase = (): string =>
     WebSocketService.getServerUrl().replace(/^wss?/, 'http');
@@ -96,13 +120,15 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
 
       <ScrollView style={styles.body} contentContainerStyle={styles.bodyContent}>
 
-        {/* Step 1 — Record */}
+        {/* Step 1 — Add Video */}
         <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-          <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>Step 1 — Record</Text>
+          <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>Step 1 — Add Video</Text>
 
           {videoUri ? (
             <View style={styles.videoReadyRow}>
-              <Text style={[styles.videoReadyText, { color: theme.text }]}>📹  Video ready</Text>
+              <Text style={[styles.videoReadyText, { color: theme.text }]}>
+                {videoSource === 'library' ? '📂  Library video ready' : '📹  Recorded video ready'}
+              </Text>
               <TouchableOpacity
                 onPress={() => setIsRecorderOpen(true)}
                 accessible={true}
@@ -111,7 +137,14 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
                 <Text style={[styles.actionLink, { color: theme.primary }]}>Re-record</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                onPress={() => { setVideoUri(null); setSummary(null); setErrorMsg(null); }}
+                onPress={handlePickFromLibrary}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Pick different video from library">
+                <Text style={[styles.actionLink, { color: theme.primary }]}>Library</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={clearVideo}
                 accessible={true}
                 accessibilityRole="button"
                 accessibilityLabel="Remove video">
@@ -119,15 +152,26 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
               </TouchableOpacity>
             </View>
           ) : (
-            <TouchableOpacity
-              style={[styles.recordButton, { backgroundColor: theme.primary }]}
-              onPress={() => setIsRecorderOpen(true)}
-              accessible={true}
-              accessibilityRole="button"
-              accessibilityLabel="Record a video"
-              accessibilityHint="Opens the camera to record a test video">
-              <Text style={styles.recordButtonText}>📹  Record Video</Text>
-            </TouchableOpacity>
+            <View style={styles.sourceRow}>
+              <TouchableOpacity
+                style={[styles.sourceButton, { backgroundColor: theme.primary }]}
+                onPress={() => setIsRecorderOpen(true)}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Record a new video"
+                accessibilityHint="Opens the camera to record a test video">
+                <Text style={styles.sourceButtonText}>📹  Record</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.sourceButton, { backgroundColor: theme.backgroundSecondary, borderWidth: 1, borderColor: theme.border }]}
+                onPress={handlePickFromLibrary}
+                accessible={true}
+                accessibilityRole="button"
+                accessibilityLabel="Choose a video from your photo library"
+                accessibilityHint="Opens your photo library to select an existing video">
+                <Text style={[styles.sourceButtonText, { color: theme.text }]}>📂  Choose from Library</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -267,6 +311,19 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   recordButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  sourceRow: {
+    gap: 10,
+  },
+  sourceButton: {
+    paddingVertical: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  sourceButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
