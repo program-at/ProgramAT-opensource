@@ -29,6 +29,7 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
   const [videoUri, setVideoUri] = useState<string | null>(null);
   const [videoSource, setVideoSource] = useState<'recorded' | 'library' | null>(null);
   const [isRecorderOpen, setIsRecorderOpen] = useState(false);
+  const [isPickingFromLibrary, setIsPickingFromLibrary] = useState(false);
   const [isTesting, setIsTesting] = useState(false);
   const [summary, setSummary] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -41,17 +42,22 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
   };
 
   const handlePickFromLibrary = async () => {
-    const result = await launchImageLibrary({
-      mediaType: 'video',
-      videoQuality: 'high',
-    });
-    if (result.didCancel || !result.assets?.length) return;
-    const asset = result.assets[0];
-    if (asset.uri) {
-      setVideoUri(asset.uri);
-      setVideoSource('library');
-      setSummary(null);
-      setErrorMsg(null);
+    setIsPickingFromLibrary(true);
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'video',
+        videoQuality: 'high',
+      });
+      if (result.didCancel || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (asset.uri) {
+        setVideoUri(asset.uri);
+        setVideoSource('library');
+        setSummary(null);
+        setErrorMsg(null);
+      }
+    } finally {
+      setIsPickingFromLibrary(false);
     }
   };
 
@@ -124,7 +130,14 @@ export default function VideoSummaryTestScreen({ onBack }: VideoSummaryTestScree
         <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
           <Text style={[styles.stepLabel, { color: theme.textSecondary }]}>Step 1 — Add Video</Text>
 
-          {videoUri ? (
+          {isPickingFromLibrary ? (
+            <View style={styles.pickingRow}>
+              <ActivityIndicator size="small" color={theme.primary} />
+              <Text style={[styles.pickingText, { color: theme.textSecondary }]}>
+                Attaching video from library…
+              </Text>
+            </View>
+          ) : videoUri ? (
             <View style={styles.videoReadyRow}>
               <Text style={[styles.videoReadyText, { color: theme.text }]}>
                 {videoSource === 'library' ? '📂  Library video ready' : '📹  Recorded video ready'}
@@ -327,6 +340,16 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  pickingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+  },
+  pickingText: {
+    fontSize: 15,
+    fontStyle: 'italic',
   },
   testButton: {
     paddingVertical: 14,
