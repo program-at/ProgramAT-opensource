@@ -24,6 +24,20 @@ MIN_LLM_TIMEOUT_SECONDS = 0.5
 LLM_TEMPERATURE = 0.2
 LLM_MAX_OUTPUT_TOKENS = 32
 LOGGER = logging.getLogger(__name__)
+COCO_CLASS_NAMES = {
+    'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck',
+    'boat', 'traffic light', 'fire hydrant', 'stop sign', 'parking meter', 'bench',
+    'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 'elephant', 'bear', 'zebra',
+    'giraffe', 'backpack', 'umbrella', 'handbag', 'tie', 'suitcase', 'frisbee',
+    'skis', 'snowboard', 'sports ball', 'kite', 'baseball bat', 'baseball glove',
+    'skateboard', 'surfboard', 'tennis racket', 'bottle', 'wine glass', 'cup',
+    'fork', 'knife', 'spoon', 'bowl', 'banana', 'apple', 'sandwich', 'orange',
+    'broccoli', 'carrot', 'hot dog', 'pizza', 'donut', 'cake', 'chair', 'couch',
+    'potted plant', 'bed', 'dining table', 'toilet', 'tv', 'laptop', 'mouse',
+    'remote', 'keyboard', 'cell phone', 'microwave', 'oven', 'toaster', 'sink',
+    'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear', 'hair drier',
+    'toothbrush'
+}
 
 try:
     from google.cloud import vision
@@ -261,6 +275,11 @@ def parse_product_and_price(ocr_text: str, fallback_class: str) -> Dict[str, Any
     return {'name': name, 'price': price, 'name_from_ocr': name_from_ocr}
 
 
+def _is_coco_class_name(class_name: str) -> bool:
+    normalized = class_name.strip().lower().replace('_', ' ')
+    return normalized in COCO_CLASS_NAMES
+
+
 def assist_product_name_with_language_model(
     ocr_text: str,
     detection_label: str,
@@ -387,7 +406,13 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     ocr_text = extract_text_from_region(region, api_key=api_key, language=language)
     parsed = parse_product_and_price(ocr_text, focus['class_name'])
     if parsed.get('name') and use_language_model and not parsed.get('name_from_ocr'):
-        LOGGER.info("Using language-model assist to refine image label fallback name")
+        if _is_coco_class_name(focus['class_name']):
+            LOGGER.info("Using language-model assist with COCO fallback label '%s'", focus['class_name'])
+        else:
+            LOGGER.info(
+                "Using language-model assist because fallback label '%s' is not in COCO",
+                focus['class_name']
+            )
         parsed['name'] = assist_product_name_with_language_model(
             ocr_text=ocr_text,
             detection_label=focus['class_name'],

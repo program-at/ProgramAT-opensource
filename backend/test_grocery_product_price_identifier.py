@@ -148,6 +148,46 @@ def test_main_skips_language_model_assist_when_ocr_name_exists():
         tool.assist_product_name_with_language_model = original_assist
 
 
+def test_main_uses_language_model_assist_for_non_coco_fallback_label():
+    image = np.ones((480, 640, 3), dtype=np.uint8) * 255
+
+    if 'yolo_model_cache' not in tool.__dict__:
+        tool.__dict__['yolo_model_cache'] = {}
+    tool._get_shared_cache().clear()
+
+    original_detect = tool.detect_products
+    original_extract = tool.extract_text_from_region
+    original_assist = tool.assist_product_name_with_language_model
+
+    assist_called = []
+
+    try:
+        tool.detect_products = lambda *_args, **_kwargs: [
+            {
+                'class_name': 'store shelf item',
+                'confidence': 0.92,
+                'bbox': [120, 80, 320, 360],
+                'center': [280, 260],
+            }
+        ]
+        tool.extract_text_from_region = lambda *_args, **_kwargs: "$1.99"
+
+        def _assist(**_kwargs):
+            assist_called.append(True)
+            return "Sparkling Water"
+
+        tool.assist_product_name_with_language_model = _assist
+
+        result = tool.main(image, {'track_mode': False, 'use_language_model': True})
+        assert isinstance(result, dict)
+        assert "Sparkling Water" in result['text']
+        assert assist_called
+    finally:
+        tool.detect_products = original_detect
+        tool.extract_text_from_region = original_extract
+        tool.assist_product_name_with_language_model = original_assist
+
+
 def test_assist_product_name_with_language_model_parses_response():
     class _FakeResponse:
         def __init__(self, body: str):
@@ -261,6 +301,7 @@ if __name__ == '__main__':
     test_main_with_mocks()
     test_main_uses_language_model_assist_for_label_fallback_name()
     test_main_skips_language_model_assist_when_ocr_name_exists()
+    test_main_uses_language_model_assist_for_non_coco_fallback_label()
     test_assist_product_name_with_language_model_parses_response()
     test_assist_product_name_with_language_model_runs_without_ocr_text()
     test_detect_products_uses_model_label_names()
