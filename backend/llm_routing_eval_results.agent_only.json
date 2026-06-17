@@ -1,0 +1,278 @@
+{
+  "generated_at": "2026-06-17T19:07:31.041750+00:00",
+  "indices": [
+    1,
+    9,
+    15,
+    20,
+    27,
+    43
+  ],
+  "sleep_seconds": 22.0,
+  "result_count": 6,
+  "error_count": 0,
+  "results": [
+    {
+      "task": "Read the medication bottle label.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"ocr\", \"weight\": 1.0, \"reason\": \"Reading the label requires plain text extraction from visible writing.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"medium\", \"weight\": 1.0, \"reason\": \"Reading a medication label does not require live camera or real-time assistive feedback.\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "ocr",
+            "weight": 1.0,
+            "reason": "Reading the label requires plain text extraction from visible writing."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 1.0,
+          "reason": "Reading a medication label does not require live camera or real-time assistive feedback."
+        }
+      },
+      "selected_model": "GoogleVisionOCR",
+      "top3": [
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.991,
+          "task_match_score": 1.0,
+          "latency_match_score": 0.94
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.147,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.1305,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 1,
+      "index": 1
+    },
+    {
+      "task": "Find my cup.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.95, \"reason\": \"The user requested to find an object, which aligns with the object_detection capability\"},\n      {\"name\": \"spatial_relationship\", \"weight\": 0.05, \"reason\": \"The user may require more precise positioning information, so I added spatial_relationship with a lower weight\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"Object detection in general is a real-time critical and time-sensitive task\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.95,
+            "reason": "The user requested to find an object, which aligns with the object_detection capability"
+          },
+          {
+            "name": "spatial_relationship",
+            "weight": 0.05,
+            "reason": "The user may require more precise positioning information, so I added spatial_relationship with a lower weight"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "Object detection in general is a real-time critical and time-sensitive task"
+        }
+      },
+      "selected_model": "YOLO-World",
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.9605,
+          "task_match_score": 0.95,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.329,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.94
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.3272,
+          "task_match_score": 0.035,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 2,
+      "index": 9
+    },
+    {
+      "task": "Find the elevator button.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n            {\"name\": \"object_detection\", \"weight\": 0.8, \"reason\": \"To find the elevator button, which matches the capability to detect object presence.\"},\n            {\"name\": \"general_reasoning\", \"weight\": 0.2, \"reason\": \"To confirm the object existence and guide accordingly.\"}\n    ],\n        \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 1.0, \"reason\": \"Since finding an elevator button is typically a real-time, live camera task with urgent feedback needs.\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.8,
+            "reason": "To find the elevator button, which matches the capability to detect object presence."
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.2,
+            "reason": "To confirm the object existence and guide accordingly."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 1.0,
+          "reason": "Since finding an elevator button is typically a real-time, live camera task with urgent feedback needs."
+        }
+      },
+      "selected_model": "YOLO-World",
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.872,
+          "task_match_score": 0.8,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.4273,
+          "task_match_score": 0.1388,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.4223,
+          "task_match_score": 0.1238,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 2,
+      "index": 15
+    },
+    {
+      "task": "Tell me whether the cup is to the left or right of the bottle.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"spatial_relationship\", \"weight\": 1.0, \"reason\": \"Determining the relative position of objects in the scene, such as the cup and bottle, requires spatial reasoning capability.\"},\n      {\"name\": \"object_detection\", \"weight\": 0.0, \"reason\": \"Object detection is not required since the request only asks for positioning, not identification of objects.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"medium\", \"weight\": 0.0, \"reason\": \"Medium latency is acceptable for tasks like the one requested, which do not require real-time assistive feedback or live camera interaction.\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "spatial_relationship",
+            "weight": 1.0,
+            "reason": "Determining the relative position of objects in the scene, such as the cup and bottle, requires spatial reasoning capability."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 0.0,
+          "reason": "Medium latency is acceptable for tasks like the one requested, which do not require real-time assistive feedback or live camera interaction."
+        }
+      },
+      "selected_model": "GPT-4o",
+      "top3": [
+        {
+          "model": "GPT-4o",
+          "final_score": 0.7642,
+          "task_match_score": 0.765,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.744,
+          "task_match_score": 0.787,
+          "latency_match_score": 0.5
+        },
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.7435,
+          "task_match_score": 0.723,
+          "latency_match_score": 0.86
+        }
+      ],
+      "capability_count": 1,
+      "index": 20
+    },
+    {
+      "task": "Guide me to the building entrance.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"navigation\", \"weight\": 1.0, \"reason\": \"User requested to be guided to the entrance.\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.0, \"reason\": \"Task is primarily navigation, general reasoning is redundant in this case but left in as a potential fallback task in case navigation fails.\"},\n      {\"name\": \"spatial_relationship\", \"weight\": 0.0, \"reason\": \"Spatial reasoning is not explicitly needed for this navigation task.\"},\n      {\"name\": \"camera_motion\", \"weight\": 0.0, \"reason\": \"Guiding to an entrance does not require understanding of camera motion.\"},\n      {\"name\": \"map_web\", \"weight\": 0.0, \"reason\": \"This task does not involve map or symbols, so map web reasoning is not necessary.\"},\n      {\"name\": \"object_detection\", \"weight\": 0.0, \"reason\": \"While finding doors is related to navigation, this request does not explicitly require object detection.\"},\n      {\"name\": \"ocr\", \"weight\": 0.0, \"reason\": \"This task does not involve reading signs, menus, labels, etc., so ocr is not necessary.\"},\n      {\"name\": \"video\", \"weight\": 0.0, \"reason\": \"Guiding to an entrance is not a temporal event progression, so this capability is redundant.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 1.0, \"reason\": \"Guidance needs to be in near real-time for this live navigation task.\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "navigation",
+            "weight": 1.0,
+            "reason": "User requested to be guided to the entrance."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 1.0,
+          "reason": "Guidance needs to be in near real-time for this live navigation task."
+        }
+      },
+      "selected_model": "Gemini-2.5-pro",
+      "top3": [
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.7072,
+          "task_match_score": 0.672,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.5348,
+          "task_match_score": 0.558,
+          "latency_match_score": 0.5
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.392,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.98
+        }
+      ],
+      "capability_count": 1,
+      "index": 27
+    },
+    {
+      "task": "Interpret this map.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"map_web\", \"weight\": 0.9, \"reason\": \"user requested to interpret a map\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.05, \"reason\": \"default general reasoning for other unaddressed aspects\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"medium\", \"weight\": 0.05, \"reason\": \"interactive task, medium latency sensitivity appropriate\"}\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "map_web",
+            "weight": 0.9473684210526315,
+            "reason": "user requested to interpret a map"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.05263157894736842,
+            "reason": "default general reasoning for other unaddressed aspects"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 0.05,
+          "reason": "interactive task, medium latency sensitivity appropriate"
+        }
+      },
+      "selected_model": "LLaVA-OneVision-7B",
+      "top3": [
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.7758,
+          "task_match_score": 0.7592,
+          "latency_match_score": 0.87
+        },
+        {
+          "model": "Qwen2.5-VL-7B",
+          "final_score": 0.7717,
+          "task_match_score": 0.7632,
+          "latency_match_score": 0.82
+        },
+        {
+          "model": "Qwen2.5-VL-72B",
+          "final_score": 0.7677,
+          "task_match_score": 0.7903,
+          "latency_match_score": 0.64
+        }
+      ],
+      "capability_count": 2,
+      "index": 43
+    }
+  ],
+  "errors": []
+}

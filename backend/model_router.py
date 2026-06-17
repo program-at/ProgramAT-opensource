@@ -5,12 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-from functools import lru_cache
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
-import numpy as np
 import yaml
 
 from litellm_utils import call_model
@@ -22,8 +20,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 MODEL_PROFILES_PATH = BACKEND_DIR / "model_profiles.yaml"
 CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "gemini/gemini-2.0-flash-preview")
-CAPABILITY_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-TOP_K_CAPABILITY_SIMILARITIES = 2
+DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 
 
 @dataclass(frozen=True)
@@ -33,6 +30,7 @@ class ModelProfile:
     latency_ms: float
     source: str
     capabilities: Dict[str, float]
+    latency: float = 0.5
     model: str = ""
 
 
@@ -45,19 +43,40 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
 
 
 def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[str, List[str]]:
+    profiles = load_capability_profiles(path)
+    descriptions: Dict[str, List[str]] = {}
+    for capability, profile in profiles.items():
+        values = [profile.get("description", "")]
+        values.extend(profile.get("include_examples", []))
+        notes = str(profile.get("notes", "")).strip()
+        if notes:
+            values.append(notes)
+        cleaned = [str(value).strip() for value in values if str(value).strip()]
+        if not cleaned:
+            raise ValueError(f"Capability {capability!r} must provide description and/or include_examples")
+        descriptions[capability] = cleaned
+    return descriptions
+
+
+def load_capability_profiles(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[str, Dict[str, List[str] | str]]:
     data = _load_yaml(path)
     capabilities = data.get("capabilities", {})
     if not isinstance(capabilities, dict) or not capabilities:
         raise ValueError(f"No capabilities configured in {path}")
 
-    descriptions: Dict[str, List[str]] = {}
+    profiles: Dict[str, Dict[str, List[str] | str]] = {}
     for capability, raw in capabilities.items():
         capability_name = str(capability)
         if isinstance(raw, list):
             values = [str(value).strip() for value in raw if str(value).strip()]
             if not values:
                 raise ValueError(f"Capability {capability_name!r} must contain a non-empty list of descriptions")
-            descriptions[capability_name] = values
+            profiles[capability_name] = {
+                "description": values[0],
+                "include_examples": values[1:],
+                "exclude_examples": [],
+                "notes": "",
+            }
             continue
 
         if not isinstance(raw, dict):
@@ -66,27 +85,20 @@ def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[
             )
 
         description = str(raw.get("description", "")).strip()
-        include_examples = raw.get("include_examples", [])
-        exclude_examples = raw.get("exclude_examples", [])
-        if include_examples is None:
-            include_examples = []
-        if exclude_examples is None:
-            exclude_examples = []
+        include_examples = raw.get("include_examples", []) or []
+        exclude_examples = raw.get("exclude_examples", []) or []
+        notes = raw.get("notes", "")
         if not isinstance(include_examples, list) or not isinstance(exclude_examples, list):
             raise ValueError(
                 f"Capability {capability_name!r} include_examples/exclude_examples must be lists"
             )
-
-        values = []
-        if description:
-            values.append(description)
-        values.extend(str(value).strip() for value in include_examples if str(value).strip())
-        if not values:
-            raise ValueError(
-                f"Capability {capability_name!r} must provide description and/or include_examples"
-            )
-        descriptions[capability_name] = values
-    return descriptions
+        profiles[capability_name] = {
+            "description": description,
+            "include_examples": [str(value).strip() for value in include_examples if str(value).strip()],
+            "exclude_examples": [str(value).strip() for value in exclude_examples if str(value).strip()],
+            "notes": str(notes).strip(),
+        }
+    return profiles
 
 
 def load_model_profiles(path: Path = MODEL_PROFILES_PATH) -> List[ModelProfile]:
@@ -99,95 +111,150 @@ def load_model_profiles(path: Path = MODEL_PROFILES_PATH) -> List[ModelProfile]:
     for name, raw_profile in models.items():
         if not isinstance(raw_profile, dict):
             raise ValueError(f"Model {name!r} must be a mapping")
-        capabilities = raw_profile.get("capabilities", {})
+        capabilities = raw_profile.get("strengths", raw_profile.get("capabilities", {}))
         if not isinstance(capabilities, dict):
-            raise ValueError(f"Model {name!r} capabilities must be a mapping")
+            raise ValueError(f"Model {name!r} capabilities/strengths must be a mapping")
+        latency_ms = float(raw_profile.get("latency_ms", 1000))
+        latency = raw_profile.get("latency")
+        if latency is None:
+            latency = max(0.0, min(1.0, 1.0 - latency_ms / 5000.0))
         profiles.append(ModelProfile(
             name=str(name),
             type=str(raw_profile.get("type", "general_vlm")),
-            latency_ms=float(raw_profile.get("latency_ms", 1000)),
+            latency_ms=latency_ms,
             source=str(raw_profile.get("source", "unknown")),
             capabilities={str(key): float(value or 0.0) for key, value in capabilities.items()},
+            latency=float(max(0.0, min(1.0, float(latency)))),
             model=str(raw_profile.get("model", "") or ""),
         ))
     return profiles
 
 
-def _normalized_capability_descriptions(
-    capability_descriptions: Dict[str, List[str]],
-) -> Tuple[Tuple[str, Tuple[str, ...]], ...]:
-    return tuple(
-        (capability, tuple(values))
-        for capability, values in capability_descriptions.items()
-    )
+def _task_strength(model: ModelProfile, capability_name: str) -> float:
+    key = str(capability_name or "").strip().lower()
+    return float(model.capabilities.get(key, 0.0))
 
 
-def _average_top_k(values: List[float], k: int = TOP_K_CAPABILITY_SIMILARITIES) -> float:
-    if not values:
-        return 0.0
-    top_values = sorted(values, reverse=True)[: max(1, k)]
-    return float(sum(top_values) / len(top_values))
+def _safe_weight(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
-@lru_cache(maxsize=1)
-def _embedding_model():
-    from sentence_transformers import SentenceTransformer
+def normalize_routing_analysis(
+    routing_analysis: Optional[Dict[str, Any]],
+    supported_capabilities: Optional[Iterable[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(routing_analysis, dict):
+        return None
 
-    return SentenceTransformer(CAPABILITY_EMBEDDING_MODEL)
+    if supported_capabilities is None:
+        supported_capabilities = load_capability_descriptions().keys()
+    canonical_capabilities = {
+        str(name).strip().lower(): str(name).strip().lower()
+        for name in supported_capabilities
+        if str(name).strip()
+    }
+    if not canonical_capabilities:
+        return None
 
+    tasks = routing_analysis.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return None
 
-@lru_cache(maxsize=32)
-def _precomputed_capability_embeddings(
-    normalized_descriptions: Tuple[Tuple[str, Tuple[str, ...]], ...],
-) -> Dict[str, np.ndarray]:
-    flattened: List[Tuple[str, str]] = [
-        (capability, description)
-        for capability, values in normalized_descriptions
-        for description in values
-    ]
-    if not flattened:
-        return {capability: np.empty((0, 0), dtype=np.float32) for capability, _ in normalized_descriptions}
+    normalized_tasks = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            continue
+        raw_name = str(task.get("name", "")).strip().lower()
+        key = canonical_capabilities.get(raw_name)
+        if key is None:
+            continue
+        weight = max(0.0, _safe_weight(task.get("weight"), 0.0))
+        if weight <= 0.0:
+            continue
+        normalized_tasks.append({
+            "name": key,
+            "weight": weight,
+            "reason": str(task.get("reason", "")).strip(),
+        })
 
-    model = _embedding_model()
-    description_embeddings = model.encode(
-        [description for _, description in flattened],
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
+    if not normalized_tasks:
+        return None
 
-    grouped: Dict[str, List[np.ndarray]] = {capability: [] for capability, _ in normalized_descriptions}
-    for (capability, _), embedding in zip(flattened, description_embeddings):
-        grouped[capability].append(embedding)
+    total = sum(task["weight"] for task in normalized_tasks)
+    if total <= 0.0:
+        return None
+    for task in normalized_tasks:
+        task["weight"] = task["weight"] / total
+
+    def _normalize_sensitivity(raw: Any, default_level: str, default_weight: float) -> Dict[str, Any]:
+        level = default_level
+        weight = default_weight
+        reason = ""
+        if isinstance(raw, dict):
+            raw_level = str(raw.get("level", default_level)).strip().lower()
+            if raw_level in {"low", "medium", "high"}:
+                level = raw_level
+            weight = max(0.0, min(1.0, _safe_weight(raw.get("weight"), default_weight)))
+            reason = str(raw.get("reason", "")).strip()
+        return {"level": level, "weight": weight, "reason": reason}
 
     return {
-        capability: np.vstack(embeddings) if embeddings else np.empty((0, 0), dtype=np.float32)
-        for capability, embeddings in grouped.items()
+        "tasks": normalized_tasks,
+        "latency_sensitivity": _normalize_sensitivity(routing_analysis.get("latency_sensitivity"), "medium", 0.5),
     }
 
 
-def _capability_similarities(
-    task_text: str,
-    capability_descriptions: Dict[str, List[str]],
-) -> Dict[str, List[float]]:
-    normalized_descriptions = _normalized_capability_descriptions(capability_descriptions)
-    if not task_text.strip() or not normalized_descriptions:
-        return {capability: [] for capability in capability_descriptions}
+def _dynamic_score_weights(routing_analysis: Dict[str, Any]) -> Dict[str, float]:
+    task_component = 0.85
+    latency_component = 0.15
 
-    model = _embedding_model()
-    task_embedding = model.encode(
-        [task_text],
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )[0]
-    capability_embeddings = _precomputed_capability_embeddings(normalized_descriptions)
+    latency = routing_analysis.get("latency_sensitivity", {})
 
-    similarities: Dict[str, List[float]] = {capability: [] for capability in capability_descriptions}
-    for capability, description_vectors in capability_embeddings.items():
-        if description_vectors.size == 0:
-            continue
-        scores = description_vectors @ task_embedding
-        similarities[capability] = [float(score) for score in scores.tolist()]
-    return similarities
+    if latency.get("level") == "high":
+        boost = 0.25 * float(latency.get("weight", 0.5))
+        latency_component += boost
+        task_component -= boost
+
+    if latency.get("level") == "low":
+        reduction = 0.10 * float(latency.get("weight", 0.5))
+        latency_component -= reduction
+        task_component += reduction
+
+    task_component = max(task_component, 0.60)
+    latency_component = max(latency_component, 0.05)
+    total = task_component + latency_component
+    return {
+        "task": task_component / total,
+        "latency": latency_component / total,
+    }
+
+
+def _routing_task_match_score(model: ModelProfile, routing_analysis: Dict[str, Any]) -> float:
+    score = 0.0
+    for task in routing_analysis.get("tasks", []):
+        score += float(task.get("weight", 0.0)) * _task_strength(model, task.get("name", ""))
+    return float(max(0.0, min(1.0, score)))
+
+
+def _score_with_routing_analysis(model: ModelProfile, routing_analysis: Dict[str, Any]) -> Dict[str, float]:
+    mix = _dynamic_score_weights(routing_analysis)
+    task_match = _routing_task_match_score(model, routing_analysis)
+    latency_match = float(max(0.0, min(1.0, model.latency)))
+
+    final_score = (
+        task_match * mix["task"]
+        + latency_match * mix["latency"]
+    )
+    return {
+        "task_match_score": task_match,
+        "latency_match_score": latency_match,
+        "task_component_weight": mix["task"],
+        "latency_component_weight": mix["latency"],
+        "final_score": final_score,
+    }
 
 
 def compute_capability_weights(
@@ -195,28 +262,13 @@ def compute_capability_weights(
     capability_descriptions: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, float]:
     descriptions = capability_descriptions or load_capability_descriptions()
-    similarities = _capability_similarities(task_text, descriptions)
-    raw_weights = {
-        capability: max(0.0, _average_top_k(values))
-        for capability, values in similarities.items()
-    }
-    # Keep only the top 3 capabilities; zero out the rest before normalizing.
-    top3 = set(
-        capability for capability, _ in
-        sorted(raw_weights.items(), key=lambda item: item[1], reverse=True)[:3]
-    )
-    raw_weights = {
-        capability: (weight if capability in top3 else 0.0)
-        for capability, weight in raw_weights.items()
-    }
-    total = sum(raw_weights.values())
-    if total <= 0.0:
-        capability_count = len(descriptions)
-        if capability_count == 0:
-            return {}
-        uniform_weight = 1.0 / capability_count
-        return {capability: uniform_weight for capability in descriptions}
-    return {capability: raw_weights[capability] / total for capability in descriptions}
+    if not descriptions:
+        return {}
+    if DEFAULT_FALLBACK_CAPABILITY in descriptions:
+        return {DEFAULT_FALLBACK_CAPABILITY: 1.0}
+    # Deterministic fallback when general_reasoning is absent.
+    first_capability = next(iter(descriptions))
+    return {str(first_capability): 1.0}
 
 
 def score_model(model: ModelProfile, capability_weights: Dict[str, float]) -> float:
@@ -234,30 +286,82 @@ def rank_models(
     task_text: str,
     models: Optional[Iterable[ModelProfile]] = None,
     capability_descriptions: Optional[Dict[str, List[str]]] = None,
+    routing_analysis: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     descriptions = capability_descriptions or load_capability_descriptions()
     profiles = list(models) if models is not None else load_model_profiles()
     weights = compute_capability_weights(task_text, descriptions)
+    normalized_routing = normalize_routing_analysis(routing_analysis, descriptions.keys())
     ranking = []
 
+    logger.info("[Model Router] request=%s", task_text)
+    if normalized_routing:
+        task_log = [
+            {"name": task["name"], "weight": round(task["weight"], 3)}
+            for task in normalized_routing["tasks"]
+        ]
+        logger.info("[Model Router] capability_distribution=%s", json.dumps(task_log, sort_keys=True))
+        logger.info(
+            "[Model Router] latency_sensitivity=%s",
+            json.dumps(normalized_routing.get("latency_sensitivity", {}), sort_keys=True),
+        )
+    else:
+        fallback_distribution = {
+            key: round(value, 3)
+            for key, value in sorted(weights.items(), key=lambda item: item[1], reverse=True)
+            if value > 0.001
+        }
+        logger.info("[Model Router] capability_distribution=%s", json.dumps(fallback_distribution, sort_keys=True))
+        logger.info(
+            "[Model Router] latency_sensitivity=%s",
+            json.dumps({"level": "medium", "weight": 0.5, "reason": "fallback routing without routing_analysis"}, sort_keys=True),
+        )
+
     for profile in profiles:
-        capability_score = score_model(profile, weights)
-        penalty = latency_penalty(profile.latency_ms)
-        final_score = capability_score / penalty
-        ranking.append({
-            "model": profile.name,
-            "type": profile.type,
-            "source": profile.source,
-            "latency_ms": profile.latency_ms,
-            "capability_score": capability_score,
-            "latency_penalty": penalty,
-            "final_score": final_score,
-        })
+        if normalized_routing:
+            score = _score_with_routing_analysis(profile, normalized_routing)
+            row = {
+                "model": profile.name,
+                "type": profile.type,
+                "source": profile.source,
+                "latency_ms": profile.latency_ms,
+                "latency": profile.latency,
+                **score,
+            }
+            ranking.append(row)
+            logger.info(
+                "[Model Router] model_score model=%s task_match=%.4f latency_match=%.4f final_score=%.4f",
+                profile.name,
+                row["task_match_score"],
+                row["latency_match_score"],
+                row["final_score"],
+            )
+        else:
+            capability_score = score_model(profile, weights)
+            penalty = latency_penalty(profile.latency_ms)
+            final_score = capability_score / penalty
+            row = {
+                "model": profile.name,
+                "type": profile.type,
+                "source": profile.source,
+                "latency_ms": profile.latency_ms,
+                "capability_score": capability_score,
+                "latency_penalty": penalty,
+                "final_score": final_score,
+            }
+            ranking.append(row)
+            logger.info(
+                "[Model Router] model_score model=%s task_match=%.4f latency_match=%.4f final_score=%.4f",
+                profile.name,
+                row["capability_score"],
+                1.0 / row["latency_penalty"],
+                row["final_score"],
+            )
 
     ranking.sort(
         key=lambda item: (
             item["final_score"],
-            item["capability_score"],
+            item.get("capability_score", item.get("task_match_score", 0.0)),
             -item["latency_ms"],
             item["model"],
         ),
@@ -265,17 +369,24 @@ def rank_models(
     )
 
     selected = ranking[0] if ranking else None
+    if selected:
+        logger.info(
+            "[Model Router] selected_model=%s final_score=%.4f",
+            selected["model"],
+            selected["final_score"],
+        )
     return {
         "task": task_text,
         "capability_weights": weights,
+        "routing_analysis": normalized_routing,
         "ranking": ranking,
         "selected_model": selected["model"] if selected else None,
         "selected": selected,
     }
 
 
-def select_model(task_text: str) -> Dict[str, Any]:
-    return rank_models(task_text)
+def select_model(task_text: str, routing_analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return rank_models(task_text, routing_analysis=routing_analysis)
 
 
 def _text_parts_from_content(content: Any) -> List[str]:
@@ -333,15 +444,17 @@ def copilot_llm_call(
     messages = messages or []
     route_text = _task_text(capability, task, task_category, messages, metadata)
     callable_profiles = [profile for profile in load_model_profiles() if profile.model]
-    route = rank_models(route_text, callable_profiles)
+    routing_analysis = metadata.get("routing_analysis") if isinstance(metadata, dict) else None
+    route = rank_models(route_text, callable_profiles, routing_analysis=routing_analysis)
     selected_profile = next(profile for profile in callable_profiles if profile.name == route["selected_model"])
     weights = {key: round(value, 3) for key, value in route["capability_weights"].items() if value > 0.005}
 
     logger.info(
-        "[Copilot Router] task=%s selected_model=%s capability_weights=%s",
+        "[Copilot Router] task=%s selected_model=%s capability_weights=%s routing_analysis=%s",
         route_text,
         route["selected_model"],
         json.dumps(weights, sort_keys=True),
+        json.dumps(route.get("routing_analysis"), sort_keys=True) if route.get("routing_analysis") else "null",
     )
     return call_model(selected_profile.model, messages, images=images, metadata=metadata)
 
@@ -355,6 +468,7 @@ __all__ = [
     "load_capability_descriptions",
     "load_model_profiles",
     "compute_capability_weights",
+    "normalize_routing_analysis",
     "score_model",
     "latency_penalty",
     "rank_models",

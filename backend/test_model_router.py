@@ -29,83 +29,37 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
     def test_benchmark_profiles_use_benchmark_max_scaling(self):
         profiles = {profile.name: profile for profile in model_router.load_model_profiles()}
 
-        self.assertEqual(profiles["LLaVA-OneVision-7B"].capabilities["ocr"], 0.622)
-        self.assertEqual(profiles["Qwen2.5-VL-7B"].capabilities["ocr"], 0.888)
+        self.assertEqual(profiles["LLaVA-OneVision-7B"].capabilities["general_reasoning"], 0.619)
+        self.assertEqual(profiles["Qwen2.5-VL-7B"].capabilities["general_reasoning"], 0.641)
         self.assertEqual(profiles["Gemini-2.5-pro"].capabilities["general_reasoning"], 0.736)
 
-    def test_compute_capability_weights_uses_task_text(self):
+    def test_compute_capability_weights_uses_general_reasoning_fallback(self):
         weights = model_router.compute_capability_weights("Locate a specific item in the scene.")
 
-        self.assertAlmostEqual(sum(weights.values()), 1.0)
-        self.assertEqual(max(weights, key=weights.get), "object_detection")
-        self.assertGreater(weights["object_detection"], weights["ocr"])
+        self.assertEqual(weights, {"general_reasoning": 1.0})
 
-    def test_compute_capability_weights_uses_top_two_average(self):
+    def test_compute_capability_weights_uses_first_capability_if_general_missing(self):
         descriptions = {
-            "ocr": ["ocr one", "ocr two", "ocr three"],
-            "object_detection": ["object one"],
+            "ocr": ["Read text from images"],
+            "object_detection": ["Detect objects"],
+        }
+        weights = model_router.compute_capability_weights("Read label", descriptions)
+
+        self.assertEqual(weights, {"ocr": 1.0})
+
+    def test_rank_models_prefers_routing_analysis_over_fallback(self):
+        profiles = [
+            model_router.ModelProfile("ocr_model", "general_vlm", 1000, "test", {"ocr": 0.95, "general_reasoning": 0.1}, latency=0.6),
+            model_router.ModelProfile("general_model", "general_vlm", 1000, "test", {"ocr": 0.1, "general_reasoning": 0.95}, latency=0.6),
+        ]
+        routing_analysis = {
+            "tasks": [{"name": "ocr", "weight": 1.0, "reason": "Read text"}],
+            "latency_sensitivity": {"level": "medium", "weight": 0.5, "reason": ""},
         }
 
-        with patch.object(model_router, "_capability_similarities", return_value={
-            "ocr": [0.95, 0.90, 0.10],
-            "object_detection": [0.80],
-        }):
-            weights = model_router.compute_capability_weights("Read the label.", descriptions)
+        result = model_router.rank_models("Read this label.", profiles, routing_analysis=routing_analysis)
 
-        self.assertGreater(weights["ocr"], weights["object_detection"])
-        self.assertAlmostEqual(sum(weights.values()), 1.0)
-
-    def test_compute_capability_weights_preserves_secondary_capabilities(self):
-        descriptions = {
-            "ocr": ["ocr"],
-            "map_web": ["map"],
-            "object_detection": ["object"],
-            "navigation": ["navigation"],
-            "spatial_relationship": ["spatial"],
-            "general_reasoning": ["general"],
-        }
-
-        with patch.object(model_router, "_capability_similarities", return_value={
-            "ocr": [0.10],
-            "map_web": [0.15],
-            "object_detection": [0.50],
-            "navigation": [0.25],
-            "spatial_relationship": [0.35],
-            "general_reasoning": [0.10],
-        }):
-            weights = model_router.compute_capability_weights(
-                "Find an empty chair.",
-                descriptions,
-            )
-
-        self.assertEqual(max(weights, key=weights.get), "object_detection")
-        self.assertGreater(weights["spatial_relationship"], weights["general_reasoning"])
-        self.assertGreater(weights["navigation"], 0.0)
-
-    def test_compute_capability_weights_keeps_all_positive_capabilities(self):
-        descriptions = {
-            "ocr": ["ocr"],
-            "map_web": ["map"],
-            "object_detection": ["object"],
-            "navigation": ["navigation"],
-            "spatial_relationship": ["spatial"],
-            "general_reasoning": ["general"],
-        }
-
-        with patch.object(model_router, "_capability_similarities", return_value={
-            "ocr": [0.30],
-            "map_web": [0.25],
-            "object_detection": [0.40],
-            "navigation": [0.15],
-            "spatial_relationship": [0.35],
-            "general_reasoning": [0.10],
-        }):
-            weights = model_router.compute_capability_weights("Read a street sign.", descriptions)
-
-        self.assertGreater(weights["ocr"], 0.0)
-        self.assertGreater(weights["map_web"], 0.0)
-        self.assertGreater(weights["general_reasoning"], 0.0)
-        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertEqual(result["selected_model"], "ocr_model")
 
     def test_score_model_treats_missing_capabilities_as_zero(self):
         profile = model_router.ModelProfile(
@@ -143,25 +97,61 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
 
         self.assertEqual(result["selected_model"], "fast_ocr")
 
-    def test_default_routing_examples(self):
-        examples = {
-            "Read the medicine bottle label.": "Qwen2.5-VL-7B",
-            "What does this sign say?": "GoogleVisionOCR",
-            "Help me find my cup.": "YOLO-World",
-            "Locate the passenger door handle.": "YOLO-World",
-            "Describe what is happening in front of me.": "Gemini-2.0-flash",
-            "Guide me to the building entrance.": "Gemini-2.5-pro",
-            "Explain the relationship between the chair and the table.": "Gemini-2.0-flash",
-            "Analyze this video.": "Qwen2.5-VL-7B",
+    def test_rank_models_prefers_fast_model_when_latency_is_high(self):
+        profiles = [
+            model_router.ModelProfile(
+                "accurate_but_slow",
+                "general_vlm",
+                2500,
+                "test",
+                {"ocr": 0.95, "general_reasoning": 0.95},
+                latency=0.3,
+            ),
+            model_router.ModelProfile(
+                "balanced_fast",
+                "general_vlm",
+                600,
+                "test",
+                {"ocr": 0.85, "general_reasoning": 0.8},
+                latency=0.9,
+            ),
+        ]
+        routing_analysis = {
+            "tasks": [
+                {"name": "ocr", "weight": 0.6, "reason": "Read text."},
+                {"name": "general_reasoning", "weight": 0.4, "reason": "Explain clearly."},
+            ],
+            "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "Live feedback."},
         }
 
-        for task, selected_model in examples.items():
-            with self.subTest(task=task):
-                result = model_router.select_model(task)
-                self.assertEqual(result["selected_model"], selected_model)
-                self.assertAlmostEqual(sum(result["capability_weights"].values()), 1.0)
-                self.assertGreaterEqual(len(result["ranking"]), 3)
-                self.assertEqual(result["ranking"][0]["model"], selected_model)
+        result = model_router.rank_models("Read this label quickly.", profiles, routing_analysis=routing_analysis)
+
+        self.assertEqual(result["selected_model"], "balanced_fast")
+        self.assertIsNotNone(result.get("routing_analysis"))
+
+    def test_rank_models_falls_back_when_routing_analysis_invalid(self):
+        descriptions = {"ocr": ["Read text from an image."]}
+        profiles = [
+            model_router.ModelProfile("strong_ocr", "general_vlm", 1000, "test", {"ocr": 1.0}),
+            model_router.ModelProfile("weak_fast_ocr", "general_vlm", 10, "test", {"ocr": 0.7}),
+        ]
+
+        result = model_router.rank_models(
+            "Read text from an image.",
+            profiles,
+            descriptions,
+            routing_analysis={"tasks": [{"name": "unknown_task", "weight": 1.0}]},
+        )
+
+        self.assertEqual(result["selected_model"], "strong_ocr")
+        self.assertIsNone(result.get("routing_analysis"))
+
+    def test_default_routing_without_analysis_uses_general_fallback(self):
+        result = model_router.select_model("Any task without parse agent routing analysis")
+
+        self.assertEqual(result["capability_weights"], {"general_reasoning": 1.0})
+        self.assertIsNotNone(result["selected_model"])
+        self.assertGreaterEqual(len(result["ranking"]), 1)
 
     def test_system_llm_call_uses_fixed_model_without_router(self):
         with patch.object(model_router, "call_model", return_value={"choices": []}) as call_model, \

@@ -19,7 +19,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
 from PIL import Image
@@ -32,7 +32,13 @@ from dotenv import load_dotenv
 # Load .env before importing modules that read routing/provider settings at import time.
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
-from model_router import system_llm_call
+from model_router import (
+    load_capability_descriptions,
+    load_capability_profiles,
+    normalize_routing_analysis,
+    select_model,
+    system_llm_call,
+)
 from litellm_utils import (
     extract_text,
 )
@@ -115,6 +121,30 @@ def _extract_issue_section(body: str, *section_names: str) -> str:
         re.IGNORECASE | re.DOTALL,
     )
     return match.group(1).strip() if match else ''
+
+
+def _format_capability_profiles_for_prompt() -> tuple[str, list[str]]:
+    profiles = load_capability_profiles()
+    names = sorted(profiles.keys())
+    lines = []
+    for name in names:
+        profile = profiles[name]
+        description = profile.get('description', '')
+        include_examples = profile.get('include_examples', [])
+        exclude_examples = profile.get('exclude_examples', [])
+        notes = profile.get('notes', '')
+        lines.append(f"- {name}")
+        if description:
+            lines.append(f"  description: {description}")
+        if include_examples:
+            lines.append("  includes:")
+            lines.extend(f"    - {example}" for example in include_examples)
+        if exclude_examples:
+            lines.append("  excludes:")
+            lines.extend(f"    - {example}" for example in exclude_examples)
+        if notes:
+            lines.append(f"  notes: {notes}")
+    return "\n".join(lines), names
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
@@ -3141,6 +3171,13 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         Dictionary with parsed fields including 'missing_fields' list
     """
     try:
+        try:
+            capability_profiles_text, capability_names = _format_capability_profiles_for_prompt()
+        except Exception:
+            capability_profiles_text = ""
+            capability_names = ['general_reasoning', 'ocr', 'object_detection', 'map_web', 'spatial_relationship', 'navigation', 'camera_motion', 'video']
+        capability_names_text = ', '.join(capability_names)
+
         # Build context from existing data if this is a follow-up
         context_info = ""
         if existing_data:
@@ -3173,6 +3210,28 @@ For a visual AT request, extract:
 - live_query: if live_mode is "yes", what is the exact prompt to re-ask on every frame?
 - alternatives: Alternative solutions considered
 - additional: Any other context
+- routing_analysis: A lightweight routing plan used by backend model selection.
+
+Routing rules:
+1. Provide 2-4 task entries when possible.
+2. Task weights should sum to approximately 1.0.
+3. Select only from these capability names: {capability_names_text}
+4. Do not create new capability names.
+5. Map the user request onto the closest existing capabilities from that list.
+6. Prefer the minimum necessary capability set.
+7. Prefer 1 capability when one capability is sufficient.
+8. Prefer 2 capabilities over 3 unless the task truly requires more.
+9. Do not include a capability unless removing it would significantly reduce task success.
+10. Use capability exclusions as hard negative evidence.
+11. You are given the full capability definitions below. Use them to decide what is required.
+
+Capability definitions:
+{capability_profiles_text}
+
+12. latency_sensitivity levels:
+    - high: live camera, navigation, object finding, real-time assistive feedback
+    - medium: normal interactive tasks
+    - low: offline generation, code generation, long-form reasoning, non-urgent analysis
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
@@ -3210,7 +3269,14 @@ Return format:
   "live_mode": "...",
   "live_query": "...",
   "additional": "...",
-  "missing_fields": ["field1", "field2"]  // Only truly missing/empty important fields. Use [] if all important fields have content.
+    "missing_fields": ["field1", "field2"],  // Only truly missing/empty important fields. Use [] if all important fields have content.
+    "routing_analysis": {{
+        "tasks": [
+            {{"name": "ocr", "weight": 0.8, "reason": "The user needs text from the image."}},
+            {{"name": "general_reasoning", "weight": 0.2, "reason": "The response should explain the extracted content."}}
+        ],
+        "latency_sensitivity": {{"level": "high|medium|low", "weight": 0.0, "reason": "..."}}
+    }}
 }}"""
 
         response = system_llm_call(
@@ -3231,6 +3297,16 @@ Return format:
         ai_response = ai_response.strip()
         
         parsed_data = json.loads(ai_response)
+
+        normalized_routing_analysis = normalize_routing_analysis(
+            parsed_data.get('routing_analysis'),
+            supported_capabilities=capability_names,
+        )
+        if normalized_routing_analysis:
+            parsed_data['routing_analysis'] = normalized_routing_analysis
+        elif 'routing_analysis' in parsed_data:
+            # Keep backward compatibility by allowing invalid field to be dropped.
+            parsed_data.pop('routing_analysis', None)
 
         if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
             parsed_data['custom_gpt'] = parsed_data.get('live_mode', '')
@@ -3264,6 +3340,21 @@ Return format:
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
+
+        routing_tasks_for_log = []
+        if parsed_data.get('routing_analysis'):
+            routing_tasks_for_log = [
+                {
+                    'name': t.get('name'),
+                    'weight': round(float(t.get('weight', 0.0)), 3),
+                }
+                for t in parsed_data['routing_analysis'].get('tasks', [])
+            ]
+        logger.info("Routing analysis tasks=%s", json.dumps(routing_tasks_for_log))
+        logger.info(
+            "Routing analysis latency=%s",
+            json.dumps((parsed_data.get('routing_analysis') or {}).get('latency_sensitivity', {})),
+        )
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
         return parsed_data
@@ -3574,6 +3665,23 @@ async def create_github_issue(text: str):
         # Check for missing fields
         missing_fields = parsed_data.get('missing_fields', [])
         issue_type = 'visual AT'  # Always visual AT now
+
+        try:
+            route_result = select_model(
+                text.strip(),
+                routing_analysis=parsed_data.get('routing_analysis'),
+            )
+            selected_model = route_result.get('selected_model')
+            parsed_data['selected_model'] = selected_model
+            logger.info("Parsed routing selected_model=%s", selected_model)
+            for candidate in route_result.get('ranking', []):
+                logger.info(
+                    "Parsed routing candidate=%s final_score=%.4f",
+                    candidate.get('model'),
+                    float(candidate.get('final_score', 0.0)),
+                )
+        except Exception as route_error:
+            logger.warning(f"Routing selection skipped due to error: {route_error}")
         
         # If there are important missing fields, send feedback and save incomplete data
         if missing_fields:
