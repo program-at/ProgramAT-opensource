@@ -35,6 +35,7 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 from model_router import (
     load_capability_descriptions,
     load_capability_profiles,
+    normalize_pipeline_analysis,
     normalize_routing_analysis,
     select_model,
     system_llm_call,
@@ -3211,6 +3212,7 @@ For a visual AT request, extract:
 - alternatives: Alternative solutions considered
 - additional: Any other context
 - routing_analysis: A lightweight routing plan used by backend model selection.
+- pipeline_analysis: A conservative execution-plan decision using the same capabilities.
 
 Routing rules:
 1. Provide 2-4 task entries when possible.
@@ -3232,6 +3234,21 @@ Capability definitions:
     - high: live camera, navigation, object finding, real-time assistive feedback
     - medium: normal interactive tasks
     - low: offline generation, code generation, long-form reasoning, non-urgent analysis
+
+Pipeline decision rules:
+1. First decide the capability distribution in routing_analysis. Then separately decide whether those capabilities should run inside one model or as a pipeline.
+2. Do not create a pipeline merely because multiple capabilities exist.
+3. Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
+4. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
+5. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
+6. Increase chaining confidence for useful transitions: object_detection -> spatial_relationship, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, spatial_relationship -> navigation, map_web -> general_reasoning.
+7. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
+8. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
+9. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
+10. Prefer the smallest useful pipeline. Each stage capability must come from the same capability names list above.
+11. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
+12. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
+13. Include information_reduction as "none", "minor", "moderate", or "significant".
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
@@ -3276,6 +3293,13 @@ Return format:
             {{"name": "general_reasoning", "weight": 0.2, "reason": "The response should explain the extracted content."}}
         ],
         "latency_sensitivity": {{"level": "high|medium|low", "weight": 0.0, "reason": "..."}}
+    }},
+    "pipeline_analysis": {{
+        "should_chain": false,
+        "reason": "No structured intermediate artifact would significantly reduce later visual scope or reasoning burden.",
+        "artifact_value_score": 0.0,
+        "information_reduction": "none",
+        "stages": []
     }}
 }}"""
 
@@ -3307,6 +3331,11 @@ Return format:
         elif 'routing_analysis' in parsed_data:
             # Keep backward compatibility by allowing invalid field to be dropped.
             parsed_data.pop('routing_analysis', None)
+
+        parsed_data['pipeline_analysis'] = normalize_pipeline_analysis(
+            parsed_data.get('pipeline_analysis'),
+            supported_capabilities=capability_names,
+        )
 
         if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
             parsed_data['custom_gpt'] = parsed_data.get('live_mode', '')
@@ -3355,6 +3384,16 @@ Return format:
             "Routing analysis latency=%s",
             json.dumps((parsed_data.get('routing_analysis') or {}).get('latency_sensitivity', {})),
         )
+        logger.info(
+            "Pipeline decision=%s",
+            json.dumps({
+                'should_chain': parsed_data['pipeline_analysis'].get('should_chain'),
+                'reason': parsed_data['pipeline_analysis'].get('reason'),
+                'artifact_value_score': parsed_data['pipeline_analysis'].get('artifact_value_score'),
+                'information_reduction': parsed_data['pipeline_analysis'].get('information_reduction'),
+            }),
+        )
+        logger.info("Pipeline stages=%s", json.dumps(parsed_data['pipeline_analysis'].get('stages', [])))
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
         return parsed_data
@@ -3670,10 +3709,21 @@ async def create_github_issue(text: str):
             route_result = select_model(
                 text.strip(),
                 routing_analysis=parsed_data.get('routing_analysis'),
+                pipeline_analysis=parsed_data.get('pipeline_analysis'),
             )
             selected_model = route_result.get('selected_model')
             parsed_data['selected_model'] = selected_model
+            parsed_data['final_execution_plan'] = route_result.get('final_execution_plan')
+            parsed_data['stage_model_selection'] = [
+                {
+                    'index': stage.get('index'),
+                    'capability': stage.get('capability'),
+                    'selected_model': stage.get('selected_model'),
+                }
+                for stage in route_result.get('stage_model_selection', [])
+            ]
             logger.info("Parsed routing selected_model=%s", selected_model)
+            logger.info("Parsed routing final_execution_plan=%s", json.dumps(parsed_data.get('final_execution_plan')))
             for candidate in route_result.get('ranking', []):
                 logger.info(
                     "Parsed routing candidate=%s final_score=%.4f",

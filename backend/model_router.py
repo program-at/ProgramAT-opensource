@@ -22,6 +22,37 @@ CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "gemini/gemini-2.0-flash-preview")
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 
+STRUCTURED_ARTIFACTS_BY_CAPABILITY = {
+    "object_detection": "target bounding box and object coordinates",
+    "ocr": "extracted text",
+    "spatial_relationship": "target location and relative position",
+    "navigation": "navigation waypoint",
+    "map_web": "structured visual region or layout element",
+}
+
+HOLISTIC_TASK_KEYWORDS = (
+    "describe",
+    "explain",
+    "summarize",
+    "rate",
+    "evaluate",
+)
+
+TARGET_REDUCTION_KEYWORDS = (
+    "find",
+    "locate",
+    "guide",
+    "navigate",
+    "entrance",
+    "elevator",
+    "door handle",
+    "handle",
+    "bus",
+    "target",
+    "align",
+    "where",
+)
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -207,6 +238,213 @@ def normalize_routing_analysis(
     }
 
 
+def _canonical_capability_map(supported_capabilities: Optional[Iterable[str]] = None) -> Dict[str, str]:
+    if supported_capabilities is None:
+        supported_capabilities = load_capability_descriptions().keys()
+    return {
+        str(name).strip().lower(): str(name).strip().lower()
+        for name in supported_capabilities
+        if str(name).strip()
+    }
+
+
+def normalize_pipeline_analysis(
+    pipeline_analysis: Optional[Dict[str, Any]],
+    supported_capabilities: Optional[Iterable[str]] = None,
+) -> Dict[str, Any]:
+    default = {
+        "should_chain": False,
+        "reason": "No valid pipeline_analysis was provided; defaulting to a single model.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none",
+    }
+    if not isinstance(pipeline_analysis, dict):
+        return default
+
+    should_chain = bool(pipeline_analysis.get("should_chain"))
+    reason = str(pipeline_analysis.get("reason", "")).strip()
+    canonical_capabilities = _canonical_capability_map(supported_capabilities)
+    normalized_stages = []
+    raw_stages = pipeline_analysis.get("stages", [])
+
+    if isinstance(raw_stages, list):
+        for raw_stage in raw_stages:
+            if not isinstance(raw_stage, dict):
+                continue
+            raw_capability = str(raw_stage.get("capability", "")).strip().lower()
+            capability = canonical_capabilities.get(raw_capability)
+            if capability is None:
+                continue
+            normalized_stages.append({
+                "capability": capability,
+                "purpose": str(raw_stage.get("purpose", "")).strip(),
+                "input": str(raw_stage.get("input", "")).strip(),
+                "output": str(raw_stage.get("output", "")).strip(),
+                "preferred_model_type": str(raw_stage.get("preferred_model_type", "")).strip(),
+            })
+
+    if not should_chain:
+        return {
+            "should_chain": False,
+            "reason": reason or "No structured intermediate artifact is expected to reduce later visual scope or reasoning burden.",
+            "stages": [],
+            "artifact_value_score": max(0.0, min(1.0, _safe_weight(pipeline_analysis.get("artifact_value_score"), 0.0))),
+            "information_reduction": str(pipeline_analysis.get("information_reduction", "none")).strip() or "none",
+        }
+
+    if len(normalized_stages) < 2:
+        return {
+            "should_chain": False,
+            "reason": reason or "Pipeline request did not include at least two valid stages; defaulting to a single model.",
+            "stages": [],
+            "artifact_value_score": 0.0,
+            "information_reduction": "none",
+        }
+
+    return {
+        "should_chain": True,
+        "reason": reason or "A specialized intermediate result is expected to reduce later model work.",
+        "stages": normalized_stages,
+        "artifact_value_score": max(0.0, min(1.0, _safe_weight(pipeline_analysis.get("artifact_value_score"), 0.75))),
+        "information_reduction": str(pipeline_analysis.get("information_reduction", "significant")).strip() or "significant",
+    }
+
+
+def _contains_any(text: str, keywords: Iterable[str]) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _is_holistic_without_target_reduction(task_text: str) -> bool:
+    lowered = task_text.lower()
+    return _contains_any(lowered, HOLISTIC_TASK_KEYWORDS) and not _contains_any(lowered, TARGET_REDUCTION_KEYWORDS)
+
+
+def _stage(
+    capability: str,
+    purpose: str,
+    input_text: str,
+    output: str,
+    preferred_model_type: str,
+) -> Dict[str, str]:
+    return {
+        "capability": capability,
+        "purpose": purpose,
+        "input": input_text,
+        "output": output,
+        "preferred_model_type": preferred_model_type,
+    }
+
+
+def _pipeline_from_transition(
+    first_capability: str,
+    second_capability: str,
+    reason: str,
+    second_purpose: str,
+    supported: set[str],
+) -> Optional[Dict[str, Any]]:
+    if first_capability not in supported or second_capability not in supported:
+        return None
+    first_artifact = STRUCTURED_ARTIFACTS_BY_CAPABILITY.get(first_capability, "structured intermediate artifact")
+    second_input = f"{first_artifact} plus the original user goal"
+    return {
+        "should_chain": True,
+        "reason": reason,
+        "stages": [
+            _stage(
+                first_capability,
+                f"Produce {first_artifact} to reduce the visual search space.",
+                "Full image or scene.",
+                first_artifact,
+                "fast_detector" if first_capability == "object_detection" else "specialized_extractor",
+            ),
+            _stage(
+                second_capability,
+                second_purpose,
+                second_input,
+                "Task-specific answer or action guidance.",
+                "navigation_model" if second_capability == "navigation" else "reasoning_vlm",
+            ),
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant",
+        "inference_source": "router_transition_heuristic",
+    }
+
+
+def infer_pipeline_from_information_reduction(
+    task_text: str,
+    routing_analysis: Optional[Dict[str, Any]],
+    pipeline_analysis: Dict[str, Any],
+    supported_capabilities: Iterable[str],
+) -> Dict[str, Any]:
+    if pipeline_analysis.get("should_chain"):
+        return pipeline_analysis
+    if not routing_analysis or _is_holistic_without_target_reduction(task_text):
+        return pipeline_analysis
+
+    supported = {str(capability).strip().lower() for capability in supported_capabilities if str(capability).strip()}
+    task_names = {str(task.get("name", "")).strip().lower() for task in routing_analysis.get("tasks", [])}
+    text = task_text.lower()
+
+    inferred: Optional[Dict[str, Any]] = None
+    if "object_detection" in task_names and "navigation" in task_names:
+        inferred = _pipeline_from_transition(
+            "object_detection",
+            "navigation",
+            "Object detection can produce a target bounding box or coordinates so navigation does not need to search the full scene.",
+            "Use the detected target location to produce movement guidance.",
+            supported,
+        )
+    elif "navigation" in task_names and _contains_any(text, ("find", "locate", "elevator", "entrance", "bus", "target")):
+        inferred = _pipeline_from_transition(
+            "object_detection",
+            "navigation",
+            "The request asks to find a visual target and guide the user; a detector can first compress the scene to a target location.",
+            "Navigate toward the detected target location.",
+            supported,
+        )
+    elif "object_detection" in task_names and (
+        "spatial_relationship" in task_names
+        or "general_reasoning" in task_names
+        or _contains_any(text, ("handle", "passenger", "where", "relative", "localize"))
+    ):
+        second = "spatial_relationship" if "spatial_relationship" in supported else "general_reasoning"
+        inferred = _pipeline_from_transition(
+            "object_detection",
+            second,
+            "Object detection can crop or bound the parent object so localization/reasoning focuses on a much smaller visual region.",
+            "Localize or reason about the requested target within the detected region.",
+            supported,
+        )
+    elif "object_detection" in task_names and "map_web" in task_names and _contains_any(text, ("bus", "entrance", "correct")):
+        second = "spatial_relationship" if "spatial_relationship" in supported else "map_web"
+        inferred = _pipeline_from_transition(
+            "object_detection",
+            second,
+            "Detecting the relevant bus first creates a bounded region, reducing the entrance-finding stage to a smaller visual scope.",
+            "Find the requested entrance or visual detail relative to the detected bus.",
+            supported,
+        )
+    elif (
+        "ocr" in task_names
+        and ("general_reasoning" in task_names or "map_web" in task_names)
+        and _contains_any(text, ("analyze", "summarize", "explain", "interpret", "understand", "compare"))
+    ):
+        second = "general_reasoning" if "general_reasoning" in task_names else "map_web"
+        inferred = _pipeline_from_transition(
+            "ocr",
+            second,
+            "OCR can extract text so the reasoning stage operates on text instead of re-inspecting the full image.",
+            "Analyze or summarize the extracted text.",
+            supported,
+        )
+
+    if inferred is None:
+        return pipeline_analysis
+    return normalize_pipeline_analysis(inferred, supported)
+
+
 def _dynamic_score_weights(routing_analysis: Dict[str, Any]) -> Dict[str, float]:
     task_component = 0.85
     latency_component = 0.15
@@ -282,16 +520,112 @@ def latency_penalty(latency_ms: float) -> float:
     return 1.0 + max(float(latency_ms), 0.0) / 5000.0
 
 
+def _rank_profile_rows(
+    profiles: List[ModelProfile],
+    capability_weights: Dict[str, float],
+    routing_analysis: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    ranking = []
+    for profile in profiles:
+        if routing_analysis:
+            score = _score_with_routing_analysis(profile, routing_analysis)
+            row = {
+                "model": profile.name,
+                "type": profile.type,
+                "source": profile.source,
+                "latency_ms": profile.latency_ms,
+                "latency": profile.latency,
+                **score,
+            }
+        else:
+            capability_score = score_model(profile, capability_weights)
+            penalty = latency_penalty(profile.latency_ms)
+            row = {
+                "model": profile.name,
+                "type": profile.type,
+                "source": profile.source,
+                "latency_ms": profile.latency_ms,
+                "capability_score": capability_score,
+                "latency_penalty": penalty,
+                "final_score": capability_score / penalty,
+            }
+        ranking.append(row)
+
+    ranking.sort(
+        key=lambda item: (
+            item["final_score"],
+            item.get("capability_score", item.get("task_match_score", 0.0)),
+            -item["latency_ms"],
+            item["model"],
+        ),
+        reverse=True,
+    )
+    return ranking
+
+
+def _stage_routing_analysis(capability: str, latency_sensitivity: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "tasks": [{"name": capability, "weight": 1.0, "reason": "Pipeline stage capability."}],
+        "latency_sensitivity": latency_sensitivity or {"level": "medium", "weight": 0.5, "reason": ""},
+    }
+
+
+def _build_pipeline_execution_plan(
+    task_text: str,
+    profiles: List[ModelProfile],
+    pipeline_analysis: Dict[str, Any],
+    routing_analysis: Optional[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    stage_selections = []
+    plan_stages = []
+    latency_sensitivity = (routing_analysis or {}).get("latency_sensitivity")
+
+    for index, stage in enumerate(pipeline_analysis.get("stages", []), start=1):
+        capability = str(stage.get("capability", "")).strip().lower()
+        stage_routing = _stage_routing_analysis(capability, latency_sensitivity)
+        ranking = _rank_profile_rows(profiles, {capability: 1.0}, stage_routing)
+        selected = ranking[0] if ranking else None
+        selection = {
+            "index": index,
+            "capability": capability,
+            "selected_model": selected.get("model") if selected else None,
+            "selected": selected,
+            "ranking": ranking,
+        }
+        stage_selections.append(selection)
+        plan_stages.append({
+            "index": index,
+            **stage,
+            "selected_model": selection["selected_model"],
+            "selected": selected,
+        })
+
+    return stage_selections, {
+        "mode": "pipeline",
+        "task": task_text,
+        "reason": pipeline_analysis.get("reason", ""),
+        "stages": plan_stages,
+    }
+
+
 def rank_models(
     task_text: str,
     models: Optional[Iterable[ModelProfile]] = None,
     capability_descriptions: Optional[Dict[str, List[str]]] = None,
     routing_analysis: Optional[Dict[str, Any]] = None,
+    pipeline_analysis: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     descriptions = capability_descriptions or load_capability_descriptions()
     profiles = list(models) if models is not None else load_model_profiles()
     weights = compute_capability_weights(task_text, descriptions)
     normalized_routing = normalize_routing_analysis(routing_analysis, descriptions.keys())
+    normalized_pipeline = normalize_pipeline_analysis(pipeline_analysis, descriptions.keys())
+    normalized_pipeline = infer_pipeline_from_information_reduction(
+        task_text,
+        normalized_routing,
+        normalized_pipeline,
+        descriptions.keys(),
+    )
     ranking = []
 
     logger.info("[Model Router] request=%s", task_text)
@@ -317,58 +651,75 @@ def rank_models(
             json.dumps({"level": "medium", "weight": 0.5, "reason": "fallback routing without routing_analysis"}, sort_keys=True),
         )
 
-    for profile in profiles:
-        if normalized_routing:
-            score = _score_with_routing_analysis(profile, normalized_routing)
-            row = {
-                "model": profile.name,
-                "type": profile.type,
-                "source": profile.source,
-                "latency_ms": profile.latency_ms,
-                "latency": profile.latency,
-                **score,
-            }
-            ranking.append(row)
-            logger.info(
-                "[Model Router] model_score model=%s task_match=%.4f latency_match=%.4f final_score=%.4f",
-                profile.name,
-                row["task_match_score"],
-                row["latency_match_score"],
-                row["final_score"],
-            )
-        else:
-            capability_score = score_model(profile, weights)
-            penalty = latency_penalty(profile.latency_ms)
-            final_score = capability_score / penalty
-            row = {
-                "model": profile.name,
-                "type": profile.type,
-                "source": profile.source,
-                "latency_ms": profile.latency_ms,
-                "capability_score": capability_score,
-                "latency_penalty": penalty,
-                "final_score": final_score,
-            }
-            ranking.append(row)
-            logger.info(
-                "[Model Router] model_score model=%s task_match=%.4f latency_match=%.4f final_score=%.4f",
-                profile.name,
-                row["capability_score"],
-                1.0 / row["latency_penalty"],
-                row["final_score"],
-            )
-
-    ranking.sort(
-        key=lambda item: (
-            item["final_score"],
-            item.get("capability_score", item.get("task_match_score", 0.0)),
-            -item["latency_ms"],
-            item["model"],
-        ),
-        reverse=True,
+    logger.info(
+        "[Model Router] pipeline_decision=%s",
+        json.dumps({
+            "should_chain": normalized_pipeline["should_chain"],
+            "reason": normalized_pipeline["reason"],
+            "artifact_value_score": normalized_pipeline.get("artifact_value_score", 0.0),
+            "information_reduction": normalized_pipeline.get("information_reduction", "none"),
+        }, sort_keys=True),
     )
+    logger.info("[Model Router] pipeline_stages=%s", json.dumps(normalized_pipeline["stages"], sort_keys=True))
+
+    ranking = _rank_profile_rows(profiles, weights, normalized_routing)
+    for row in ranking:
+        logger.info(
+            "[Model Router] model_score model=%s task_match=%.4f latency_match=%.4f final_score=%.4f",
+            row["model"],
+            row.get("capability_score", row.get("task_match_score", 0.0)),
+            row.get("latency_match_score", 1.0 / row.get("latency_penalty", 1.0)),
+            row["final_score"],
+        )
 
     selected = ranking[0] if ranking else None
+    stage_model_selection = []
+    if normalized_pipeline["should_chain"]:
+        stage_model_selection, final_execution_plan = _build_pipeline_execution_plan(
+            task_text,
+            profiles,
+            normalized_pipeline,
+            normalized_routing,
+        )
+        selected = None
+        for stage_selection in stage_model_selection:
+            logger.info(
+                "[Model Router] stage_model_selection=%s",
+                json.dumps({
+                    "index": stage_selection["index"],
+                    "capability": stage_selection["capability"],
+                    "selected_model": stage_selection["selected_model"],
+                    "final_score": (
+                        round(float(stage_selection["selected"].get("final_score", 0.0)), 4)
+                        if stage_selection.get("selected")
+                        else None
+                    ),
+                }, sort_keys=True),
+            )
+    else:
+        final_execution_plan = {
+            "mode": "single_model",
+            "task": task_text,
+            "selected_model": selected["model"] if selected else None,
+            "selected": selected,
+        }
+
+    logger.info(
+        "[Model Router] final_execution_plan=%s",
+        json.dumps({
+            "mode": final_execution_plan["mode"],
+            "selected_model": final_execution_plan.get("selected_model"),
+            "stages": [
+                {
+                    "index": stage.get("index"),
+                    "capability": stage.get("capability"),
+                    "selected_model": stage.get("selected_model"),
+                }
+                for stage in final_execution_plan.get("stages", [])
+            ],
+        }, sort_keys=True),
+    )
+
     if selected:
         logger.info(
             "[Model Router] selected_model=%s final_score=%.4f",
@@ -379,14 +730,21 @@ def rank_models(
         "task": task_text,
         "capability_weights": weights,
         "routing_analysis": normalized_routing,
+        "pipeline_analysis": normalized_pipeline,
         "ranking": ranking,
         "selected_model": selected["model"] if selected else None,
         "selected": selected,
+        "stage_model_selection": stage_model_selection,
+        "final_execution_plan": final_execution_plan,
     }
 
 
-def select_model(task_text: str, routing_analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    return rank_models(task_text, routing_analysis=routing_analysis)
+def select_model(
+    task_text: str,
+    routing_analysis: Optional[Dict[str, Any]] = None,
+    pipeline_analysis: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return rank_models(task_text, routing_analysis=routing_analysis, pipeline_analysis=pipeline_analysis)
 
 
 def _text_parts_from_content(content: Any) -> List[str]:
@@ -469,6 +827,8 @@ __all__ = [
     "load_model_profiles",
     "compute_capability_weights",
     "normalize_routing_analysis",
+    "normalize_pipeline_analysis",
+    "infer_pipeline_from_information_reduction",
     "score_model",
     "latency_penalty",
     "rank_models",

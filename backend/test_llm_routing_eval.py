@@ -3,8 +3,8 @@
 
 This script:
 1. Picks tasks from route_task_batch.TASKS by index.
-2. Calls the existing system LLM once per task to get routing_analysis.
-3. Runs centralized model_router.select_model(task, routing_analysis=...).
+2. Calls the existing system LLM once per task to get routing_analysis and pipeline_analysis.
+3. Runs centralized model_router.select_model(task, routing_analysis=..., pipeline_analysis=...).
 4. Sleeps between requests to reduce rate-limit risk.
 """
 
@@ -62,6 +62,13 @@ Analyze this user request and return ONLY a valid JSON object with this exact sc
             {{"name": "general_reasoning", "weight": 0.2, "reason": "..."}}
     ],
         "latency_sensitivity": {{"level": "high|medium|low", "weight": 0.8, "reason": "..."}}
+  }},
+  "pipeline_analysis": {{
+    "should_chain": false,
+    "reason": "...",
+    "artifact_value_score": 0.0,
+    "information_reduction": "none|minor|moderate|significant",
+    "stages": []
   }}
 }}
 
@@ -85,6 +92,20 @@ Capability definitions:
 - high latency_sensitivity for live camera, navigation, object finding, real-time assistive feedback.
 - medium latency_sensitivity for normal interactive tasks.
 - low latency_sensitivity for non-urgent/offline/codegen tasks.
+- First determine the capability distribution. Then separately decide whether those capabilities should run in one model or as a pipeline.
+- Do not chain simply because multiple capabilities exist.
+- Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
+- Decide based on information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
+- Useful intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
+- Increase chaining confidence for useful transitions: object_detection -> spatial_relationship, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, spatial_relationship -> navigation, map_web -> general_reasoning.
+- Prefer should_chain=true for "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text".
+- Prefer should_chain=false for holistic tasks like room description, scene description, chart explanation, outfit evaluation, and image summarization when no meaningful artifact reduces later work.
+- Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
+- Include artifact_value_score from 0.0 to 1.0 and information_reduction as none/minor/moderate/significant.
+- Keep pipelines as small as possible. Stage capabilities must use the same allowed task names. preferred_model_type should describe a model type, not a specific model name.
+
+If should_chain=true, use this stage shape:
+{{"capability": "object_detection", "purpose": "...", "input": "...", "output": "...", "preferred_model_type": "fast_detector"}}
 
 User request:
 {task_text}
@@ -128,14 +149,29 @@ def eval_task(task: str, sleep_seconds: float) -> Dict[str, Any]:
     raw = extract_text(response)
     parsed = parse_json_text(raw)
     routing_analysis = parsed.get("routing_analysis") if isinstance(parsed, dict) else None
+    pipeline_analysis = parsed.get("pipeline_analysis") if isinstance(parsed, dict) else None
 
-    route_result = model_router.select_model(task, routing_analysis=routing_analysis)
+    route_result = model_router.select_model(
+        task,
+        routing_analysis=routing_analysis,
+        pipeline_analysis=pipeline_analysis,
+    )
 
     row = {
         "task": task,
         "raw_response": raw,
         "routing_analysis": route_result.get("routing_analysis"),
+        "pipeline_analysis": route_result.get("pipeline_analysis"),
         "selected_model": route_result.get("selected_model"),
+        "final_execution_plan": route_result.get("final_execution_plan"),
+        "stage_model_selection": [
+            {
+                "index": x.get("index"),
+                "capability": x.get("capability"),
+                "selected_model": x.get("selected_model"),
+            }
+            for x in route_result.get("stage_model_selection", [])
+        ],
         "top3": [
             {
                 "model": x.get("model"),

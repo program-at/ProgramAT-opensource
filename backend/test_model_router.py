@@ -129,6 +129,218 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         self.assertEqual(result["selected_model"], "balanced_fast")
         self.assertIsNotNone(result.get("routing_analysis"))
 
+    def test_pipeline_analysis_false_keeps_single_model_plan(self):
+        profiles = [
+            model_router.ModelProfile(
+                "general_model",
+                "general_vlm",
+                1000,
+                "test",
+                {"general_reasoning": 0.9, "object_detection": 0.8},
+                latency=0.7,
+            ),
+            model_router.ModelProfile(
+                "detector",
+                "specialized_expert",
+                80,
+                "test",
+                {"object_detection": 1.0, "general_reasoning": 0.0},
+                latency=0.98,
+            ),
+        ]
+        routing_analysis = {
+            "tasks": [
+                {"name": "general_reasoning", "weight": 0.7, "reason": "Holistic scene summary."},
+                {"name": "object_detection", "weight": 0.3, "reason": "Notice key objects."},
+            ],
+            "latency_sensitivity": {"level": "medium", "weight": 0.5, "reason": ""},
+        }
+        pipeline_analysis = {
+            "should_chain": False,
+            "reason": "The later model would still need the full image.",
+            "stages": [],
+        }
+
+        result = model_router.rank_models(
+            "Describe this room and mention important objects.",
+            profiles,
+            routing_analysis=routing_analysis,
+            pipeline_analysis=pipeline_analysis,
+        )
+
+        self.assertEqual(result["selected_model"], "general_model")
+        self.assertFalse(result["pipeline_analysis"]["should_chain"])
+        self.assertEqual(result["stage_model_selection"], [])
+        self.assertEqual(result["final_execution_plan"]["mode"], "single_model")
+
+    def test_pipeline_analysis_true_selects_model_per_stage(self):
+        profiles = [
+            model_router.ModelProfile(
+                "general_navigation",
+                "general_vlm",
+                1200,
+                "test",
+                {"navigation": 0.9, "object_detection": 0.2},
+                latency=0.7,
+            ),
+            model_router.ModelProfile(
+                "fast_detector",
+                "specialized_expert",
+                80,
+                "test",
+                {"object_detection": 1.0, "navigation": 0.0},
+                latency=0.98,
+            ),
+            model_router.ModelProfile(
+                "weak_allrounder",
+                "general_vlm",
+                300,
+                "test",
+                {"object_detection": 0.4, "navigation": 0.4},
+                latency=0.9,
+            ),
+        ]
+        routing_analysis = {
+            "tasks": [
+                {"name": "object_detection", "weight": 0.5, "reason": "Find the door."},
+                {"name": "navigation", "weight": 0.5, "reason": "Guide the user to it."},
+            ],
+            "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "Live guidance."},
+        }
+        pipeline_analysis = {
+            "should_chain": True,
+            "reason": "A door bounding box reduces navigation work.",
+            "stages": [
+                {
+                    "capability": "object_detection",
+                    "purpose": "Find the door.",
+                    "input": "Full image.",
+                    "output": "Door bounding box.",
+                    "preferred_model_type": "fast_detector",
+                },
+                {
+                    "capability": "navigation",
+                    "purpose": "Guide the user to the detected door.",
+                    "input": "Door bounding box and current frame.",
+                    "output": "Movement guidance.",
+                    "preferred_model_type": "reasoning_vlm",
+                },
+            ],
+        }
+
+        result = model_router.rank_models(
+            "Find the door and guide me there.",
+            profiles,
+            routing_analysis=routing_analysis,
+            pipeline_analysis=pipeline_analysis,
+        )
+
+        self.assertIsNone(result["selected_model"])
+        self.assertTrue(result["pipeline_analysis"]["should_chain"])
+        self.assertEqual(result["final_execution_plan"]["mode"], "pipeline")
+        self.assertEqual(
+            [stage["selected_model"] for stage in result["stage_model_selection"]],
+            ["fast_detector", "general_navigation"],
+        )
+
+    def test_pipeline_analysis_requires_two_valid_stages(self):
+        result = model_router.normalize_pipeline_analysis(
+            {
+                "should_chain": True,
+                "reason": "Only one valid stage was provided.",
+                "stages": [
+                    {"capability": "object_detection", "purpose": "Find objects."},
+                    {"capability": "unknown", "purpose": "Invalid."},
+                ],
+            },
+            supported_capabilities=["object_detection", "navigation"],
+        )
+
+        self.assertFalse(result["should_chain"])
+        self.assertEqual(result["stages"], [])
+
+    def test_information_reduction_infers_find_then_guide_pipeline(self):
+        profiles = [
+            model_router.ModelProfile(
+                "navigator",
+                "general_vlm",
+                1000,
+                "test",
+                {"navigation": 0.9, "object_detection": 0.1},
+                latency=0.7,
+            ),
+            model_router.ModelProfile(
+                "detector",
+                "specialized_expert",
+                80,
+                "test",
+                {"object_detection": 1.0, "navigation": 0.0},
+                latency=0.98,
+            ),
+        ]
+        routing_analysis = {
+            "tasks": [{"name": "navigation", "weight": 1.0, "reason": "Guide to elevator."}],
+            "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "Live navigation."},
+        }
+        pipeline_analysis = {
+            "should_chain": False,
+            "reason": "A single VLM can do it.",
+            "stages": [],
+        }
+
+        result = model_router.rank_models(
+            "Find the elevator and guide me to it.",
+            profiles,
+            {"object_detection": ["Detect objects"], "navigation": ["Navigate"]},
+            routing_analysis=routing_analysis,
+            pipeline_analysis=pipeline_analysis,
+        )
+
+        self.assertTrue(result["pipeline_analysis"]["should_chain"])
+        self.assertEqual(result["final_execution_plan"]["mode"], "pipeline")
+        self.assertEqual(
+            [stage["capability"] for stage in result["pipeline_analysis"]["stages"]],
+            ["object_detection", "navigation"],
+        )
+
+    def test_information_reduction_infers_bus_entrance_pipeline(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Identify the correct bus and tell me where the entrance is.",
+            {
+                "tasks": [
+                    {"name": "map_web", "weight": 0.6, "reason": "Identify correct bus."},
+                    {"name": "object_detection", "weight": 0.4, "reason": "Find entrance."},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 0.8, "reason": ""},
+            },
+            {"should_chain": False, "reason": "Too conservative.", "stages": []},
+            ["object_detection", "map_web", "spatial_relationship"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(result["stages"][0]["capability"], "object_detection")
+        self.assertEqual(result["stages"][1]["capability"], "spatial_relationship")
+
+    def test_information_reduction_infers_parent_object_localization_pipeline(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Find the passenger-side door handle.",
+            {
+                "tasks": [
+                    {"name": "object_detection", "weight": 0.7, "reason": "Find handle."},
+                    {"name": "general_reasoning", "weight": 0.3, "reason": "Reason about passenger side."},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": ""},
+            },
+            {"should_chain": False, "reason": "Too conservative.", "stages": []},
+            ["object_detection", "spatial_relationship", "general_reasoning"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "spatial_relationship"],
+        )
+
     def test_rank_models_falls_back_when_routing_analysis_invalid(self):
         descriptions = {"ocr": ["Read text from an image."]}
         profiles = [
