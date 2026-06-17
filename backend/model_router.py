@@ -24,43 +24,6 @@ CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "gemini/gemini-2.0-flash-preview")
 CAPABILITY_EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 TOP_K_CAPABILITY_SIMILARITIES = 2
-SPARSITY_THRESHOLD = 0.02
-
-OCR_INTENT_TERMS = (
-    "read",
-    "text",
-    "label",
-    "sign",
-    "what does this say",
-    "instructions",
-    "expiration date",
-    "menu",
-    "document",
-)
-OBJECT_DETECTION_INTENT_TERMS = (
-    "find",
-    "locate",
-    "identify",
-    "detect",
-)
-NAVIGATION_INTENT_TERMS = (
-    "guide",
-    "navigate",
-    "go to",
-    "reach",
-    "entrance",
-    "exit",
-)
-SPATIAL_INTENT_TERMS = (
-    "left",
-    "right",
-    "behind",
-    "front",
-    "near",
-    "far",
-    "distance",
-    "relative",
-)
 
 
 @dataclass(frozen=True)
@@ -88,10 +51,41 @@ def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[
         raise ValueError(f"No capabilities configured in {path}")
 
     descriptions: Dict[str, List[str]] = {}
-    for capability, values in capabilities.items():
-        if not isinstance(values, list) or not values:
-            raise ValueError(f"Capability {capability!r} must contain a non-empty list of descriptions")
-        descriptions[str(capability)] = [str(value) for value in values if str(value).strip()]
+    for capability, raw in capabilities.items():
+        capability_name = str(capability)
+        if isinstance(raw, list):
+            values = [str(value).strip() for value in raw if str(value).strip()]
+            if not values:
+                raise ValueError(f"Capability {capability_name!r} must contain a non-empty list of descriptions")
+            descriptions[capability_name] = values
+            continue
+
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"Capability {capability_name!r} must be a list or mapping with description/include_examples/exclude_examples"
+            )
+
+        description = str(raw.get("description", "")).strip()
+        include_examples = raw.get("include_examples", [])
+        exclude_examples = raw.get("exclude_examples", [])
+        if include_examples is None:
+            include_examples = []
+        if exclude_examples is None:
+            exclude_examples = []
+        if not isinstance(include_examples, list) or not isinstance(exclude_examples, list):
+            raise ValueError(
+                f"Capability {capability_name!r} include_examples/exclude_examples must be lists"
+            )
+
+        values = []
+        if description:
+            values.append(description)
+        values.extend(str(value).strip() for value in include_examples if str(value).strip())
+        if not values:
+            raise ValueError(
+                f"Capability {capability_name!r} must provide description and/or include_examples"
+            )
+        descriptions[capability_name] = values
     return descriptions
 
 
@@ -128,29 +122,11 @@ def _normalized_capability_descriptions(
     )
 
 
-def _contains_intent(task_text: str, terms: Tuple[str, ...]) -> bool:
-    text = task_text.lower()
-    return any(term in text for term in terms)
-
-
 def _average_top_k(values: List[float], k: int = TOP_K_CAPABILITY_SIMILARITIES) -> float:
     if not values:
         return 0.0
     top_values = sorted(values, reverse=True)[: max(1, k)]
     return float(sum(top_values) / len(top_values))
-
-
-def _keyword_boosts(task_text: str) -> Dict[str, float]:
-    boosts = {"ocr": 0.0, "object_detection": 0.0, "navigation": 0.0, "spatial_relationship": 0.0}
-    if _contains_intent(task_text, OCR_INTENT_TERMS):
-        boosts["ocr"] += 0.10
-    if _contains_intent(task_text, OBJECT_DETECTION_INTENT_TERMS):
-        boosts["object_detection"] += 0.06
-    if _contains_intent(task_text, NAVIGATION_INTENT_TERMS):
-        boosts["navigation"] += 0.05
-    if _contains_intent(task_text, SPATIAL_INTENT_TERMS):
-        boosts["spatial_relationship"] += 0.05
-    return boosts
 
 
 @lru_cache(maxsize=1)
@@ -224,22 +200,22 @@ def compute_capability_weights(
         capability: max(0.0, _average_top_k(values))
         for capability, values in similarities.items()
     }
-    boosts = _keyword_boosts(task_text)
-    for capability, boost in boosts.items():
-        if capability in raw_weights:
-            raw_weights[capability] += boost
-
-    if raw_weights:
-        max_weight = max(raw_weights.values())
-        if max_weight > 0.0:
-            raw_weights = {
-                capability: (weight if weight >= max_weight * SPARSITY_THRESHOLD else 0.0)
-                for capability, weight in raw_weights.items()
-            }
+    # Keep only the top 3 capabilities; zero out the rest before normalizing.
+    top3 = set(
+        capability for capability, _ in
+        sorted(raw_weights.items(), key=lambda item: item[1], reverse=True)[:3]
+    )
+    raw_weights = {
+        capability: (weight if capability in top3 else 0.0)
+        for capability, weight in raw_weights.items()
+    }
     total = sum(raw_weights.values())
     if total <= 0.0:
-        fallback = "general_reasoning" if "general_reasoning" in descriptions else next(iter(descriptions))
-        return {capability: (1.0 if capability == fallback else 0.0) for capability in descriptions}
+        capability_count = len(descriptions)
+        if capability_count == 0:
+            return {}
+        uniform_weight = 1.0 / capability_count
+        return {capability: uniform_weight for capability in descriptions}
     return {capability: raw_weights[capability] / total for capability in descriptions}
 
 

@@ -14,18 +14,15 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
     def test_loads_profiles_and_capabilities_from_yaml(self):
         capabilities = model_router.load_capability_descriptions()
         profiles = model_router.load_model_profiles()
+        raw = model_router._load_yaml(model_router.CAPABILITY_PROFILES_PATH)["capabilities"]
 
         self.assertIn("object_detection", capabilities)
         self.assertIn("ocr", capabilities)
-        self.assertEqual(
-            capabilities["map_web"],
-            [
-                "Interpret a map or route diagram.",
-                "Read charts, tables, timetables, and schedules.",
-                "Understand webpage and app layouts.",
-                "Describe structured visual layouts such as calendars and departure boards.",
-            ],
-        )
+        self.assertIsInstance(raw["ocr"], dict)
+        self.assertIn("description", raw["ocr"])
+        self.assertIn("include_examples", raw["ocr"])
+        self.assertIn("exclude_examples", raw["ocr"])
+        self.assertTrue(len(capabilities["map_web"]) >= 3)
         self.assertIn("YOLO-World", {profile.name for profile in profiles})
         self.assertIn("GoogleVisionOCR", {profile.name for profile in profiles})
 
@@ -58,9 +55,10 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         self.assertGreater(weights["ocr"], weights["object_detection"])
         self.assertAlmostEqual(sum(weights.values()), 1.0)
 
-    def test_compute_capability_weights_applies_keyword_boosts(self):
+    def test_compute_capability_weights_preserves_secondary_capabilities(self):
         descriptions = {
             "ocr": ["ocr"],
+            "map_web": ["map"],
             "object_detection": ["object"],
             "navigation": ["navigation"],
             "spatial_relationship": ["spatial"],
@@ -68,20 +66,46 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         }
 
         with patch.object(model_router, "_capability_similarities", return_value={
-            "ocr": [0.20],
-            "object_detection": [0.20],
-            "navigation": [0.20],
-            "spatial_relationship": [0.20],
-            "general_reasoning": [0.20],
+            "ocr": [0.10],
+            "map_web": [0.15],
+            "object_detection": [0.50],
+            "navigation": [0.25],
+            "spatial_relationship": [0.35],
+            "general_reasoning": [0.10],
         }):
             weights = model_router.compute_capability_weights(
-                "Read the sign and go to the exit on the left.",
+                "Find an empty chair.",
                 descriptions,
             )
 
-        self.assertEqual(max(weights, key=weights.get), "ocr")
-        self.assertGreater(weights["navigation"], weights["general_reasoning"])
+        self.assertEqual(max(weights, key=weights.get), "object_detection")
         self.assertGreater(weights["spatial_relationship"], weights["general_reasoning"])
+        self.assertGreater(weights["navigation"], 0.0)
+
+    def test_compute_capability_weights_keeps_all_positive_capabilities(self):
+        descriptions = {
+            "ocr": ["ocr"],
+            "map_web": ["map"],
+            "object_detection": ["object"],
+            "navigation": ["navigation"],
+            "spatial_relationship": ["spatial"],
+            "general_reasoning": ["general"],
+        }
+
+        with patch.object(model_router, "_capability_similarities", return_value={
+            "ocr": [0.30],
+            "map_web": [0.25],
+            "object_detection": [0.40],
+            "navigation": [0.15],
+            "spatial_relationship": [0.35],
+            "general_reasoning": [0.10],
+        }):
+            weights = model_router.compute_capability_weights("Read a street sign.", descriptions)
+
+        self.assertGreater(weights["ocr"], 0.0)
+        self.assertGreater(weights["map_web"], 0.0)
+        self.assertGreater(weights["general_reasoning"], 0.0)
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
 
     def test_score_model_treats_missing_capabilities_as_zero(self):
         profile = model_router.ModelProfile(

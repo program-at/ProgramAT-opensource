@@ -1,55 +1,115 @@
 capabilities:
   general_reasoning:
-    - "Answer questions about a scene."
-    - "Explain what is happening."
-    - "Infer information from visual context."
-    - "Perform visual reasoning."
+    description: "General visual understanding and reasoning when no specialized capability dominates."
+    include_examples:
+      - "Tell me what is happening around me right now so I can decide what to do next."
+      - "Give me a quick summary of this scene and mention anything unusual I should pay attention to."
+      - "Explain whether this environment looks safe to continue walking through."
+      - "Help me understand what the people in front of me are doing."
+      - "Describe the overall situation in one short update I can listen to while moving."
+    exclude_examples:
+      - "Read a label or document exactly."
+      - "Detect whether a door is present."
+      - "Guide me to an entrance."
 
   ocr:
-    - "Read text from an image."
-    - "Tell me what this sign says."
-    - "What does this sign say?"
-    - "Read the text on a sign."
-    - "Tell me what the sign says."
-    - "Extract written information."
-    - "Read a label or document."
-    - "Read the medicine bottle label." 
-    - "Read medicine bottle label text."
-    - "Read a prescription or medication label."
+    description: "Plain text extraction from visible writing only."
+    include_examples:
+      - "Tell me what medication this bottle contains and read the dosage information."
+      - "I need the expiration date on this package, please read it exactly."
+      - "What food options are available on this restaurant menu?"
+      - "Please read the handwritten note on this paper line by line."
+      - "Read the setup instructions on this appliance so I can use it safely."
+      - "Tell me the times listed on this departure board for the next trains."
+      - "Read today's appointments from this calendar in order."
+      - "Extract all visible text from this sign and include any numbers you see."
+    exclude_examples:
+      - "Interpret a chart trend."
+      - "Interpret a map route."
+      - "Explain a webpage layout."
+      - "Interpret symbols, icons, or diagrams."
 
   object_detection:
-    - "Help me find an object."
-    - "Locate a specific item."
-    - "Find a target object."
-    - "Find a cup, handle, door, or object in the scene."
-    - "Help me find my cup."
+    description: "Detect or identify whether objects are present in the scene."
+    include_examples:
+      - "What is this object I am pointing the camera at?"
+      - "Name the main objects in the scene so I know what is in front of me."
+      - "Is there a door in front of me right now?"
+      - "Detect obstacles in this hallway and tell me what they are."
+      - "Find my phone."
+      - "Find an empty chair."
+      - "Find the elevator button."
+      - "Check whether there is a crosswalk sign visible ahead."
+      - "Let me know if you can see a staircase in this frame."
+      - "Identify the items on this table so I can choose the right one."
+    exclude_examples:
+      - "Find/locate my keys and tell me where they are."
+      - "Guide me to the nearest exit."
+      - "Read the label on this bottle."
 
   map_web:
-    - "Interpret a map or route diagram."
-    - "Read charts, tables, timetables, and schedules."
-    - "Understand webpage and app layouts."
-    - "Describe structured visual layouts such as calendars and departure boards."
+    description: "Structured visual reasoning for maps, charts, tables, layouts, diagrams, icons, and symbols."
+    include_examples:
+      - "Interpret this subway map and tell me which line goes to downtown."
+      - "Explain what this bar chart shows in simple terms."
+      - "Help me understand the structure of this table and what each column means."
+      - "Describe the layout of this webpage so I can navigate the sections in order."
+      - "Interpret the symbols on this transit diagram and explain what each one represents."
+      - "Tell me how the controls are organized in this app screen layout."
+      - "Summarize the key information from this dashboard with charts and icons."
+    exclude_examples:
+      - "Only read plain text from a label or sign."
+      - "Only extract a date from text."
+      - "Detect whether an object is present."
 
   spatial_relationship:
-    - "Describe where objects are located."
-    - "Reason about relative positions."
-    - "Explain left, right, front, and behind."
-    - "Understand distances between objects."
-    - "Explain the relationship between objects."
+    description: "Relative and 3D positioning, including direction and distance between objects."
+    include_examples:
+      - "Is the cup left or right of the bottle?"
+      - "Tell me whether the chair is in front of me or slightly behind me."
+      - "How far away are the stairs from where I am standing?"
+      - "Help me locate my phone and tell me where it is relative to me."
+      - "Tell me whether the doorway is near or far and roughly how many steps away it is."
+      - "Describe the position of the trash can relative to the bench."
+      - "Explain the room layout so I know where the table is compared with the sofa."
+      - "Tell me if the object I need is above, below, or at hand level."
+    exclude_examples:
+      - "Read text from a menu."
+      - "Interpret a chart or map symbol."
+      - "Guide me to the entrance."
 
   navigation:
-    - "Guide me toward a destination."
-    - "Help me move through an environment."
-    - "Provide route assistance."
-    - "Navigate to a destination."
-    - "Guide me to an entrance."
+    description: "Actionable movement guidance toward destinations, entrances, exits, and reachable targets."
+    include_examples:
+      - "Guide me to the entrance and let me know when I arrive."
+      - "Help me reach the nearest available seat without bumping into people."
+      - "Navigate me to the exit from where I am standing now."
+      - "I need to reach the elevator, please give me step-by-step guidance."
+      - "Help me go to the reception desk and warn me before any turns."
+      - "Take me to the bus stop entrance and confirm when I am aligned with it."
+      - "Guide me through this crowded hallway to a clear path forward."
+      - "Help me move toward the doorway and tell me when to stop."
+    exclude_examples:
+      - "Only detect objects in the scene."
+      - "Only describe left/right relationships."
+      - "Only read text from a sign."
 
   camera_motion:
-    - "Understand camera movement."
-    - "Reason about viewpoint changes."
-    - "Analyze motion from camera movement."
+    description: "Reasoning about movement induced by camera viewpoint change."
+    include_examples:
+      - "Understand camera movement."
+      - "Reason about viewpoint changes."
+      - "Analyze motion from camera movement."
+    exclude_examples:
+      - "Detect static objects only."
+      - "Read text from a label."
 
   video:
-    - "Analyze video content."
-    - "Understand events across frames."
-    - "Reason over temporal visual information."
+    description: "Temporal understanding across frames and event progression in video."
+    include_examples:
+      - "Analyze video content."
+      - "Understand events across frames."
+      - "Reason over temporal visual information."
+    exclude_examples:
+      - "Single-frame OCR."
+      - "Single-frame object presence check."
