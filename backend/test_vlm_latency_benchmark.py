@@ -12,7 +12,8 @@ The script writes a JSON report with timings and a short response preview for ea
 You can also run grouped benchmarks with --group:
 - all: all non-Qwen VLMs
 - gemini: only Gemini models
-- others: non-Gemini models
+- llava: only LLaVA models
+- others: non-Gemini and non-LLaVA models
 """
 
 from __future__ import annotations
@@ -73,13 +74,25 @@ def _is_gemini_profile(profile: Any) -> bool:
     return name.startswith("gemini") or model.startswith("gemini/")
 
 
-def _select_profiles(group: Literal["all", "gemini", "others"] = "all") -> List[Any]:
+def _is_llava_profile(profile: Any) -> bool:
+    name = _normalize_name(getattr(profile, "name", ""))
+    model = _normalize_name(getattr(profile, "model", ""))
+    return "llava" in name or "llava" in model
+
+
+def _select_profiles(group: Literal["all", "gemini", "llava", "others"] = "all") -> List[Any]:
     profiles = [profile for profile in load_model_profiles() if getattr(profile, "type", "") == "general_vlm"]
     profiles = [profile for profile in profiles if not _is_qwen_profile(profile)]
     if group == "gemini":
         return [profile for profile in profiles if _is_gemini_profile(profile)]
+    if group == "llava":
+        return [profile for profile in profiles if _is_llava_profile(profile)]
     if group == "others":
-        return [profile for profile in profiles if not _is_gemini_profile(profile)]
+        return [
+            profile
+            for profile in profiles
+            if not _is_gemini_profile(profile) and not _is_llava_profile(profile)
+        ]
     return profiles
 
 
@@ -169,14 +182,14 @@ def _benchmark_local_model(profile: Any, image: Image.Image, prompt: str, model_
             model = AutoModelForImageTextToText.from_pretrained(
                 model_id,
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                 device_map="auto" if torch.cuda.is_available() else None,
             )
         except Exception:
             model = AutoModelForCausalLM.from_pretrained(
                 model_id,
                 trust_remote_code=True,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
                 device_map="auto" if torch.cuda.is_available() else None,
             )
         model.eval()
@@ -254,7 +267,11 @@ def benchmark_model(profile: Any, image: Image.Image, prompt: str) -> BenchmarkR
     return _benchmark_api_model(profile, image, prompt)
 
 
-def run_benchmark(image_path: Path, prompt: str, group: Literal["all", "gemini", "others"] = "all") -> Dict[str, Any]:
+def run_benchmark(
+    image_path: Path,
+    prompt: str,
+    group: Literal["all", "gemini", "llava", "others"] = "all",
+) -> Dict[str, Any]:
     image = _load_image(image_path)
     profiles = _select_profiles(group=group)
     if not profiles:
@@ -301,7 +318,7 @@ def main() -> None:
     parser.add_argument(
         "--group",
         type=str,
-        choices=["all", "gemini", "others"],
+        choices=["all", "gemini", "llava", "others"],
         default="all",
         help="Model group to benchmark",
     )

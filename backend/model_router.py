@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
 MODEL_PROFILES_PATH = BACKEND_DIR / "model_profiles.yaml"
 CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
-SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "gemini/gemini-2.0-flash-preview")
+SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "grok/llama-3.1-8b-instant")
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 
 STRUCTURED_ARTIFACTS_BY_CAPABILITY = {

@@ -63,22 +63,6 @@ models:
       camera_motion: 0.259
       video: 0.628
 
-  Gemini-2.0-flash:
-    type: general_vlm
-    model: gemini/gemini-2.0-flash
-    latency_ms: 700
-    latency: 0.86
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.694
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.000
-      spatial_relationship: 0.723
-      navigation: 0.000
-      camera_motion: 0.249
-      video: 0.710
-
   GPT-4o:
     type: general_vlm
     model: openai/gpt-4o

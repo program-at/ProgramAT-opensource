@@ -18,6 +18,7 @@ import io
 import logging
 import sys
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import cv2
@@ -146,6 +147,191 @@ def _format_capability_profiles_for_prompt() -> tuple[str, list[str]]:
         if notes:
             lines.append(f"  notes: {notes}")
     return "\n".join(lines), names
+
+
+@dataclass
+class ToolPlanningContext:
+    """Advisory planning context derived from the model router result."""
+
+    routing_analysis: Dict[str, Any]
+    pipeline_analysis: Dict[str, Any]
+    selected_model: Optional[str]
+    execution_plan: Dict[str, Any]
+
+    @classmethod
+    def from_routing_result(cls, routing_result: Dict[str, Any]) -> "ToolPlanningContext":
+        return cls(
+            routing_analysis=routing_result.get('routing_analysis') or {},
+            pipeline_analysis=routing_result.get('pipeline_analysis') or {},
+            selected_model=routing_result.get('selected_model'),
+            execution_plan=routing_result.get('final_execution_plan') or {},
+        )
+
+    def to_routing_result(self) -> Dict[str, Any]:
+        return {
+            'routing_analysis': self.routing_analysis,
+            'pipeline_analysis': self.pipeline_analysis,
+            'selected_model': self.selected_model,
+            'final_execution_plan': self.execution_plan,
+        }
+
+    def execution_mode(self) -> str:
+        mode = str(self.execution_plan.get('mode') or '').strip().lower()
+        if mode:
+            return mode
+        should_chain = bool(self.pipeline_analysis.get('should_chain'))
+        return 'pipeline' if should_chain else 'single_model'
+
+    def recommended_stage_count(self) -> int:
+        stages = self.execution_plan.get('stages') or []
+        if stages:
+            return len(stages)
+        return 1 if self.execution_mode() == 'single_model' else 0
+
+    def stage_summaries(self) -> List[Dict[str, Any]]:
+        stages = self.execution_plan.get('stages') or []
+        summaries: List[Dict[str, Any]] = []
+        for index, stage in enumerate(stages, start=1):
+            summaries.append(
+                {
+                    'index': index,
+                    'capability': stage.get('capability', ''),
+                    'model': stage.get('selected_model') or stage.get('preferred_model_type') or '',
+                    'produces': stage.get('output', ''),
+                    'consumes': stage.get('input', ''),
+                    'purpose': stage.get('purpose', ''),
+                }
+            )
+        return summaries
+
+    def selected_model_display(self) -> str:
+        if self.selected_model:
+            return str(self.selected_model)
+        if self.execution_mode() == 'pipeline':
+            return 'stage-specific (pipeline)'
+        selected = self.execution_plan.get('selected_model')
+        return str(selected) if selected else 'unavailable'
+
+    def issue_metadata(self) -> Dict[str, Any]:
+        return {
+            'execution_mode': self.execution_mode(),
+            'recommended_stage_count': self.recommended_stage_count(),
+            'stages': self.stage_summaries(),
+        }
+
+
+def _build_tool_planning_context(task_text: str, parsed_data: dict) -> ToolPlanningContext:
+    routing_result = select_model(
+        task_text,
+        routing_analysis=parsed_data.get('routing_analysis'),
+        pipeline_analysis=parsed_data.get('pipeline_analysis'),
+    )
+    return ToolPlanningContext.from_routing_result(routing_result)
+
+
+def _log_model_router_observability(task_text: str, planning: ToolPlanningContext):
+    """Emit concise, human-readable router logs for planning observability."""
+    logger.info("========== MODEL ROUTER ==========")
+    logger.info("Task:")
+    logger.info("%s", task_text)
+    logger.info("")
+    logger.info("Selected Model:")
+    logger.info("%s", planning.selected_model_display())
+    logger.info("")
+    logger.info("Execution Mode:")
+    logger.info("%s", planning.execution_mode())
+    logger.info("")
+    logger.info("Recommended Stage Count:")
+    logger.info("%s", planning.recommended_stage_count())
+    logger.info("")
+
+    stages = planning.stage_summaries()
+    for stage in stages:
+        logger.info("Stage %s:", stage.get('index'))
+        logger.info("%s", stage.get('capability') or 'unknown')
+        logger.info("")
+        logger.info("Model:")
+        logger.info("%s", stage.get('model') or 'unavailable')
+        logger.info("")
+        if stage.get('produces'):
+            logger.info("Produces:")
+            logger.info("%s", stage.get('produces'))
+            logger.info("")
+        if stage.get('consumes'):
+            logger.info("Consumes:")
+            logger.info("%s", stage.get('consumes'))
+            logger.info("")
+
+    reason = planning.pipeline_analysis.get('reason') or planning.execution_plan.get('reason') or ''
+    if reason:
+        logger.info("Reason:")
+        logger.info("%s", reason)
+    logger.info("==================================")
+
+
+def _build_router_analysis_markdown(planning: ToolPlanningContext) -> str:
+    lines = [
+        "## Router Analysis",
+        "",
+        "Execution Mode:",
+        planning.execution_mode(),
+        "",
+        "Selected model:",
+        planning.selected_model_display(),
+        "",
+        "Recommended stages:",
+        str(planning.recommended_stage_count()),
+        "",
+    ]
+
+    stages = planning.stage_summaries()
+    if stages:
+        for stage in stages:
+            lines.extend(
+                [
+                    f"Stage {stage.get('index')}:",
+                    str(stage.get('capability') or 'unknown'),
+                    "Preferred Model:",
+                    str(stage.get('model') or 'unavailable'),
+                ]
+            )
+            if stage.get('produces'):
+                lines.extend([
+                    "Produces:",
+                    str(stage.get('produces')),
+                ])
+            if stage.get('consumes'):
+                lines.extend([
+                    "Consumes:",
+                    str(stage.get('consumes')),
+                ])
+            lines.append("")
+
+    reason = planning.pipeline_analysis.get('reason') or planning.execution_plan.get('reason') or ''
+    if reason:
+        lines.extend([
+            "Reason:",
+            str(reason),
+            "",
+        ])
+
+    return "\n".join(lines).rstrip()
+
+
+def _append_router_sections_to_issue_body(body: str, planning: ToolPlanningContext) -> str:
+    router_section = _build_router_analysis_markdown(planning)
+    metadata = json.dumps(planning.issue_metadata(), indent=2, ensure_ascii=False)
+    metadata_section = "\n".join(
+        [
+            "## Router Metadata",
+            "",
+            "```json",
+            metadata,
+            "```",
+        ]
+    )
+    base = (body or '').rstrip()
+    return f"{base}\n\n{router_section}\n\n{metadata_section}\n"
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
@@ -3724,31 +3910,17 @@ async def create_github_issue(text: str):
         missing_fields = parsed_data.get('missing_fields', [])
         issue_type = 'visual AT'  # Always visual AT now
 
+        planning_context: Optional[ToolPlanningContext] = None
         try:
-            route_result = select_model(
-                text.strip(),
-                routing_analysis=parsed_data.get('routing_analysis'),
-                pipeline_analysis=parsed_data.get('pipeline_analysis'),
-            )
-            selected_model = route_result.get('selected_model')
-            parsed_data['selected_model'] = selected_model
-            parsed_data['final_execution_plan'] = route_result.get('final_execution_plan')
-            parsed_data['stage_model_selection'] = [
-                {
-                    'index': stage.get('index'),
-                    'capability': stage.get('capability'),
-                    'selected_model': stage.get('selected_model'),
-                }
-                for stage in route_result.get('stage_model_selection', [])
-            ]
-            logger.info("Parsed routing selected_model=%s", selected_model)
-            logger.info("Parsed routing final_execution_plan=%s", json.dumps(parsed_data.get('final_execution_plan')))
-            for candidate in route_result.get('ranking', []):
-                logger.info(
-                    "Parsed routing candidate=%s final_score=%.4f",
-                    candidate.get('model'),
-                    float(candidate.get('final_score', 0.0)),
-                )
+            planning_context = _build_tool_planning_context(text.strip(), parsed_data)
+            parsed_data['routing_result'] = planning_context.to_routing_result()
+
+            # Preserve existing keys for backward compatibility while introducing routing_result.
+            parsed_data['selected_model'] = planning_context.selected_model
+            parsed_data['final_execution_plan'] = planning_context.execution_plan
+            parsed_data['stage_model_selection'] = planning_context.stage_summaries()
+
+            _log_model_router_observability(text.strip(), planning_context)
         except Exception as route_error:
             logger.warning(f"Routing selection skipped due to error: {route_error}")
         
@@ -3799,6 +3971,9 @@ async def create_github_issue(text: str):
         else:
             # Fallback if template doesn't exist
             body = f"**Transcript:**\n{text}\n\n**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
+
+        if planning_context:
+            body = _append_router_sections_to_issue_body(body, planning_context)
         
         # Create GitHub client
         g = Github(GITHUB_TOKEN)
