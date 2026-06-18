@@ -9,6 +9,10 @@ Supported execution modes:
 - Local open-source models: use Transformers for LLaVA-OneVision and LLaVA-Video.
 
 The script writes a JSON report with timings and a short response preview for each model.
+You can also run grouped benchmarks with --group:
+- all: all non-Qwen VLMs
+- gemini: only Gemini models
+- others: non-Gemini models
 """
 
 from __future__ import annotations
@@ -18,7 +22,7 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from PIL import Image
 
@@ -63,9 +67,20 @@ def _is_qwen_profile(profile: Any) -> bool:
     return name.startswith("qwen")
 
 
-def _select_profiles() -> List[Any]:
+def _is_gemini_profile(profile: Any) -> bool:
+    name = _normalize_name(getattr(profile, "name", ""))
+    model = _normalize_name(getattr(profile, "model", ""))
+    return name.startswith("gemini") or model.startswith("gemini/")
+
+
+def _select_profiles(group: Literal["all", "gemini", "others"] = "all") -> List[Any]:
     profiles = [profile for profile in load_model_profiles() if getattr(profile, "type", "") == "general_vlm"]
-    return [profile for profile in profiles if not _is_qwen_profile(profile)]
+    profiles = [profile for profile in profiles if not _is_qwen_profile(profile)]
+    if group == "gemini":
+        return [profile for profile in profiles if _is_gemini_profile(profile)]
+    if group == "others":
+        return [profile for profile in profiles if not _is_gemini_profile(profile)]
+    return profiles
 
 
 def _load_image(image_path: Path) -> Image.Image:
@@ -239,9 +254,11 @@ def benchmark_model(profile: Any, image: Image.Image, prompt: str) -> BenchmarkR
     return _benchmark_api_model(profile, image, prompt)
 
 
-def run_benchmark(image_path: Path, prompt: str) -> Dict[str, Any]:
+def run_benchmark(image_path: Path, prompt: str, group: Literal["all", "gemini", "others"] = "all") -> Dict[str, Any]:
     image = _load_image(image_path)
-    profiles = _select_profiles()
+    profiles = _select_profiles(group=group)
+    if not profiles:
+        raise RuntimeError(f"No matching models found for group='{group}'")
     results = []
     for profile in profiles:
         print(f"Benchmarking {profile.name} ({profile.model})...")
@@ -255,6 +272,7 @@ def run_benchmark(image_path: Path, prompt: str) -> Dict[str, Any]:
     return {
         "image_path": str(image_path),
         "prompt": prompt,
+        "group": group,
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "models": results,
     }
@@ -280,9 +298,16 @@ def main() -> None:
         default=DEFAULT_OUT,
         help="Output JSON path",
     )
+    parser.add_argument(
+        "--group",
+        type=str,
+        choices=["all", "gemini", "others"],
+        default="all",
+        help="Model group to benchmark",
+    )
     args = parser.parse_args()
 
-    payload = run_benchmark(args.image, args.prompt)
+    payload = run_benchmark(args.image, args.prompt, group=args.group)
     args.out.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     print(f"Wrote results to: {args.out}")
 
