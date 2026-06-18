@@ -1,0 +1,1633 @@
+{
+  "generated_at": "2026-06-17T21:03:14.862325+00:00",
+  "indices": [
+    1,
+    4,
+    24,
+    35,
+    44,
+    49,
+    52,
+    56,
+    63,
+    64,
+    66,
+    68,
+    69,
+    70,
+    72
+  ],
+  "sleep_seconds": 25.0,
+  "result_count": 15,
+  "error_count": 0,
+  "results": [
+    {
+      "task": "Read the medication bottle label.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"ocr\", \"weight\": 0.9, \"reason\": \"Extract text from the medication bottle label\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.1, \"reason\": \"Provide a short summary of the medication information\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"Live assistive feedback for accurate medication understanding\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Detection of the label text provides structured intermediate artifact for information reduction\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"significant\",\n    \"stages\": [\n      {\"capability\": \"ocr\", \"purpose\": \"Extract text from the label\", \"input\": \"raw_text\", \"output\": \"text_string\", \"preferred_model_type\": \"accurate_ocr\"},\n      {\"capability\": \"general_reasoning\", \"purpose\": \"Provide a short summary of the medication information\", \"input\": \"text_string\", \"output\": \"short_summary\", \"preferred_model_type\": \"simple_reasoning\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "ocr",
+            "weight": 0.9,
+            "reason": "Extract text from the medication bottle label"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.1,
+            "reason": "Provide a short summary of the medication information"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "Live assistive feedback for accurate medication understanding"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "No clear producer-consumer artifact dependency was found; prefer a minimal single-model plan.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "GoogleVisionOCR",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Read the medication bottle label.",
+        "selected_model": "GoogleVisionOCR",
+        "selected": {
+          "model": "GoogleVisionOCR",
+          "type": "specialized_expert",
+          "source": "specialized_expert",
+          "latency_ms": 300.0,
+          "latency": 0.94,
+          "task_match_score": 0.9,
+          "latency_match_score": 0.94,
+          "task_component_weight": 0.65,
+          "latency_component_weight": 0.35000000000000003,
+          "final_score": 0.9140000000000001
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.914,
+          "task_match_score": 0.9,
+          "latency_match_score": 0.94
+        },
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.3461,
+          "task_match_score": 0.0694,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.3447,
+          "task_match_score": 0.0619,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 2,
+      "index": 1
+    },
+    {
+      "task": "Read a street sign.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\n        \"name\": \"ocr\",\n        \"weight\": 0.8,\n        \"reason\": \"read plain text from a visible sign\"\n      }\n    ],\n    \"latency_sensitivity\": {\n      \"level\": \"medium\",\n      \"weight\": 0.0,\n      \"reason\": \"-\"\n    }\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": false,\n    \"reason\": \"no meaningful intermediate artifact or information reduction expected\",\n    \"artifact_value_score\": 1.0,\n    \"information_reduction\": \"none\",\n    \"stages\": []\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "ocr",
+            "weight": 1.0,
+            "reason": "read plain text from a visible sign"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 0.0,
+          "reason": "-"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "No clear producer-consumer artifact dependency was found; prefer a minimal single-model plan.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "GoogleVisionOCR",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Read a street sign.",
+        "selected_model": "GoogleVisionOCR",
+        "selected": {
+          "model": "GoogleVisionOCR",
+          "type": "specialized_expert",
+          "source": "specialized_expert",
+          "latency_ms": 300.0,
+          "latency": 0.94,
+          "task_match_score": 1.0,
+          "latency_match_score": 0.94,
+          "task_component_weight": 0.85,
+          "latency_component_weight": 0.15,
+          "final_score": 0.991
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.991,
+          "task_match_score": 1.0,
+          "latency_match_score": 0.94
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.147,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.1305,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 1,
+      "index": 4
+    },
+    {
+      "task": "Explain the layout of the room.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"map_web\", \"weight\": 1.0, \"reason\": \"layout explanation requires map_web for diagram interpretation\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.0, \"reason\": \"general_reasoning not required due to task specificity\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"low\", \"weight\": 1.0, \"reason\": \"layout explanation is offline and non-urgent\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": false,\n    \"reason\": \"no intermediate artifact or information reduction exists to justify chaining\",\n    \"artifact_value_score\": 0.0,\n    \"information_reduction\": \"none\",\n    \"stages\": []\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "map_web",
+            "weight": 1.0,
+            "reason": "layout explanation requires map_web for diagram interpretation"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "low",
+          "weight": 1.0,
+          "reason": "layout explanation is offline and non-urgent"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "Holistic task without clear intermediate artifact reduction; prefer single-model execution.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "Qwen2.5-VL-72B",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Explain the layout of the room.",
+        "selected_model": "Qwen2.5-VL-72B",
+        "selected": {
+          "model": "Qwen2.5-VL-72B",
+          "type": "general_vlm",
+          "source": "benchmark",
+          "latency_ms": 1800.0,
+          "latency": 0.64,
+          "task_match_score": 0.795,
+          "latency_match_score": 0.64,
+          "task_component_weight": 0.95,
+          "latency_component_weight": 0.05,
+          "final_score": 0.78725
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "Qwen2.5-VL-72B",
+          "final_score": 0.7873,
+          "task_match_score": 0.795,
+          "latency_match_score": 0.64
+        },
+        {
+          "model": "Qwen2.5-VL-7B",
+          "final_score": 0.7725,
+          "task_match_score": 0.77,
+          "latency_match_score": 0.82
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.7722,
+          "task_match_score": 0.767,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 1,
+      "index": 24
+    },
+    {
+      "task": "Describe what is happening in front of me.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"general_reasoning\", \"weight\": 0.7, \"reason\": \"Describing the scene requires general visual understanding and reasoning.\"},\n      {\"name\": \"spatial_relationship\", \"weight\": 0.1, \"reason\": \"Location of objects in the scene is also relevant for the context.\"},\n      {\"name\": \"object_detection\", \"weight\": 0.2, \"reason\": \"Detecting main objects helps to understand the environment.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"medium\", \"weight\": 1.0, \"reason\": \"Reasoning about the scene is relatively interactive but not live or navigation.\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Detection and reasoning can produce informative artifacts that help in visual understanding.\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"Detect main objects in the scene\", \"input\": \"camera_image\", \"output\": \"object_list\", \"preferred_model_type\": \"fast_detector\"},\n      {\"capability\": \"spatial_relationship\", \"purpose\": \"Calculate relative object positions\", \"input\": \"object_list\", \"output\": \"object_positions\", \"preferred_model_type\": \"relationship_reasoner\"},\n      {\"capability\": \"general_reasoning\", \"purpose\": \"Describe the scene\", \"input\": \"object_positions\", \"output\": \"scene_description\", \"preferred_model_type\": \"reasoning_engine\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "general_reasoning",
+            "weight": 0.7,
+            "reason": "Describing the scene requires general visual understanding and reasoning."
+          },
+          {
+            "name": "spatial_relationship",
+            "weight": 0.1,
+            "reason": "Location of objects in the scene is also relevant for the context."
+          },
+          {
+            "name": "object_detection",
+            "weight": 0.2,
+            "reason": "Detecting main objects helps to understand the environment."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 1.0,
+          "reason": "Reasoning about the scene is relatively interactive but not live or navigation."
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "Holistic task without clear intermediate artifact reduction; prefer single-model execution.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "Gemini-2.0-flash",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Describe what is happening in front of me.",
+        "selected_model": "Gemini-2.0-flash",
+        "selected": {
+          "model": "Gemini-2.0-flash",
+          "type": "general_vlm",
+          "source": "benchmark",
+          "latency_ms": 700.0,
+          "latency": 0.86,
+          "task_match_score": 0.5580999999999999,
+          "latency_match_score": 0.86,
+          "task_component_weight": 0.85,
+          "latency_component_weight": 0.15,
+          "final_score": 0.603385
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.6034,
+          "task_match_score": 0.5581,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "Qwen2.5-VL-72B",
+          "final_score": 0.5795,
+          "task_match_score": 0.5688,
+          "latency_match_score": 0.64
+        },
+        {
+          "model": "GPT-4o",
+          "final_score": 0.564,
+          "task_match_score": 0.5294,
+          "latency_match_score": 0.76
+        }
+      ],
+      "capability_count": 3,
+      "index": 35
+    },
+    {
+      "task": "Explain this chart.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"map_web\", \"weight\": 0.8, \"reason\": \"User requested chart explanation\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.2, \"reason\": \"Fallback reasoning task in case map_web fails or additional explanation needed\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"High-latency sensitivity for chart interpretation\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Object_detection followed by interpretation in map_web, useful transition\",\n    \"artifact_value_score\": 0.9,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"map_web\", \"purpose\": \"Chart interpretation\", \"input\": \"Input frame with chart\", \"output\": \"Structured visual reasoning (chart meaning)\", \"preferred_model_type\": \"structured_reasoner\"},\n      {\"capability\": \"general_reasoning\", \"purpose\": \"Additional explanation\", \"input\": \"Structured visual reasoning (chart meaning)\", \"output\": \"Textual explanation (chart summary)\", \"preferred_model_type\": \"language_generator\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "map_web",
+            "weight": 0.8,
+            "reason": "User requested chart explanation"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.2,
+            "reason": "Fallback reasoning task in case map_web fails or additional explanation needed"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "High-latency sensitivity for chart interpretation"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "Holistic task without clear intermediate artifact reduction; prefer single-model execution.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "LLaVA-OneVision-7B",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Explain this chart.",
+        "selected_model": "LLaVA-OneVision-7B",
+        "selected": {
+          "model": "LLaVA-OneVision-7B",
+          "type": "general_vlm",
+          "source": "benchmark",
+          "latency_ms": 650.0,
+          "latency": 0.87,
+          "task_match_score": 0.7374,
+          "latency_match_score": 0.87,
+          "task_component_weight": 0.65,
+          "latency_component_weight": 0.35000000000000003,
+          "final_score": 0.7838100000000001
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.7838,
+          "task_match_score": 0.7374,
+          "latency_match_score": 0.87
+        },
+        {
+          "model": "Qwen2.5-VL-7B",
+          "final_score": 0.7707,
+          "task_match_score": 0.7442,
+          "latency_match_score": 0.82
+        },
+        {
+          "model": "GPT-4o",
+          "final_score": 0.749,
+          "task_match_score": 0.743,
+          "latency_match_score": 0.76
+        }
+      ],
+      "capability_count": 2,
+      "index": 44
+    },
+    {
+      "task": "Interpret a weather chart.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"map_web\", \"weight\": 0.7, \"reason\": \"interpreting weather charts is a complex visual reasoning task that benefits from structured visual understanding\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.3, \"reason\": \"helping the user understand complex visual information like a weather chart requires general reasoning about the relationships between different parts of the visual\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"medium\", \"weight\": 0.8, \"reason\": \"interpreting a weather chart requires relatively timely assistance, especially for complex visual tasks\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"the 'map_web' task can produce a structured intermediate artifact (e.g. visual understanding of the chart components) reducing the search space for general reasoning about the chart\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"map_web\", \"purpose\": \"interpret the weather chart components\", \"input\": \"weather chart image\", \"output\": \"visual understanding of chart components\", \"preferred_model_type\": \"structured_visual_reasoner\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "map_web",
+            "weight": 0.7,
+            "reason": "interpreting weather charts is a complex visual reasoning task that benefits from structured visual understanding"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.3,
+            "reason": "helping the user understand complex visual information like a weather chart requires general reasoning about the relationships between different parts of the visual"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "medium",
+          "weight": 0.8,
+          "reason": "interpreting a weather chart requires relatively timely assistance, especially for complex visual tasks"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": false,
+        "reason": "No clear producer-consumer artifact dependency was found; prefer a minimal single-model plan.",
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none"
+      },
+      "selected_model": "Qwen2.5-VL-72B",
+      "final_execution_plan": {
+        "mode": "single_model",
+        "task": "Interpret a weather chart.",
+        "selected_model": "Qwen2.5-VL-72B",
+        "selected": {
+          "model": "Qwen2.5-VL-72B",
+          "type": "general_vlm",
+          "source": "benchmark",
+          "latency_ms": 1800.0,
+          "latency": 0.64,
+          "task_match_score": 0.768,
+          "latency_match_score": 0.64,
+          "task_component_weight": 0.85,
+          "latency_component_weight": 0.15,
+          "final_score": 0.7488
+        }
+      },
+      "stage_model_selection": [],
+      "top3": [
+        {
+          "model": "Qwen2.5-VL-72B",
+          "final_score": 0.7488,
+          "task_match_score": 0.768,
+          "latency_match_score": 0.64
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.7447,
+          "task_match_score": 0.7226,
+          "latency_match_score": 0.87
+        },
+        {
+          "model": "Qwen2.5-VL-7B",
+          "final_score": 0.7446,
+          "task_match_score": 0.7313,
+          "latency_match_score": 0.82
+        }
+      ],
+      "capability_count": 2,
+      "index": 49
+    },
+    {
+      "task": "Guide my camera toward the target.",
+      "raw_response": "{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"camera_motion\", \"weight\": 0.9, \"reason\": \"Guiding the camera toward the target is a direct camera positioning and framing task.\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.1, \"reason\": \"This capability is included as a backup for general visual understanding and to reason about any other potential objects or scenes.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 1.0, \"reason\": \"Camera guidance requires real-time feedback for optimal accuracy and precision.\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": false,\n    \"reason\": \"No intermediate artifact or useful information reduction exists for this task, and direct capabilities are sufficient.\",\n    \"artifact_value_score\": 0.0,\n    \"information_reduction\": \"none\",\n    \"stages\": []\n  }\n}",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "camera_motion",
+            "weight": 0.9,
+            "reason": "Guiding the camera toward the target is a direct camera positioning and framing task."
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.1,
+            "reason": "This capability is included as a backup for general visual understanding and to reason about any other potential objects or scenes."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 1.0,
+          "reason": "Camera guidance requires real-time feedback for optimal accuracy and precision."
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Object detection first provides target coordinates that camera guidance consumes directly.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "camera_motion",
+            "purpose": "Use target coordinates to issue camera centering/framing guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "reasoning_vlm"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Guide my camera toward the target.",
+        "reason": "Object detection first provides target coordinates that camera guidance consumes directly.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.992
+            }
+          },
+          {
+            "index": 2,
+            "capability": "camera_motion",
+            "purpose": "Use target coordinates to issue camera centering/framing guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "reasoning_vlm",
+            "selected_model": "Gemini-2.0-flash",
+            "selected": {
+              "model": "Gemini-2.0-flash",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 700.0,
+              "latency": 0.86,
+              "task_match_score": 0.249,
+              "latency_match_score": 0.86,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.49340000000000006
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "camera_motion",
+          "selected_model": "Gemini-2.0-flash"
+        }
+      ],
+      "top3": [
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.5201,
+          "task_match_score": 0.2935,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "Qwen2.5-VL-7B",
+          "final_score": 0.5063,
+          "task_match_score": 0.2972,
+          "latency_match_score": 0.82
+        },
+        {
+          "model": "GPT-4o",
+          "final_score": 0.5037,
+          "task_match_score": 0.3329,
+          "latency_match_score": 0.76
+        }
+      ],
+      "capability_count": 2,
+      "index": 52
+    },
+    {
+      "task": "Guide me to align with the crosswalk.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.4, \"reason\": \"... guide to crosswalk\"},\n      {\"name\": \"navigation\", \"weight\": 0.3, \"reason\": \"... navigate to the crosswalk\"},\n      {\"name\": \"spatial_relationship\", \"weight\": 0.3, \"reason\": \"... spatial relationship to crosswalk\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 1.0, \"reason\": \"... real-time navigation\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"... detection -> navigation -> spatial\",\n    \"information_reduction\": \"moderate\",\n    \"artifact_value_score\": 0.6,\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"... detect crosswalk\", \"input\": \"live camera\", \"output\": \"... detected crosswalk bounding box\", \"preferred_model_type\": \"fast_detector\"},\n      {\"capability\": \"spatial_relationship\", \"purpose\": \"... spatial relationship\", \"input\": \"... detected crosswalk\", \"output\": \"... distance to crosswalk\", \"preferred_model_type\": \"spatial_reasoner\"},\n      {\"capability\": \"navigation\", \"purpose\": \"... guide to crosswalk\", \"input\": \"... distance to crosswalk\", \"output\": \"... turn-by-turn instructions\", \"preferred_model_type\": \"navigation_model\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.4,
+            "reason": "... guide to crosswalk"
+          },
+          {
+            "name": "navigation",
+            "weight": 0.3,
+            "reason": "... navigate to the crosswalk"
+          },
+          {
+            "name": "spatial_relationship",
+            "weight": 0.3,
+            "reason": "... spatial relationship to crosswalk"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 1.0,
+          "reason": "... real-time navigation"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Guide me to align with the crosswalk.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.992
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.7072
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.632,
+          "task_match_score": 0.4,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.4741,
+          "task_match_score": 0.2169,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.4738,
+          "task_match_score": 0.2097,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 3,
+      "index": 56
+    },
+    {
+      "task": "Find the passenger door handle.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.7, \"reason\": \"Find the specific object of interest (passenger door handle)\"},\n      {\"name\": \"navigation\", \"weight\": 0.3, \"reason\": \"Provide actionable walking directions to reach the passenger door\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 1.0, \"reason\": \"The request requires real-time assistance for navigating and finding the specific object\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"There is a useful transition from object_detection to navigation, as the object detection can provide targeted guidance.\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"Detect the passenger door handle\", \"input\": \"visual image of the door\", \"output\": \"location of the door handle\", \"preferred_model_type\": \"fast_detector\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.7,
+            "reason": "Find the specific object of interest (passenger door handle)"
+          },
+          {
+            "name": "navigation",
+            "weight": 0.3,
+            "reason": "Provide actionable walking directions to reach the passenger door"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 1.0,
+          "reason": "The request requires real-time assistance for navigating and finding the specific object"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Find the passenger door handle.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.992
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.6,
+              "latency_component_weight": 0.4,
+              "final_score": 0.7072
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.812,
+          "task_match_score": 0.7,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.425,
+          "task_match_score": 0.2016,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.376,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.94
+        }
+      ],
+      "capability_count": 2,
+      "index": 63
+    },
+    {
+      "task": "Find my Uber.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"navigation\", \"weight\": 0.8, \"reason\": \"Find path to the closest Uber pickup location\"},\n      {\"name\": \"object_detection\", \"weight\": 0.2, \"reason\": \"Identify the exact pickup location\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"Real-time assistive feedback\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Find X then guide me\",\n    \"artifact_value_score\": 0.7,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"Identify Uber pickup location\", \"input\": \"Live camera feed\", \"output\": \"Object coordinates\", \"preferred_model_type\": \"fast_detector\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "navigation",
+            "weight": 0.8,
+            "reason": "Find path to the closest Uber pickup location"
+          },
+          {
+            "name": "object_detection",
+            "weight": 0.2,
+            "reason": "Identify the exact pickup location"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "Real-time assistive feedback"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Find my Uber.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.9930000000000001
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.7028000000000001
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.6154,
+          "task_match_score": 0.5376,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.473,
+          "task_match_score": 0.2,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.4652,
+          "task_match_score": 0.4464,
+          "latency_match_score": 0.5
+        }
+      ],
+      "capability_count": 2,
+      "index": 64
+    },
+    {
+      "task": "Guide me to an empty seat.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"navigation\", \"weight\": 0.5, \"reason\": \"Guiding user to an empty seat requires actionnable walking direction\"},\n      {\"name\": \"object_detection\", \"weight\": 0.3, \"reason\": \"Object detection is necessary to find an empty seat\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.2, \"reason\": \"General reasoning is required to navigate safely\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"Live camera and navigation require high latency sensitivity\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Object detection can produce a useful intermediate artifact that reduces the search space for navigation\",\n    \"artifact_value_score\": 0.5,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"Find an empty seat\", \"input\": \"live camera\", \"output\": \"seat location\", \"preferred_model_type\": \"fast_detector\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "navigation",
+            "weight": 0.5,
+            "reason": "Guiding user to an empty seat requires actionnable walking direction"
+          },
+          {
+            "name": "object_detection",
+            "weight": 0.3,
+            "reason": "Object detection is necessary to find an empty seat"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.2,
+            "reason": "General reasoning is required to navigate safely"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "Live camera and navigation require high latency sensitivity"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Guide me to an empty seat.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.9930000000000001
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.7028000000000001
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.5801,
+          "task_match_score": 0.4832,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.538,
+          "task_match_score": 0.3,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.4471,
+          "task_match_score": 0.4186,
+          "latency_match_score": 0.5
+        }
+      ],
+      "capability_count": 3,
+      "index": 66
+    },
+    {
+      "task": "Help me find the checkout counter.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.8, \"reason\": \"...\"},\n      {\"name\": \"navigation\", \"weight\": 0.1, \"reason\": \"...\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"...\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"...\",\n    \"artifact_value_score\": 0.5,\n    \"information_reduction\": \"significant\",\n    \"stages\": [\n      {\n        \"capability\": \"object_detection\",\n        \"purpose\": \"detect checkout counter\",\n        \"input\": \"...\",\n        \"output\": \"...\",\n        \"preferred_model_type\": \"fast_detector\"\n      },\n      {\n        \"capability\": \"navigation\",\n        \"purpose\": \"guide to checkout counter\",\n        \"input\": \"...\",\n        \"output\": \"...\",\n        \"preferred_model_type\": \"guidance_system\"\n      }\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.888888888888889,
+            "reason": "..."
+          },
+          {
+            "name": "navigation",
+            "weight": 0.11111111111111112,
+            "reason": "..."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "..."
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Help me find the checkout counter.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.9930000000000001
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.7028000000000001
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.9208,
+          "task_match_score": 0.8889,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "GoogleVisionOCR",
+          "final_score": 0.329,
+          "task_match_score": 0.0,
+          "latency_match_score": 0.94
+        },
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.3145,
+          "task_match_score": 0.0747,
+          "latency_match_score": 0.76
+        }
+      ],
+      "capability_count": 2,
+      "index": 68
+    },
+    {
+      "task": "Find the elevator and guide me to it.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.2, \"reason\": \"object detection is necessary to identify the elevator\"},\n      {\"name\": \"map_web\", \"weight\": 0.1, \"reason\": \"map Web may assist in understanding location and layout\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.3, \"reason\": \"general reasoning is needed to decide on the correct action based on the elevator's location\"},\n      {\"name\": \"navigation\", \"weight\": 0.4, \"reason\": \"navigation is essential for guiding the user towards the discovered elevator\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.9, \"reason\": \"live camera view and real-time guidance require high sensitivity\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"find X then guide me pattern and object_detection -> navigation transition are suitable for chaining.\",\n    \"artifact_value_score\": 0.9,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"identify the elevator\", \"input\": \"camera view\", \"output\": \"[elevator bounding box]\", \"preferred_model_type\": \"fast_detector\"},\n      {\"capability\": \"spatial_relationship\", \"purpose\": \"determine elevator's position relative to user\", \"input\": \"[elevator bounding box]\", \"output\": \"distance and direction from user to elevator\", \"preferred_model_type\": \"fast_localizer\"},\n      {\"capability\": \"navigation\", \"purpose\": \"guide user to elevator\", \"input\": \"distance and direction from user to elevator\", \"output\": \"turn-by-turn instructions\", \"preferred_model_type\": \"path_finder\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.2,
+            "reason": "object detection is necessary to identify the elevator"
+          },
+          {
+            "name": "map_web",
+            "weight": 0.1,
+            "reason": "map Web may assist in understanding location and layout"
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.3,
+            "reason": "general reasoning is needed to decide on the correct action based on the elevator's location"
+          },
+          {
+            "name": "navigation",
+            "weight": 0.4,
+            "reason": "navigation is essential for guiding the user towards the discovered elevator"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.9,
+          "reason": "live camera view and real-time guidance require high sensitivity"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Find the elevator and guide me to it.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.625,
+              "latency_component_weight": 0.375,
+              "final_score": 0.9924999999999999
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.625,
+              "latency_component_weight": 0.375,
+              "final_score": 0.7050000000000001
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.591,
+          "task_match_score": 0.4896,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.5066,
+          "task_match_score": 0.5106,
+          "latency_match_score": 0.5
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.4925,
+          "task_match_score": 0.2,
+          "latency_match_score": 0.98
+        }
+      ],
+      "capability_count": 4,
+      "index": 69
+    },
+    {
+      "task": "Locate the restroom entrance.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"navigation\", \"weight\": 0.8, \"reason\": \"Locate the restroom entrance, guide user through space toward destination\"},\n      {\"name\": \"object_detection\", \"weight\": 0.2, \"reason\": \"Detect entrance to guide navigation process\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.8, \"reason\": \"Real time location and guidance to restroom entrance\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Useful intermediate artifact: object localization for navigation guidance\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"moderate\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"locate restrooms for guidance\", \"input\": \"visual input\", \"output\": \"entrance location\", \"preferred_model_type\": \"fast_detector\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "navigation",
+            "weight": 0.8,
+            "reason": "Locate the restroom entrance, guide user through space toward destination"
+          },
+          {
+            "name": "object_detection",
+            "weight": 0.2,
+            "reason": "Detect entrance to guide navigation process"
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.8,
+          "reason": "Real time location and guidance to restroom entrance"
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Locate the restroom entrance.",
+        "reason": "Navigation consumes detected target location to avoid full-scene search.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.9930000000000001
+            }
+          },
+          {
+            "index": 2,
+            "capability": "navigation",
+            "purpose": "Use detected target location to produce movement or wayfinding guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "navigation_model",
+            "selected_model": "Gemini-2.5-pro",
+            "selected": {
+              "model": "Gemini-2.5-pro",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 1200.0,
+              "latency": 0.76,
+              "task_match_score": 0.672,
+              "latency_match_score": 0.76,
+              "task_component_weight": 0.65,
+              "latency_component_weight": 0.35000000000000003,
+              "final_score": 0.7028000000000001
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "navigation",
+          "selected_model": "Gemini-2.5-pro"
+        }
+      ],
+      "top3": [
+        {
+          "model": "Gemini-2.5-pro",
+          "final_score": 0.6154,
+          "task_match_score": 0.5376,
+          "latency_match_score": 0.76
+        },
+        {
+          "model": "YOLO-World",
+          "final_score": 0.473,
+          "task_match_score": 0.2,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "GPT-4.1",
+          "final_score": 0.4652,
+          "task_match_score": 0.4464,
+          "latency_match_score": 0.5
+        }
+      ],
+      "capability_count": 2,
+      "index": 70
+    },
+    {
+      "task": "Identify the correct bus and tell me where the entrance is.",
+      "raw_response": "```json\n{\n  \"routing_analysis\": {\n    \"tasks\": [\n      {\"name\": \"object_detection\", \"weight\": 0.45, \"reason\": \"Find the correct bus.\"},\n      {\"name\": \"spatial_relationship\", \"weight\": 0.25, \"reason\": \"Determine the entrance's location relative to the user.\"},\n      {\"name\": \"general_reasoning\", \"weight\": 0.15, \"reason\": \"Provide context for the entrance location.\"},\n      {\"name\": \"nav\", \"weight\": 0.15, \"reason\": \"Guide the user to the entrance.\"}\n    ],\n    \"latency_sensitivity\": {\"level\": \"high\", \"weight\": 0.9, \"reason\": \"Low-latency response required for navigation and object detection tasks.\"}\n  },\n  \"pipeline_analysis\": {\n    \"should_chain\": true,\n    \"reason\": \"Useful intermediate artifacts exist: object detection provides relevant information for spatial reasoning and general reasoning.\",\n    \"artifact_value_score\": 0.8,\n    \"information_reduction\": \"significant\",\n    \"stages\": [\n      {\"capability\": \"object_detection\", \"purpose\": \"Identify the correct bus.\", \"input\": \"camera feed\", \"output\": \"bus location\", \"preferred_model_type\": \"fast_detector\"},\n      {\"capability\": \"spatial_relationship\", \"purpose\": \"Determine the entrance's location relative to the user.\", \"input\": \"bus location\", \"output\": \"entrance location\", \"preferred_model_type\": \"positioning_reasoner\"}\n    ]\n  }\n}\n```",
+      "routing_analysis": {
+        "tasks": [
+          {
+            "name": "object_detection",
+            "weight": 0.5294117647058824,
+            "reason": "Find the correct bus."
+          },
+          {
+            "name": "spatial_relationship",
+            "weight": 0.29411764705882354,
+            "reason": "Determine the entrance's location relative to the user."
+          },
+          {
+            "name": "general_reasoning",
+            "weight": 0.17647058823529413,
+            "reason": "Provide context for the entrance location."
+          }
+        ],
+        "latency_sensitivity": {
+          "level": "high",
+          "weight": 0.9,
+          "reason": "Low-latency response required for navigation and object detection tasks."
+        }
+      },
+      "pipeline_analysis": {
+        "should_chain": true,
+        "reason": "Object detection narrows the visual scope for downstream reasoning.",
+        "stages": [
+          {
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector"
+          },
+          {
+            "capability": "general_reasoning",
+            "purpose": "Reason over the detected target region to produce final guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "reasoning_vlm"
+          }
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant"
+      },
+      "selected_model": null,
+      "final_execution_plan": {
+        "mode": "pipeline",
+        "task": "Identify the correct bus and tell me where the entrance is.",
+        "reason": "Object detection narrows the visual scope for downstream reasoning.",
+        "stages": [
+          {
+            "index": 1,
+            "capability": "object_detection",
+            "purpose": "Produce target bounding box and object coordinates for downstream reasoning or guidance.",
+            "input": "Full image or scene.",
+            "output": "target bounding box and object coordinates",
+            "preferred_model_type": "fast_detector",
+            "selected_model": "YOLO-World",
+            "selected": {
+              "model": "YOLO-World",
+              "type": "specialized_expert",
+              "source": "specialized_expert",
+              "latency_ms": 80.0,
+              "latency": 0.98,
+              "task_match_score": 1.0,
+              "latency_match_score": 0.98,
+              "task_component_weight": 0.625,
+              "latency_component_weight": 0.375,
+              "final_score": 0.9924999999999999
+            }
+          },
+          {
+            "index": 2,
+            "capability": "general_reasoning",
+            "purpose": "Reason over the detected target region to produce final guidance.",
+            "input": "target bounding box and object coordinates plus the original user goal",
+            "output": "Task-specific answer or guidance.",
+            "preferred_model_type": "reasoning_vlm",
+            "selected_model": "Gemini-2.0-flash",
+            "selected": {
+              "model": "Gemini-2.0-flash",
+              "type": "general_vlm",
+              "source": "benchmark",
+              "latency_ms": 700.0,
+              "latency": 0.86,
+              "task_match_score": 0.694,
+              "latency_match_score": 0.86,
+              "task_component_weight": 0.625,
+              "latency_component_weight": 0.375,
+              "final_score": 0.75625
+            }
+          }
+        ]
+      },
+      "stage_model_selection": [
+        {
+          "index": 1,
+          "capability": "object_detection",
+          "selected_model": "YOLO-World"
+        },
+        {
+          "index": 2,
+          "capability": "general_reasoning",
+          "selected_model": "Gemini-2.0-flash"
+        }
+      ],
+      "top3": [
+        {
+          "model": "YOLO-World",
+          "final_score": 0.6984,
+          "task_match_score": 0.5294,
+          "latency_match_score": 0.98
+        },
+        {
+          "model": "Gemini-2.0-flash",
+          "final_score": 0.5319,
+          "task_match_score": 0.3351,
+          "latency_match_score": 0.86
+        },
+        {
+          "model": "LLaVA-OneVision-7B",
+          "final_score": 0.523,
+          "task_match_score": 0.3148,
+          "latency_match_score": 0.87
+        }
+      ],
+      "capability_count": 3,
+      "index": 72
+    }
+  ],
+  "errors": []
+}

@@ -79,7 +79,7 @@ capabilities:
       - "Guide me to the entrance."
 
   navigation:
-    description: "Actionable movement guidance toward destinations, entrances, exits, and reachable targets."
+    description: "Actionable walking direction, route guidance, wayfinding, and physical movement through space toward destinations."
     include_examples:
       - "Guide me to the entrance and let me know when I arrive."
       - "Help me reach the nearest available seat without bumping into people."
@@ -89,20 +89,31 @@ capabilities:
       - "Take me to the bus stop entrance and confirm when I am aligned with it."
       - "Guide me through this crowded hallway to a clear path forward."
       - "Help me move toward the doorway and tell me when to stop."
+      - "Tell me where to walk next and when to turn left or right."
+      - "Help me physically move through this corridor to the restroom."
     exclude_examples:
       - "Only detect objects in the scene."
       - "Only describe left/right relationships."
       - "Only read text from a sign."
+      - "Move the camera left/right to center a target."
+      - "Zoom in on the detected object."
 
   camera_motion:
-    description: "Reasoning about movement induced by camera viewpoint change."
+    description: "Camera positioning and framing guidance such as move left/right/up/down, closer/farther, zoom, and center target."
     include_examples:
-      - "Understand camera movement."
-      - "Reason about viewpoint changes."
-      - "Analyze motion from camera movement."
+      - "Move the camera left until the sign is centered."
+      - "Tilt the camera up a bit to keep the face in frame."
+      - "Bring the camera closer to read the label."
+      - "Move the phone farther back so the whole object fits."
+      - "Zoom in on the elevator button."
+      - "Center the target in the frame."
+      - "Adjust framing so the doorway is fully visible."
+      - "Aim the camera slightly right to keep the target in view."
     exclude_examples:
       - "Detect static objects only."
       - "Read text from a label."
+      - "Guide me walking to the entrance."
+      - "Provide route guidance to the exit."
 
   video:
     description: "Temporal understanding across frames and event progression in video."

@@ -3241,14 +3241,22 @@ Pipeline decision rules:
 3. Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
 4. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
 5. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
-6. Increase chaining confidence for useful transitions: object_detection -> spatial_relationship, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, spatial_relationship -> navigation, map_web -> general_reasoning.
-7. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
-8. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
-9. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
-10. Prefer the smallest useful pipeline. Each stage capability must come from the same capability names list above.
-11. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
-12. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
-13. Include information_reduction as "none", "minor", "moderate", or "significant".
+6. Stages must follow producer -> consumer information flow, not capability ranking order.
+7. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
+8. Increase chaining confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
+9. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
+10. Distinguish camera_motion vs navigation strictly:
+    - camera_motion: camera framing or aiming actions (left/right/up/down, closer/farther, zoom, center target)
+    - navigation: physical wayfinding and walking guidance through space
+11. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
+12. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
+13. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
+14. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
+15. Prefer the smallest useful pipeline. Prefer 2 stages, allow 3 only when a third stage has a distinct artifact role.
+16. Avoid 4+ stages unless strongly justified by explicit artifact dependencies.
+17. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
+18. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
+19. Include information_reduction as "none", "minor", "moderate", or "significant".
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.

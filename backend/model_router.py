@@ -27,6 +27,7 @@ STRUCTURED_ARTIFACTS_BY_CAPABILITY = {
     "ocr": "extracted text",
     "spatial_relationship": "target location and relative position",
     "navigation": "navigation waypoint",
+    "camera_motion": "camera framing adjustment instructions",
     "map_web": "structured visual region or layout element",
 }
 
@@ -51,6 +52,41 @@ TARGET_REDUCTION_KEYWORDS = (
     "target",
     "align",
     "where",
+)
+
+CAMERA_GUIDANCE_KEYWORDS = (
+    "camera",
+    "center",
+    "framing",
+    "frame",
+    "zoom",
+    "left",
+    "right",
+    "up",
+    "down",
+    "closer",
+    "farther",
+    "aim",
+    "align",
+)
+
+WAYFINDING_KEYWORDS = (
+    "walk",
+    "route",
+    "wayfinding",
+    "reach",
+    "entrance",
+    "exit",
+    "go to",
+)
+
+TEXT_ANALYSIS_KEYWORDS = (
+    "summarize",
+    "summary",
+    "explain",
+    "interpret",
+    "understand",
+    "analyze",
 )
 
 
@@ -372,77 +408,175 @@ def _pipeline_from_transition(
     }
 
 
+def _routing_task_names_by_weight(routing_analysis: Optional[Dict[str, Any]]) -> List[str]:
+    if not routing_analysis:
+        return []
+    weighted: Dict[str, float] = {}
+    for task in routing_analysis.get("tasks", []):
+        name = str(task.get("name", "")).strip().lower()
+        if not name:
+            continue
+        weighted[name] = weighted.get(name, 0.0) + float(task.get("weight", 0.0) or 0.0)
+    return [name for name, _ in sorted(weighted.items(), key=lambda item: item[1], reverse=True)]
+
+
+def _default_pipeline_analysis(reason: str) -> Dict[str, Any]:
+    return {
+        "should_chain": False,
+        "reason": reason,
+        "stages": [],
+        "artifact_value_score": 0.0,
+        "information_reduction": "none",
+    }
+
+
+def _build_two_stage_pipeline(
+    producer: str,
+    consumer: str,
+    reason: str,
+    consumer_purpose: str,
+) -> Dict[str, Any]:
+    producer_artifact = STRUCTURED_ARTIFACTS_BY_CAPABILITY.get(producer, "structured intermediate artifact")
+    consumer_input = f"{producer_artifact} plus the original user goal"
+    return {
+        "should_chain": True,
+        "reason": reason,
+        "stages": [
+            _stage(
+                producer,
+                f"Produce {producer_artifact} for downstream reasoning or guidance.",
+                "Full image or scene.",
+                producer_artifact,
+                "fast_detector" if producer == "object_detection" else "specialized_extractor",
+            ),
+            _stage(
+                consumer,
+                consumer_purpose,
+                consumer_input,
+                "Task-specific answer or guidance.",
+                "navigation_model" if consumer == "navigation" else "reasoning_vlm",
+            ),
+        ],
+        "artifact_value_score": 0.85,
+        "information_reduction": "significant",
+        "inference_source": "artifact_flow_rewrite",
+    }
+
+
 def infer_pipeline_from_information_reduction(
     task_text: str,
     routing_analysis: Optional[Dict[str, Any]],
     pipeline_analysis: Dict[str, Any],
     supported_capabilities: Iterable[str],
 ) -> Dict[str, Any]:
-    if pipeline_analysis.get("should_chain"):
-        return pipeline_analysis
-    if not routing_analysis or _is_holistic_without_target_reduction(task_text):
+    if not routing_analysis:
         return pipeline_analysis
 
     supported = {str(capability).strip().lower() for capability in supported_capabilities if str(capability).strip()}
-    task_names = {str(task.get("name", "")).strip().lower() for task in routing_analysis.get("tasks", [])}
+    task_names = set(_routing_task_names_by_weight(routing_analysis))
     text = task_text.lower()
 
-    inferred: Optional[Dict[str, Any]] = None
-    if "object_detection" in task_names and "navigation" in task_names:
-        inferred = _pipeline_from_transition(
-            "object_detection",
-            "navigation",
-            "Object detection can produce a target bounding box or coordinates so navigation does not need to search the full scene.",
-            "Use the detected target location to produce movement guidance.",
-            supported,
-        )
-    elif "navigation" in task_names and _contains_any(text, ("find", "locate", "elevator", "entrance", "bus", "target")):
-        inferred = _pipeline_from_transition(
-            "object_detection",
-            "navigation",
-            "The request asks to find a visual target and guide the user; a detector can first compress the scene to a target location.",
-            "Navigate toward the detected target location.",
-            supported,
-        )
-    elif "object_detection" in task_names and (
-        "spatial_relationship" in task_names
-        or "general_reasoning" in task_names
-        or _contains_any(text, ("handle", "passenger", "where", "relative", "localize"))
-    ):
-        second = "spatial_relationship" if "spatial_relationship" in supported else "general_reasoning"
-        inferred = _pipeline_from_transition(
-            "object_detection",
-            second,
-            "Object detection can crop or bound the parent object so localization/reasoning focuses on a much smaller visual region.",
-            "Localize or reason about the requested target within the detected region.",
-            supported,
-        )
-    elif "object_detection" in task_names and "map_web" in task_names and _contains_any(text, ("bus", "entrance", "correct")):
-        second = "spatial_relationship" if "spatial_relationship" in supported else "map_web"
-        inferred = _pipeline_from_transition(
-            "object_detection",
-            second,
-            "Detecting the relevant bus first creates a bounded region, reducing the entrance-finding stage to a smaller visual scope.",
-            "Find the requested entrance or visual detail relative to the detected bus.",
-            supported,
-        )
-    elif (
-        "ocr" in task_names
-        and ("general_reasoning" in task_names or "map_web" in task_names)
-        and _contains_any(text, ("analyze", "summarize", "explain", "interpret", "understand", "compare"))
-    ):
-        second = "general_reasoning" if "general_reasoning" in task_names else "map_web"
-        inferred = _pipeline_from_transition(
-            "ocr",
-            second,
-            "OCR can extract text so the reasoning stage operates on text instead of re-inspecting the full image.",
-            "Analyze or summarize the extracted text.",
-            supported,
+    if not task_names:
+        return _default_pipeline_analysis("No valid routing tasks were provided for artifact-driven pipeline synthesis.")
+
+    # Merge overlap: camera framing guidance usually consumes detector output directly.
+    if "camera_motion" in task_names and "spatial_relationship" in task_names:
+        task_names.discard("spatial_relationship")
+
+    # Distinguish camera framing from physical wayfinding.
+    if "camera_motion" in task_names and "navigation" in task_names and _contains_any(text, CAMERA_GUIDANCE_KEYWORDS):
+        if not _contains_any(text, WAYFINDING_KEYWORDS):
+            task_names.discard("navigation")
+
+    if _is_holistic_without_target_reduction(task_text) and "ocr" not in task_names:
+        return _default_pipeline_analysis(
+            "Holistic task without clear intermediate artifact reduction; prefer single-model execution.",
         )
 
-    if inferred is None:
-        return pipeline_analysis
-    return normalize_pipeline_analysis(inferred, supported)
+    def _supports(capability: str) -> bool:
+        return capability in supported
+
+    # Highest-priority transition: detect target, then center/aim camera.
+    if "camera_motion" in task_names and _supports("camera_motion") and _supports("object_detection"):
+        if _contains_any(text, CAMERA_GUIDANCE_KEYWORDS) and (
+            "object_detection" in task_names or _contains_any(text, TARGET_REDUCTION_KEYWORDS)
+        ):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "object_detection",
+                    "camera_motion",
+                    "Object detection first provides target coordinates that camera guidance consumes directly.",
+                    "Use target coordinates to issue camera centering/framing guidance.",
+                ),
+                supported,
+            )
+
+    # Find-then-guide tasks: detect target before navigation.
+    if "navigation" in task_names and _supports("navigation") and _supports("object_detection"):
+        if "object_detection" in task_names or _contains_any(text, TARGET_REDUCTION_KEYWORDS):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "object_detection",
+                    "navigation",
+                    "Navigation consumes detected target location to avoid full-scene search.",
+                    "Use detected target location to produce movement or wayfinding guidance.",
+                ),
+                supported,
+            )
+
+    # Detect target then perform structured layout/symbol interpretation on that narrowed region.
+    if "object_detection" in task_names and "map_web" in task_names and _supports("map_web") and _supports("object_detection"):
+        if _contains_any(text, TARGET_REDUCTION_KEYWORDS):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "object_detection",
+                    "map_web",
+                    "Object detection narrows the visual region before map/layout interpretation.",
+                    "Interpret structured visual layout relative to the detected target region.",
+                ),
+                supported,
+            )
+
+    # Read-then-understand tasks.
+    if "ocr" in task_names and _supports("ocr"):
+        if "general_reasoning" in task_names and _supports("general_reasoning") and _contains_any(text, TEXT_ANALYSIS_KEYWORDS):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "ocr",
+                    "general_reasoning",
+                    "OCR extracts text that reasoning consumes for summary/interpretation.",
+                    "Summarize or interpret the extracted text for the user.",
+                ),
+                supported,
+            )
+        if "map_web" in task_names and _supports("map_web") and _contains_any(text, TEXT_ANALYSIS_KEYWORDS):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "ocr",
+                    "map_web",
+                    "OCR extracts labels/text that map/layout interpretation can consume.",
+                    "Interpret structured visual content using extracted text anchors.",
+                ),
+                supported,
+            )
+
+    # Detector output can directly feed reasoning if the goal is target-focused interpretation.
+    if "object_detection" in task_names and "general_reasoning" in task_names and _supports("general_reasoning") and _supports("object_detection"):
+        if _contains_any(text, TARGET_REDUCTION_KEYWORDS):
+            return normalize_pipeline_analysis(
+                _build_two_stage_pipeline(
+                    "object_detection",
+                    "general_reasoning",
+                    "Object detection narrows the visual scope for downstream reasoning.",
+                    "Reason over the detected target region to produce final guidance.",
+                ),
+                supported,
+            )
+
+    # Keep pipeline small and artifact-driven; otherwise prefer single model.
+    return _default_pipeline_analysis(
+        "No clear producer-consumer artifact dependency was found; prefer a minimal single-model plan.",
+    )
 
 
 def _dynamic_score_weights(routing_analysis: Dict[str, Any]) -> Dict[str, float]:

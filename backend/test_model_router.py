@@ -319,7 +319,7 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
 
         self.assertTrue(result["should_chain"])
         self.assertEqual(result["stages"][0]["capability"], "object_detection")
-        self.assertEqual(result["stages"][1]["capability"], "spatial_relationship")
+        self.assertEqual(result["stages"][1]["capability"], "map_web")
 
     def test_information_reduction_infers_parent_object_localization_pipeline(self):
         result = model_router.infer_pipeline_from_information_reduction(
@@ -338,7 +338,104 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         self.assertTrue(result["should_chain"])
         self.assertEqual(
             [stage["capability"] for stage in result["stages"]],
-            ["object_detection", "spatial_relationship"],
+            ["object_detection", "general_reasoning"],
+        )
+
+    def test_information_flow_camera_guidance_uses_detection_then_camera_motion(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Guide my camera toward the target.",
+            {
+                "tasks": [
+                    {"name": "navigation", "weight": 0.7, "reason": "guidance toward target"},
+                    {"name": "camera_motion", "weight": 0.3, "reason": "camera movement guidance"},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "live guidance"},
+            },
+            {"should_chain": False, "reason": "Too conservative.", "stages": []},
+            ["object_detection", "navigation", "camera_motion", "spatial_relationship"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "camera_motion"],
+        )
+
+    def test_information_flow_find_then_guide_prefers_navigation_not_camera_motion(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Find the elevator and guide me to it.",
+            {
+                "tasks": [
+                    {"name": "navigation", "weight": 0.7, "reason": "wayfinding guidance"},
+                    {"name": "camera_motion", "weight": 0.3, "reason": "camera alignment"},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "live guidance"},
+            },
+            {"should_chain": False, "reason": "Too conservative.", "stages": []},
+            ["object_detection", "navigation", "camera_motion"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "navigation"],
+        )
+
+    def test_information_flow_read_then_summarize_uses_ocr_then_reasoning(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Read the medication label and summarize it.",
+            {
+                "tasks": [
+                    {"name": "ocr", "weight": 0.7, "reason": "read label text"},
+                    {"name": "general_reasoning", "weight": 0.3, "reason": "summarize content"},
+                ],
+                "latency_sensitivity": {"level": "low", "weight": 1.0, "reason": "not urgent"},
+            },
+            {"should_chain": False, "reason": "Too conservative.", "stages": []},
+            ["ocr", "general_reasoning", "object_detection"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["ocr", "general_reasoning"],
+        )
+
+    def test_rank_models_rewrites_inconsistent_pipeline_by_artifact_flow(self):
+        profiles = [
+            model_router.ModelProfile("detector", "specialized_expert", 80, "test", {"object_detection": 1.0}, latency=0.98),
+            model_router.ModelProfile("navigator", "general_vlm", 900, "test", {"navigation": 0.9, "camera_motion": 0.3}, latency=0.78),
+            model_router.ModelProfile("camera_guide", "general_vlm", 700, "test", {"camera_motion": 0.9, "navigation": 0.2}, latency=0.84),
+        ]
+        routing_analysis = {
+            "tasks": [
+                {"name": "navigation", "weight": 0.7, "reason": "guidance toward target"},
+                {"name": "camera_motion", "weight": 0.3, "reason": "camera movement guidance"},
+            ],
+            "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "live guidance"},
+        }
+        bad_pipeline = {
+            "should_chain": True,
+            "reason": "incorrect capability list as stages",
+            "stages": [
+                {"capability": "camera_motion", "purpose": "", "input": "", "output": "", "preferred_model_type": ""},
+                {"capability": "object_detection", "purpose": "", "input": "", "output": "", "preferred_model_type": ""},
+                {"capability": "spatial_relationship", "purpose": "", "input": "", "output": "", "preferred_model_type": ""},
+                {"capability": "navigation", "purpose": "", "input": "", "output": "", "preferred_model_type": ""},
+            ],
+        }
+
+        result = model_router.rank_models(
+            "Guide my camera toward the target.",
+            profiles,
+            routing_analysis=routing_analysis,
+            pipeline_analysis=bad_pipeline,
+        )
+
+        self.assertEqual(result["final_execution_plan"]["mode"], "pipeline")
+        self.assertEqual(
+            [stage["capability"] for stage in result["pipeline_analysis"]["stages"]],
+            ["object_detection", "camera_motion"],
         )
 
     def test_rank_models_falls_back_when_routing_analysis_invalid(self):
