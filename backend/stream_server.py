@@ -3252,11 +3252,16 @@ Pipeline decision rules:
 12. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
 13. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
 14. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
-15. Prefer the smallest useful pipeline. Prefer 2 stages, allow 3 only when a third stage has a distinct artifact role.
-16. Avoid 4+ stages unless strongly justified by explicit artifact dependencies.
-17. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
-18. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
-19. Include information_reduction as "none", "minor", "moderate", or "significant".
+15. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
+16. Optimize for the minimum useful stage count, not the minimum stage count alone.
+17. Use a complexity penalty to discourage unnecessary stages:
+    pipeline_score = artifact_gain - complexity_penalty
+    complexity_penalty = (stage_count - 1) * penalty_per_stage
+18. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
+19. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
+20. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
+21. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
+22. Include information_reduction as "none", "minor", "moderate", or "significant".
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
@@ -3307,6 +3312,9 @@ Return format:
         "reason": "No structured intermediate artifact would significantly reduce later visual scope or reasoning burden.",
         "artifact_value_score": 0.0,
         "information_reduction": "none",
+        "artifact_gain": 0.0,
+        "complexity_penalty": 0.0,
+        "pipeline_score": 0.0,
         "stages": []
     }}
 }}"""
@@ -3399,6 +3407,9 @@ Return format:
                 'reason': parsed_data['pipeline_analysis'].get('reason'),
                 'artifact_value_score': parsed_data['pipeline_analysis'].get('artifact_value_score'),
                 'information_reduction': parsed_data['pipeline_analysis'].get('information_reduction'),
+                'artifact_gain': parsed_data['pipeline_analysis'].get('artifact_gain'),
+                'complexity_penalty': parsed_data['pipeline_analysis'].get('complexity_penalty'),
+                'pipeline_score': parsed_data['pipeline_analysis'].get('pipeline_score'),
             }),
         )
         logger.info("Pipeline stages=%s", json.dumps(parsed_data['pipeline_analysis'].get('stages', [])))

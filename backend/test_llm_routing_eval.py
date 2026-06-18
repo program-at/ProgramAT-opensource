@@ -68,6 +68,9 @@ Analyze this user request and return ONLY a valid JSON object with this exact sc
     "reason": "...",
     "artifact_value_score": 0.0,
     "information_reduction": "none|minor|moderate|significant",
+    "artifact_gain": 0.0,
+    "complexity_penalty": 0.0,
+    "pipeline_score": 0.0,
     "stages": []
   }}
 }}
@@ -102,7 +105,14 @@ Capability definitions:
 - Prefer should_chain=false for holistic tasks like room description, scene description, chart explanation, outfit evaluation, and image summarization when no meaningful artifact reduces later work.
 - Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
 - Include artifact_value_score from 0.0 to 1.0 and information_reduction as none/minor/moderate/significant.
-- Keep pipelines as small as possible. Stage capabilities must use the same allowed task names. preferred_model_type should describe a model type, not a specific model name.
+- Do not hardcode a maximum stage count. Infer the stage count dynamically from useful artifact flow.
+- Optimize for the minimum useful stage count, not the minimum stage count alone.
+- Use a complexity penalty to discourage unnecessary stages:
+  pipeline_score = artifact_gain - complexity_penalty
+  complexity_penalty = (stage_count - 1) * penalty_per_stage
+- Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
+- Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
+- Stage capabilities must use the same allowed task names. preferred_model_type should describe a model type, not a specific model name.
 
 If should_chain=true, use this stage shape:
 {{"capability": "object_detection", "purpose": "...", "input": "...", "output": "...", "preferred_model_type": "fast_detector"}}

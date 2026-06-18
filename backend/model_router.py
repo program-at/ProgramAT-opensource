@@ -89,6 +89,31 @@ TEXT_ANALYSIS_KEYWORDS = (
     "analyze",
 )
 
+PENALTY_PER_PIPELINE_STAGE = 0.08
+MIN_PIPELINE_SCORE = 0.35
+PIPELINE_REWRITE_MARGIN = 0.05
+
+INFORMATION_REDUCTION_SCORES = {
+    "none": 0.0,
+    "minor": 0.25,
+    "moderate": 0.6,
+    "significant": 1.0,
+}
+
+USEFUL_STAGE_TRANSITIONS = {
+    ("object_detection", "camera_motion"),
+    ("object_detection", "spatial_relationship"),
+    ("object_detection", "navigation"),
+    ("object_detection", "general_reasoning"),
+    ("object_detection", "map_web"),
+    ("ocr", "general_reasoning"),
+    ("ocr", "map_web"),
+    ("map_web", "general_reasoning"),
+    ("spatial_relationship", "navigation"),
+    ("spatial_relationship", "general_reasoning"),
+    ("camera_motion", "navigation"),
+}
+
 
 @dataclass(frozen=True)
 class ModelProfile:
@@ -294,6 +319,10 @@ def normalize_pipeline_analysis(
         "stages": [],
         "artifact_value_score": 0.0,
         "information_reduction": "none",
+        "stage_count": 0,
+        "artifact_gain": 0.0,
+        "complexity_penalty": 0.0,
+        "pipeline_score": 0.0,
     }
     if not isinstance(pipeline_analysis, dict):
         return default
@@ -321,34 +350,95 @@ def normalize_pipeline_analysis(
             })
 
     if not should_chain:
-        return {
+        return _with_pipeline_score({
             "should_chain": False,
             "reason": reason or "No structured intermediate artifact is expected to reduce later visual scope or reasoning burden.",
             "stages": [],
             "artifact_value_score": max(0.0, min(1.0, _safe_weight(pipeline_analysis.get("artifact_value_score"), 0.0))),
             "information_reduction": str(pipeline_analysis.get("information_reduction", "none")).strip() or "none",
-        }
+        })
 
     if len(normalized_stages) < 2:
-        return {
+        return _with_pipeline_score({
             "should_chain": False,
             "reason": reason or "Pipeline request did not include at least two valid stages; defaulting to a single model.",
             "stages": [],
             "artifact_value_score": 0.0,
             "information_reduction": "none",
-        }
+        })
 
-    return {
+    return _with_pipeline_score({
         "should_chain": True,
         "reason": reason or "A specialized intermediate result is expected to reduce later model work.",
         "stages": normalized_stages,
         "artifact_value_score": max(0.0, min(1.0, _safe_weight(pipeline_analysis.get("artifact_value_score"), 0.75))),
         "information_reduction": str(pipeline_analysis.get("information_reduction", "significant")).strip() or "significant",
-    }
+    })
 
 
 def _contains_any(text: str, keywords: Iterable[str]) -> bool:
     return any(keyword in text for keyword in keywords)
+
+
+def _pipeline_score_details(pipeline_analysis: Dict[str, Any]) -> Dict[str, float | int]:
+    stages = pipeline_analysis.get("stages", [])
+    stage_count = len(stages) if isinstance(stages, list) else 0
+    if not pipeline_analysis.get("should_chain") or stage_count < 2:
+        return {
+            "stage_count": stage_count,
+            "artifact_gain": 0.0,
+            "complexity_penalty": 0.0,
+            "pipeline_score": 0.0,
+            "useful_transition_count": 0,
+        }
+
+    information_reduction = str(pipeline_analysis.get("information_reduction", "none")).strip().lower()
+    reduction_score = INFORMATION_REDUCTION_SCORES.get(information_reduction, 0.0)
+    artifact_value = max(0.0, min(1.0, _safe_weight(pipeline_analysis.get("artifact_value_score"), 0.0)))
+
+    transitions = []
+    for index in range(stage_count - 1):
+        current = str(stages[index].get("capability", "")).strip().lower()
+        next_stage = str(stages[index + 1].get("capability", "")).strip().lower()
+        if current and next_stage:
+            transitions.append((current, next_stage))
+
+    useful_transition_count = sum(1 for transition in transitions if transition in USEFUL_STAGE_TRANSITIONS)
+    useful_transition_ratio = useful_transition_count / max(1, len(transitions))
+    useful_transition_bonus = min(0.25, useful_transition_count * 0.08)
+    artifact_gain = (
+        0.50 * artifact_value
+        + 0.25 * reduction_score
+        + 0.15 * useful_transition_ratio
+        + useful_transition_bonus
+    )
+    complexity_penalty = max(0, stage_count - 1) * PENALTY_PER_PIPELINE_STAGE
+    pipeline_score = artifact_gain - complexity_penalty
+    return {
+        "stage_count": stage_count,
+        "artifact_gain": round(artifact_gain, 4),
+        "complexity_penalty": round(complexity_penalty, 4),
+        "pipeline_score": round(pipeline_score, 4),
+        "useful_transition_count": useful_transition_count,
+    }
+
+
+def _with_pipeline_score(pipeline_analysis: Dict[str, Any]) -> Dict[str, Any]:
+    scored = dict(pipeline_analysis)
+    scored.update(_pipeline_score_details(scored))
+    if scored.get("should_chain") and scored.get("pipeline_score", 0.0) < MIN_PIPELINE_SCORE:
+        return {
+            "should_chain": False,
+            "reason": (
+                "Pipeline artifact gain did not exceed complexity penalty; "
+                "using the minimum useful single-model plan."
+            ),
+            "stages": [],
+            "artifact_value_score": scored.get("artifact_value_score", 0.0),
+            "information_reduction": scored.get("information_reduction", "none"),
+            **_pipeline_score_details({"should_chain": False, "stages": []}),
+        }
+    return scored
 
 
 def _is_holistic_without_target_reduction(task_text: str) -> bool:
@@ -421,13 +511,13 @@ def _routing_task_names_by_weight(routing_analysis: Optional[Dict[str, Any]]) ->
 
 
 def _default_pipeline_analysis(reason: str) -> Dict[str, Any]:
-    return {
+    return _with_pipeline_score({
         "should_chain": False,
         "reason": reason,
         "stages": [],
         "artifact_value_score": 0.0,
         "information_reduction": "none",
-    }
+    })
 
 
 def _build_two_stage_pipeline(
@@ -463,6 +553,24 @@ def _build_two_stage_pipeline(
     }
 
 
+def _choose_pipeline_by_score(original: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+    if not candidate.get("should_chain"):
+        return original
+    if not original.get("should_chain"):
+        return candidate
+
+    original_score = float(original.get("pipeline_score", 0.0) or 0.0)
+    candidate_score = float(candidate.get("pipeline_score", 0.0) or 0.0)
+    original_useful = int(original.get("useful_transition_count", 0) or 0)
+    candidate_useful = int(candidate.get("useful_transition_count", 0) or 0)
+
+    if candidate_score > original_score + PIPELINE_REWRITE_MARGIN:
+        return candidate
+    if original_useful == 0 and candidate_useful > 0 and candidate_score >= MIN_PIPELINE_SCORE:
+        return candidate
+    return original
+
+
 def infer_pipeline_from_information_reduction(
     task_text: str,
     routing_analysis: Optional[Dict[str, Any]],
@@ -492,6 +600,18 @@ def infer_pipeline_from_information_reduction(
         return _default_pipeline_analysis(
             "Holistic task without clear intermediate artifact reduction; prefer single-model execution.",
         )
+    if "chart" in text and not _contains_any(text, TARGET_REDUCTION_KEYWORDS):
+        return _default_pipeline_analysis(
+            "Chart interpretation is holistic unless a structured artifact reduces downstream work.",
+        )
+    if (
+        "ocr" in task_names
+        and not _contains_any(text, TEXT_ANALYSIS_KEYWORDS)
+        and task_names.issubset({"ocr", "general_reasoning"})
+    ):
+        return _default_pipeline_analysis(
+            "Simple OCR does not need an additional reasoning stage without an explicit analysis or summary request.",
+        )
 
     def _supports(capability: str) -> bool:
         return capability in supported
@@ -501,79 +621,175 @@ def infer_pipeline_from_information_reduction(
         if _contains_any(text, CAMERA_GUIDANCE_KEYWORDS) and (
             "object_detection" in task_names or _contains_any(text, TARGET_REDUCTION_KEYWORDS)
         ):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "object_detection",
                     "camera_motion",
                     "Object detection first provides target coordinates that camera guidance consumes directly.",
                     "Use target coordinates to issue camera centering/framing guidance.",
                 ),
                 supported,
+                ),
             )
+
+    # Bus entrance requests benefit from preserving both the bus bbox and entrance waypoint artifacts.
+    if (
+        "object_detection" in task_names
+        and _contains_any(text, ("bus",))
+        and _contains_any(text, ("entrance",))
+        and _supports("spatial_relationship")
+        and _supports("navigation")
+    ):
+        return _choose_pipeline_by_score(
+            pipeline_analysis,
+            normalize_pipeline_analysis({
+                "should_chain": True,
+                "reason": (
+                    "Detect the correct bus, localize the entrance relative to that bus, "
+                    "then provide guidance using the entrance waypoint."
+                ),
+                "stages": [
+                    _stage(
+                        "object_detection",
+                        "Identify the correct bus and produce its bounding box.",
+                        "Full image or scene.",
+                        "bus bounding box and coordinates",
+                        "fast_detector",
+                    ),
+                    _stage(
+                        "spatial_relationship",
+                        "Locate the entrance relative to the detected bus.",
+                        "Bus bounding box and current scene.",
+                        "entrance waypoint relative to bus",
+                        "reasoning_vlm",
+                    ),
+                    _stage(
+                        "navigation",
+                        "Use the entrance waypoint to guide or orient the user.",
+                        "Entrance waypoint plus current scene.",
+                        "movement or orientation guidance",
+                        "navigation_model",
+                    ),
+                ],
+                "artifact_value_score": 1.0,
+                "information_reduction": "significant",
+                "inference_source": "artifact_flow_rewrite",
+            }, supported),
+        )
 
     # Find-then-guide tasks: detect target before navigation.
     if "navigation" in task_names and _supports("navigation") and _supports("object_detection"):
         if "object_detection" in task_names or _contains_any(text, TARGET_REDUCTION_KEYWORDS):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            if _contains_any(text, ("bus", "entrance")) and _supports("spatial_relationship"):
+                return _choose_pipeline_by_score(
+                    pipeline_analysis,
+                    normalize_pipeline_analysis({
+                        "should_chain": True,
+                        "reason": (
+                            "Detect the target object, localize the relevant entrance or access point, "
+                            "then guide the user using that narrowed waypoint."
+                        ),
+                        "stages": [
+                            _stage(
+                                "object_detection",
+                                "Detect the relevant bus or destination object.",
+                                "Full image or scene.",
+                                "target bounding box and object coordinates",
+                                "fast_detector",
+                            ),
+                            _stage(
+                                "spatial_relationship",
+                                "Localize the entrance relative to the detected object.",
+                                "Detected target bounding box plus the scene.",
+                                "entrance location or waypoint",
+                                "reasoning_vlm",
+                            ),
+                            _stage(
+                                "navigation",
+                                "Guide the user toward the localized entrance waypoint.",
+                                "Entrance waypoint and current scene.",
+                                "Movement guidance.",
+                                "navigation_model",
+                            ),
+                        ],
+                        "artifact_value_score": 0.9,
+                        "information_reduction": "significant",
+                        "inference_source": "artifact_flow_rewrite",
+                    }, supported),
+                )
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "object_detection",
                     "navigation",
                     "Navigation consumes detected target location to avoid full-scene search.",
                     "Use detected target location to produce movement or wayfinding guidance.",
                 ),
                 supported,
+                ),
             )
 
     # Detect target then perform structured layout/symbol interpretation on that narrowed region.
     if "object_detection" in task_names and "map_web" in task_names and _supports("map_web") and _supports("object_detection"):
         if _contains_any(text, TARGET_REDUCTION_KEYWORDS):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "object_detection",
                     "map_web",
                     "Object detection narrows the visual region before map/layout interpretation.",
                     "Interpret structured visual layout relative to the detected target region.",
                 ),
                 supported,
+                ),
             )
 
     # Read-then-understand tasks.
     if "ocr" in task_names and _supports("ocr"):
         if "general_reasoning" in task_names and _supports("general_reasoning") and _contains_any(text, TEXT_ANALYSIS_KEYWORDS):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "ocr",
                     "general_reasoning",
                     "OCR extracts text that reasoning consumes for summary/interpretation.",
                     "Summarize or interpret the extracted text for the user.",
                 ),
                 supported,
+                ),
             )
         if "map_web" in task_names and _supports("map_web") and _contains_any(text, TEXT_ANALYSIS_KEYWORDS):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "ocr",
                     "map_web",
                     "OCR extracts labels/text that map/layout interpretation can consume.",
                     "Interpret structured visual content using extracted text anchors.",
                 ),
                 supported,
+                ),
             )
 
     # Detector output can directly feed reasoning if the goal is target-focused interpretation.
     if "object_detection" in task_names and "general_reasoning" in task_names and _supports("general_reasoning") and _supports("object_detection"):
         if _contains_any(text, TARGET_REDUCTION_KEYWORDS):
-            return normalize_pipeline_analysis(
-                _build_two_stage_pipeline(
+            return _choose_pipeline_by_score(
+                pipeline_analysis,
+                normalize_pipeline_analysis(_build_two_stage_pipeline(
                     "object_detection",
                     "general_reasoning",
                     "Object detection narrows the visual scope for downstream reasoning.",
                     "Reason over the detected target region to produce final guidance.",
                 ),
                 supported,
+                ),
             )
 
     # Keep pipeline small and artifact-driven; otherwise prefer single model.
+    if pipeline_analysis.get("should_chain"):
+        return pipeline_analysis
     return _default_pipeline_analysis(
         "No clear producer-consumer artifact dependency was found; prefer a minimal single-model plan.",
     )
@@ -792,6 +1008,10 @@ def rank_models(
             "reason": normalized_pipeline["reason"],
             "artifact_value_score": normalized_pipeline.get("artifact_value_score", 0.0),
             "information_reduction": normalized_pipeline.get("information_reduction", "none"),
+            "stage_count": normalized_pipeline.get("stage_count", 0),
+            "artifact_gain": normalized_pipeline.get("artifact_gain", 0.0),
+            "complexity_penalty": normalized_pipeline.get("complexity_penalty", 0.0),
+            "pipeline_score": normalized_pipeline.get("pipeline_score", 0.0),
         }, sort_keys=True),
     )
     logger.info("[Model Router] pipeline_stages=%s", json.dumps(normalized_pipeline["stages"], sort_keys=True))

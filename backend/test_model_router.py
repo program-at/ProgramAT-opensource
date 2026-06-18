@@ -381,6 +381,157 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
             ["object_detection", "navigation"],
         )
 
+    def test_pipeline_normalization_uses_complexity_penalty_without_stage_cap(self):
+        result = model_router.normalize_pipeline_analysis(
+            {
+                "should_chain": True,
+                "reason": "Multiple useful waypoints preserve artifact flow.",
+                "artifact_value_score": 1.0,
+                "information_reduction": "significant",
+                "stages": [
+                    {"capability": "object_detection", "purpose": "Find the office.", "input": "scene", "output": "office bbox"},
+                    {"capability": "spatial_relationship", "purpose": "Locate stairs near office.", "input": "office bbox", "output": "stairs waypoint"},
+                    {"capability": "navigation", "purpose": "Guide to stairs.", "input": "stairs waypoint", "output": "stairs route"},
+                    {"capability": "object_detection", "purpose": "Find the exit.", "input": "new scene", "output": "exit bbox"},
+                    {"capability": "navigation", "purpose": "Guide to Uber pickup.", "input": "exit waypoint", "output": "pickup route"},
+                ],
+            },
+            supported_capabilities=["object_detection", "spatial_relationship", "navigation"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(result["stage_count"], 5)
+        self.assertGreater(result["complexity_penalty"], 0)
+        self.assertGreater(result["pipeline_score"], 0)
+
+    def test_information_reduction_rejects_simple_ocr_extra_reasoning_stage(self):
+        original = model_router.normalize_pipeline_analysis(
+            {
+                "should_chain": True,
+                "reason": "Over-eager OCR plus reasoning.",
+                "artifact_value_score": 0.8,
+                "information_reduction": "moderate",
+                "stages": [
+                    {"capability": "ocr", "purpose": "Read label.", "input": "image", "output": "text"},
+                    {"capability": "general_reasoning", "purpose": "Restate text.", "input": "text", "output": "answer"},
+                ],
+            },
+            supported_capabilities=["ocr", "general_reasoning"],
+        )
+
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Read the medication bottle label.",
+            {
+                "tasks": [
+                    {"name": "ocr", "weight": 0.8, "reason": "Read label."},
+                    {"name": "general_reasoning", "weight": 0.2, "reason": "Answer user."},
+                ],
+                "latency_sensitivity": {"level": "medium", "weight": 1.0, "reason": ""},
+            },
+            original,
+            ["ocr", "general_reasoning"],
+        )
+
+        self.assertFalse(result["should_chain"])
+
+    def test_information_reduction_rejects_holistic_chart_pipeline(self):
+        original = model_router.normalize_pipeline_analysis(
+            {
+                "should_chain": True,
+                "reason": "Over-eager chart pipeline.",
+                "artifact_value_score": 0.8,
+                "information_reduction": "moderate",
+                "stages": [
+                    {"capability": "ocr", "purpose": "Read chart labels.", "input": "chart", "output": "text"},
+                    {"capability": "map_web", "purpose": "Interpret chart.", "input": "text", "output": "answer"},
+                ],
+            },
+            supported_capabilities=["ocr", "map_web"],
+        )
+
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Interpret a weather chart.",
+            {
+                "tasks": [
+                    {"name": "ocr", "weight": 0.2, "reason": "Read labels."},
+                    {"name": "map_web", "weight": 0.8, "reason": "Interpret chart."},
+                ],
+                "latency_sensitivity": {"level": "medium", "weight": 1.0, "reason": ""},
+            },
+            original,
+            ["ocr", "map_web"],
+        )
+
+        self.assertFalse(result["should_chain"])
+
+    def test_information_reduction_preserves_good_three_stage_bus_plan(self):
+        original = model_router.normalize_pipeline_analysis(
+            {
+                "should_chain": True,
+                "reason": "Bus detection, entrance localization, and guidance each preserve a useful artifact.",
+                "artifact_value_score": 0.95,
+                "information_reduction": "significant",
+                "stages": [
+                    {"capability": "object_detection", "purpose": "Find the correct bus.", "input": "scene", "output": "bus bbox"},
+                    {"capability": "spatial_relationship", "purpose": "Locate entrance relative to bus.", "input": "bus bbox", "output": "entrance waypoint"},
+                    {"capability": "navigation", "purpose": "Guide user to entrance.", "input": "entrance waypoint", "output": "movement guidance"},
+                ],
+            },
+            supported_capabilities=["object_detection", "spatial_relationship", "navigation"],
+        )
+
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Identify the correct bus, locate the entrance, and guide me there.",
+            {
+                "tasks": [
+                    {"name": "object_detection", "weight": 0.4, "reason": "Find bus."},
+                    {"name": "spatial_relationship", "weight": 0.3, "reason": "Locate entrance."},
+                    {"name": "navigation", "weight": 0.3, "reason": "Guide user."},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": ""},
+            },
+            original,
+            ["object_detection", "spatial_relationship", "navigation"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "spatial_relationship", "navigation"],
+        )
+
+    def test_information_reduction_infers_three_stage_bus_entrance_from_text(self):
+        result = model_router.infer_pipeline_from_information_reduction(
+            "Identify the correct bus and tell me where the entrance is.",
+            {
+                "tasks": [
+                    {"name": "object_detection", "weight": 0.75, "reason": "Find bus."},
+                    {"name": "general_reasoning", "weight": 0.25, "reason": "Locate entrance."},
+                ],
+                "latency_sensitivity": {"level": "high", "weight": 0.8, "reason": ""},
+            },
+            model_router.normalize_pipeline_analysis(
+                {
+                    "should_chain": True,
+                    "reason": "Overly generic downstream reasoning.",
+                    "artifact_value_score": 0.85,
+                    "information_reduction": "significant",
+                    "stages": [
+                        {"capability": "object_detection", "purpose": "Find bus.", "input": "scene", "output": "bus bbox"},
+                        {"capability": "general_reasoning", "purpose": "Reason about entrance.", "input": "bus bbox", "output": "answer"},
+                    ],
+                },
+                supported_capabilities=["object_detection", "general_reasoning", "spatial_relationship", "navigation"],
+            ),
+            ["object_detection", "general_reasoning", "spatial_relationship", "navigation"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "spatial_relationship", "navigation"],
+        )
+
     def test_information_flow_read_then_summarize_uses_ocr_then_reasoning(self):
         result = model_router.infer_pipeline_from_information_reduction(
             "Read the medication label and summarize it.",
