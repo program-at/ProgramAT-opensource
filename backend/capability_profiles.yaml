@@ -48,7 +48,7 @@ capabilities:
       - "Read the label on this bottle."
 
   map_web:
-    description: "Structured visual reasoning for maps, charts, tables, layouts, diagrams, icons, and symbols."
+    description: "Structured interpretation of maps, charts, tables, layouts, diagrams, icons, and symbols."
     include_examples:
       - "Interpret this subway map and tell me which line goes to downtown."
       - "Explain what this bar chart shows in simple terms."

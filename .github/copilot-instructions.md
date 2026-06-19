@@ -109,6 +109,8 @@ Use one of these task categories:
 - `camera_motion`: provide camera aiming, framing, centering, or zoom guidance.
 - `video`: reason over temporal events across video frames.
 
+Do not invent or substitute task categories. In particular, never use `visual_reasoning`; use the nearest canonical category from the list above.
+
 When creating a new tool, explicitly choose the nearest task category before writing a model-backed call. Let the backend choose the actual model/backend and emit routing logs. Do not pass `model`, `requested_model`, provider-specific names, detector names, OCR engine names, or routing registries in generated tools. Do not import `litellm`, provider SDKs, detector libraries, OCR SDKs, `ultralytics`, or `YOLO` directly. Do not call `litellm.completion()` or `YOLO(...)`. Do not create a `ModelRouter` class, model registry, model cache, provider fallback logic, `COCO_CLASSES`, hardcoded model names, `.pt` model loading/discovery logic, wrapper functions, new client modules, or alternative model-routing helpers. If the approved API cannot support the needed capability, add support to the centralized backend router instead of implementing it inside the tool.
 
 For multi-stage issues, follow the issue's stage list. Each stage should have a stage name, goal, capability, input if it consumes an earlier result, and expected output. For each model-backed stage, call `copilot_llm_call` with that stage's capability as the task category and include stage-specific `route_text` metadata. Store the stage output in a local variable and pass it into later stage prompts as needed. The final spoken response should summarize the completed user-facing task, not expose raw intermediate JSON unless that is the requested output.
