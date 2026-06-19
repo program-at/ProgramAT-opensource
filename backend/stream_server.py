@@ -185,6 +185,24 @@ def _normalize_parser_stage_plan(raw_plan: Any, supported_capabilities: List[str
     }
 
 
+def _parse_llm_json_object(raw_text: str) -> Dict[str, Any]:
+    """Parse the first JSON object from a structured LLM response."""
+    text = str(raw_text or '').strip()
+    if text.startswith('```'):
+        first_newline = text.find('\n')
+        text = text[first_newline + 1:] if first_newline >= 0 else ''
+    if text.endswith('```'):
+        text = text[:-3].rstrip()
+
+    object_start = text.find('{')
+    if object_start < 0:
+        raise ValueError("Parser response did not contain a JSON object")
+    parsed, _ = json.JSONDecoder().raw_decode(text[object_start:])
+    if not isinstance(parsed, dict):
+        raise ValueError("Parser response JSON must be an object")
+    return parsed
+
+
 @dataclass
 class ToolPlanningContext:
     """Advisory parser stage plan plus router model-selection results."""
@@ -3656,7 +3674,7 @@ Return format:
   "live_mode": "...",
   "live_query": "...",
   "additional": "...",
-    "missing_fields": ["field1", "field2"],  // Only truly missing/empty important fields. Use [] if all important fields have content.
+    "missing_fields": ["field1", "field2"],
     "routing_analysis": {{
         "tasks": [
             {{"name": "ocr", "weight": 0.8, "reason": "The user needs text from the image."}},
@@ -3687,21 +3705,24 @@ Return format:
 
         response = system_llm_call(
             messages=[{'role': 'user', 'content': prompt}],
+            metadata={'response_format': {'type': 'json_object'}},
         )
 
         # Parse the AI response
         ai_response = extract_text(response)
-        
-        # Remove markdown code blocks if present
-        if ai_response.startswith('```json'):
-            ai_response = ai_response[7:]
-        if ai_response.startswith('```'):
-            ai_response = ai_response[3:]
-        if ai_response.endswith('```'):
-            ai_response = ai_response[:-3]
-        ai_response = ai_response.strip()
-        
-        parsed_data = json.loads(ai_response)
+        logger.info(
+            "Parser raw response length=%s preview=%s",
+            len(ai_response),
+            ai_response[:2000],
+        )
+        parsed_data = _parse_llm_json_object(ai_response)
+        raw_stage_plan = parsed_data.get('pipeline_analysis')
+        raw_stages = raw_stage_plan.get('stages') if isinstance(raw_stage_plan, dict) else []
+        logger.info(
+            "Parser raw stage plan present=%s stage_count=%s",
+            isinstance(raw_stage_plan, dict),
+            len(raw_stages) if isinstance(raw_stages, list) else 0,
+        )
 
         normalized_routing_analysis = normalize_routing_analysis(
             parsed_data.get('routing_analysis'),
@@ -3716,6 +3737,10 @@ Return format:
         parsed_data['pipeline_analysis'] = _normalize_parser_stage_plan(
             parsed_data.get('pipeline_analysis'),
             capability_names,
+        )
+        logger.info(
+            "Parser normalized stage_count=%s",
+            len(parsed_data['pipeline_analysis'].get('stages') or []),
         )
 
         if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
@@ -3786,7 +3811,8 @@ Return format:
         return parsed_data
         
     except Exception as e:
-        logger.error(f"Failed to parse transcript with AI: {e}")
+        logger.exception("Failed to parse transcript with AI; using non-creating diagnostic fallback")
+        _log_to_all_sessions("ERROR", f"Stage-decomposition parser failed: {e}")
         # Fallback to simple parsing
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -3808,6 +3834,8 @@ Return format:
             'gpt_query': '',
             'alternatives': '',
             'additional': '',
+            'parser_failed': True,
+            'parser_error': str(e),
             'missing_fields': fallback_missing_fields,
             'original_prompts': existing_prompts + [f"[{timestamp}] {transcript}"]
         }
@@ -4087,6 +4115,20 @@ async def create_github_issue(text: str):
             parsed_data = parse_transcript_with_ai(text.strip())
             _log_to_all_sessions("INFO", f"AI parsing result: {parsed_data}")
             logger.info(f"Initial parsing. Type: {parsed_data.get('type')}, Missing: {parsed_data.get('missing_fields', [])}")
+
+        if parsed_data.get('parser_failed'):
+            error_message = parsed_data.get('parser_error') or 'unknown parser error'
+            logger.error("Issue creation stopped because stage decomposition failed: %s", error_message)
+            _log_to_all_sessions(
+                "ERROR",
+                f"Issue creation stopped because stage decomposition failed: {error_message}",
+            )
+            if connected_clients:
+                await broadcast_to_connected_clients({
+                    'type': 'issue_creation_error',
+                    'message': 'I could not decompose the task, so no incomplete issue was created. Please try again.',
+                })
+            return
         
         # Check for missing fields
         missing_fields = parsed_data.get('missing_fields', [])
@@ -4156,6 +4198,11 @@ async def create_github_issue(text: str):
 
         stage_plan = parsed_data.get('pipeline_analysis') or {}
         issue_stages = stage_plan.get('stages') or []
+        logger.info(
+            "Issue body stage handoff: pipeline_present=%s stage_count=%s",
+            bool(stage_plan),
+            len(issue_stages),
+        )
         if issue_stages:
             body = _append_task_stages_to_issue_body(body, stage_plan, planning_context)
             logger.info(

@@ -21,6 +21,7 @@ def load_stream_server_function(name: str):
         "Any": Any,
         "Dict": Dict,
         "List": List,
+        "json": json,
     }
     exec(compile(ast.Module(body=[function_node], type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace[name]
@@ -53,6 +54,17 @@ class TestParserStageIssueIntegration(unittest.TestCase):
     def setUp(self):
         self.normalize = load_stream_server_function("_normalize_parser_stage_plan")
         self.render = load_stream_server_function("_build_task_stages_markdown")
+        self.parse_json = load_stream_server_function("_parse_llm_json_object")
+
+    def test_parses_fenced_json_with_trailing_text(self):
+        result = self.parse_json(
+            '```json\n{"pipeline_analysis":{"stages":[{"capability":"navigation"}]}}\n```\nDone.'
+        )
+
+        self.assertEqual(
+            result["pipeline_analysis"]["stages"][0]["capability"],
+            "navigation",
+        )
 
     def test_preserves_single_stage(self):
         result = self.normalize(
@@ -117,7 +129,45 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("### Find handle", markdown)
         self.assertIn("**Input dependencies:** Vehicle information from Stage 1", markdown)
         self.assertIn("Including Task Stages in GitHub issue", source)
+        self.assertIn("Issue body stage handoff", source)
+        self.assertIn("Issue creation stopped because stage decomposition failed", source)
         self.assertIn("Always return at least one stage", source)
+
+    def test_uber_stage_plan_reaches_issue_markdown(self):
+        plan = self.normalize(
+            {
+                "should_chain": True,
+                "stages": [
+                    {
+                        "stage_name": "Identify vehicle",
+                        "goal": "Identify the white Toyota Camry with plate ABC123.",
+                        "capability": "object_detection",
+                        "expected_output": "Vehicle location and description",
+                    },
+                    {
+                        "stage_name": "Locate passenger door",
+                        "goal": "Locate the passenger-side door.",
+                        "capability": "spatial_relationship",
+                        "input": "Vehicle information from Stage 1",
+                        "expected_output": "Passenger-side door location",
+                    },
+                    {
+                        "stage_name": "Guide user",
+                        "goal": "Guide the user toward the passenger-side door.",
+                        "capability": "navigation",
+                        "input": "Door location from Stage 2",
+                        "expected_output": "Walking guidance",
+                    },
+                ],
+            },
+            ["object_detection", "spatial_relationship", "navigation"],
+        )
+        markdown = self.render(plan)
+
+        self.assertIn("## Task Stages", markdown)
+        self.assertIn("### Identify vehicle", markdown)
+        self.assertIn("### Locate passenger door", markdown)
+        self.assertIn("### Guide user", markdown)
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):
