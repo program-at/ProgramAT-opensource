@@ -71,7 +71,16 @@ Analyze this user request and return ONLY a valid JSON object with this exact sc
     "artifact_gain": 0.0,
     "complexity_penalty": 0.0,
     "pipeline_score": 0.0,
-    "stages": []
+    "stages": [
+      {{
+        "stage_name": "Stage 1",
+        "goal": "Complete the user's requested task.",
+        "capability": "general_reasoning",
+        "input": "Original user request and current input.",
+        "expected_output": "A concise result for the user.",
+        "preferred_model_type": "general_model"
+      }}
+    ]
   }}
 }}
 
@@ -99,6 +108,7 @@ Capability definitions:
 - Task decomposition and model selection are separate concerns.
 - The LLM parser decides whether multiple stages are required and must explicitly describe them.
 - The model router only selects the most appropriate model for a capability. It must not execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
+- Always return at least one stage. For a single-stage task, return exactly one stage and set should_chain=false.
 - Do not chain simply because multiple capabilities exist.
 - Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
 - Decide based on information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?

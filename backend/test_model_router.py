@@ -648,6 +648,67 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         rank_models.assert_called_once()
         self.assertEqual(call_model.call_args.args[0], "gemini/gemini-2.0-flash")
 
+    def test_copilot_llm_call_propagates_declared_capability(self):
+        profile = model_router.ModelProfile(
+            name="SelectedModel",
+            type="general_vlm",
+            latency_ms=100,
+            source="test",
+            capabilities={"navigation": 1.0, "ocr": 1.0, "object_detection": 1.0},
+            model="test/model",
+        )
+        route = {
+            "selected_model": "SelectedModel",
+            "capability_weights": {},
+        }
+
+        for argument_name in ("capability", "task_category"):
+            for declared_capability in ("navigation", "ocr", "object_detection"):
+                with self.subTest(argument_name=argument_name, capability=declared_capability), \
+                     patch.object(model_router, "load_model_profiles", return_value=[profile]), \
+                     patch.object(model_router, "rank_models", return_value=route) as rank_models, \
+                     patch.object(model_router, "call_model", return_value={"choices": []}):
+                    model_router.copilot_llm_call(
+                        messages=[{"role": "user", "content": "Complete this stage."}],
+                        **{argument_name: declared_capability},
+                    )
+
+                routing_analysis = rank_models.call_args.kwargs["routing_analysis"]
+                self.assertEqual(
+                    routing_analysis["tasks"],
+                    [{
+                        "name": declared_capability,
+                        "weight": 1.0,
+                        "reason": "Capability declared by the generated tool.",
+                    }],
+                )
+
+    def test_copilot_llm_call_preserves_metadata_routing_analysis(self):
+        profile = model_router.ModelProfile(
+            name="SelectedModel",
+            type="general_vlm",
+            latency_ms=100,
+            source="test",
+            capabilities={"ocr": 1.0},
+            model="test/model",
+        )
+        explicit_analysis = {
+            "tasks": [{"name": "ocr", "weight": 1.0, "reason": "Explicit."}],
+            "latency_sensitivity": {"level": "high", "weight": 1.0, "reason": "Live."},
+        }
+        route = {"selected_model": "SelectedModel", "capability_weights": {}}
+
+        with patch.object(model_router, "load_model_profiles", return_value=[profile]), \
+             patch.object(model_router, "rank_models", return_value=route) as rank_models, \
+             patch.object(model_router, "call_model", return_value={"choices": []}):
+            model_router.copilot_llm_call(
+                task_category="navigation",
+                messages=[{"role": "user", "content": "Read this."}],
+                metadata={"routing_analysis": explicit_analysis},
+            )
+
+        self.assertIs(rank_models.call_args.kwargs["routing_analysis"], explicit_analysis)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,22 @@ These tests test the logic in isolation without importing stream_server
 """
 import unittest
 import json
+import ast
 from pathlib import Path
+from typing import Any, Dict, List
+
+
+def load_stream_server_function(name: str):
+    """Load one pure helper without importing the server and triggering startup config."""
+    source_path = Path(__file__).resolve().parent / "stream_server.py"
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    function_node = next(
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    )
+    namespace = {"Any": Any, "Dict": Dict, "List": List}
+    exec(compile(ast.Module(body=[function_node], type_ignores=[]), str(source_path), "exec"), namespace)
+    return namespace[name]
 
 
 class TestIssueTemplateGuidance(unittest.TestCase):
@@ -25,6 +40,79 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertNotIn("Google Vision", template)
         self.assertIn("call `YOLO(...)`", template)
         self.assertIn("define provider-specific `DEFAULT_MODEL` constants", template)
+
+
+class TestParserStageIssueIntegration(unittest.TestCase):
+    """Test parser-owned stage normalization and issue-section wiring."""
+
+    def setUp(self):
+        self.normalize = load_stream_server_function("_normalize_parser_stage_plan")
+        self.render = load_stream_server_function("_build_task_stages_markdown")
+
+    def test_preserves_single_stage(self):
+        result = self.normalize(
+            {
+                "should_chain": False,
+                "stages": [{
+                    "stage_name": "Read label",
+                    "goal": "Extract the medication instructions.",
+                    "capability": "ocr",
+                    "input": "Current camera frame",
+                    "expected_output": "Extracted label text",
+                }],
+            },
+            ["ocr", "general_reasoning"],
+        )
+
+        self.assertFalse(result["should_chain"])
+        self.assertEqual(len(result["stages"]), 1)
+        self.assertEqual(result["stages"][0]["stage_name"], "Read label")
+        self.assertEqual(result["stages"][0]["expected_output"], "Extracted label text")
+
+    def test_preserves_multi_stage_dependencies(self):
+        result = self.normalize(
+            {
+                "stages": [
+                    {
+                        "name": "Find vehicle",
+                        "purpose": "Identify the user's vehicle.",
+                        "capability": "object_detection",
+                        "output": "Vehicle location and description",
+                    },
+                    {
+                        "name": "Find handle",
+                        "purpose": "Locate the passenger-side handle.",
+                        "capability": "spatial_relationship",
+                        "input": "Vehicle information from Stage 1",
+                        "output": "Door handle location",
+                    },
+                ],
+            },
+            ["object_detection", "spatial_relationship"],
+        )
+
+        self.assertTrue(result["should_chain"])
+        self.assertEqual(len(result["stages"]), 2)
+        self.assertEqual(result["stages"][1]["input"], "Vehicle information from Stage 1")
+
+    def test_issue_flow_contains_task_stages_section_and_logging(self):
+        source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
+        stage_plan = {
+            "stages": [{
+                "stage_name": "Find handle",
+                "goal": "Locate the passenger-side handle.",
+                "capability": "spatial_relationship",
+                "input": "Vehicle information from Stage 1",
+                "expected_output": "Door handle location",
+            }],
+        }
+        markdown = self.render(stage_plan)
+
+        self.assertIn("## Task Stages", markdown)
+        self.assertIn("### Find handle", markdown)
+        self.assertIn("**Input dependencies:** Vehicle information from Stage 1", markdown)
+        self.assertIn("Including Task Stages in GitHub issue", source)
+        self.assertIn("Always return at least one stage", source)
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

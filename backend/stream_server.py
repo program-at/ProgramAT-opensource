@@ -36,7 +36,6 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 from model_router import (
     load_capability_descriptions,
     load_capability_profiles,
-    normalize_pipeline_analysis,
     normalize_routing_analysis,
     select_model,
     system_llm_call,
@@ -149,6 +148,42 @@ def _format_capability_profiles_for_prompt() -> tuple[str, list[str]]:
     return "\n".join(lines), names
 
 
+def _normalize_parser_stage_plan(raw_plan: Any, supported_capabilities: List[str]) -> Dict[str, Any]:
+    """Normalize the parser's existing stage-decomposition output for issue generation."""
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    supported = {str(name).strip().lower() for name in supported_capabilities}
+    stages: List[Dict[str, str]] = []
+
+    for index, raw_stage in enumerate(plan.get('stages') or [], start=1):
+        if not isinstance(raw_stage, dict):
+            continue
+        capability = str(raw_stage.get('capability', '')).strip().lower()
+        if capability not in supported:
+            continue
+        stages.append({
+            'stage_name': str(
+                raw_stage.get('stage_name') or raw_stage.get('name') or f'Stage {index}'
+            ).strip(),
+            'goal': str(raw_stage.get('goal') or raw_stage.get('purpose') or '').strip(),
+            'capability': capability,
+            'input': str(raw_stage.get('input') or '').strip(),
+            'expected_output': str(
+                raw_stage.get('expected_output') or raw_stage.get('output') or ''
+            ).strip(),
+        })
+
+    return {
+        'should_chain': len(stages) > 1,
+        'reason': str(plan.get('reason') or '').strip(),
+        'stages': stages,
+        'artifact_value_score': plan.get('artifact_value_score', 0.0),
+        'information_reduction': plan.get('information_reduction', 'none'),
+        'artifact_gain': plan.get('artifact_gain', 0.0),
+        'complexity_penalty': plan.get('complexity_penalty', 0.0),
+        'pipeline_score': plan.get('pipeline_score', 0.0),
+    }
+
+
 @dataclass
 class ToolPlanningContext:
     """Advisory parser stage plan plus router model-selection results."""
@@ -193,13 +228,17 @@ class ToolPlanningContext:
         return 'sequential_stages' if should_chain else 'single_model'
 
     def recommended_stage_count(self) -> int:
-        stages = self.execution_plan.get('stages') or []
+        stages = self.stage_plan.get('stages') or []
         if stages:
             return len(stages)
         return 1 if self.execution_mode() == 'single_model' else 0
 
     def stage_summaries(self) -> List[Dict[str, Any]]:
-        stages = self.execution_plan.get('stages') or []
+        stages = self.stage_plan.get('stages') or []
+        selected_models = {
+            int(selection.get('index', 0)): selection.get('selected_model') or ''
+            for selection in self.stage_model_selection
+        }
         summaries: List[Dict[str, Any]] = []
         for index, stage in enumerate(stages, start=1):
             summaries.append(
@@ -208,7 +247,7 @@ class ToolPlanningContext:
                     'stage_name': stage.get('stage_name', '') or f"Stage {index}",
                     'goal': stage.get('goal', '') or stage.get('purpose', ''),
                     'capability': stage.get('capability', ''),
-                    'model': stage.get('selected_model') or '',
+                    'model': selected_models.get(index, ''),
                     'expected_output': stage.get('expected_output', '') or stage.get('output', ''),
                     'input': stage.get('input', ''),
                 }
@@ -227,7 +266,10 @@ class ToolPlanningContext:
         return {
             'execution_mode': self.execution_mode(),
             'recommended_stage_count': self.recommended_stage_count(),
-            'stages': self.stage_summaries(),
+            'stages': [
+                {key: value for key, value in stage.items() if key != 'model'}
+                for stage in self.stage_summaries()
+            ],
         }
 
 
@@ -355,65 +397,45 @@ def _log_model_router_observability(task_text: str, planning: ToolPlanningContex
     logger.info("==================================")
 
 
-def _build_router_analysis_markdown(planning: ToolPlanningContext) -> str:
+def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
     lines = [
-        "## Parser Stage Plan and Model Selection",
-        "",
-        "Responsibility split:",
-        "The LLM parser decides whether stages are needed and describes them. Generated tools execute stages sequentially and pass intermediate outputs. The model router only selects a model for each declared capability.",
-        "",
-        "Parser execution mode:",
-        planning.execution_mode(),
-        "",
-        "Selected model for single-stage request:",
-        planning.selected_model_display(),
-        "",
-        "Parser stages:",
-        str(planning.recommended_stage_count()),
+        "## Task Stages",
         "",
     ]
 
-    stages = planning.stage_summaries()
-    if stages:
-        for stage in stages:
-            lines.extend(
-                [
-                    f"Stage {stage.get('index')}:",
-                    str(stage.get('stage_name') or f"Stage {stage.get('index')}"),
-                    "Goal:",
-                    str(stage.get('goal') or ''),
-                    "Capability:",
-                    str(stage.get('capability') or 'unknown'),
-                    "Selected model for this capability:",
-                    str(stage.get('model') or 'unavailable'),
-                ]
-            )
-            if stage.get('input'):
-                lines.extend([
-                    "Input:",
-                    str(stage.get('input')),
-                ])
-            if stage.get('expected_output'):
-                lines.extend([
-                    "Expected output:",
-                    str(stage.get('expected_output')),
-                ])
-            lines.append("")
-
-    reason = planning.stage_plan.get('reason') or planning.execution_plan.get('reason') or ''
-    if reason:
+    stages = stage_plan.get('stages') or []
+    for index, stage in enumerate(stages, start=1):
+        stage_title = stage.get('stage_name') or f"Stage {index}"
         lines.extend([
-            "Reason:",
-            str(reason),
+            f"### {stage_title}",
+            "",
+            f"- **Goal:** {stage.get('goal') or 'Not specified'}",
+            f"- **Capability:** {stage.get('capability') or 'Not specified'}",
+        ])
+        if stage.get('input'):
+            lines.append(f"- **Input dependencies:** {stage.get('input')}")
+        else:
+            lines.append("- **Input dependencies:** Original user request and current input")
+        lines.extend([
+            f"- **Expected output:** {stage.get('expected_output') or 'Not specified'}",
             "",
         ])
 
     return "\n".join(lines).rstrip()
 
 
-def _append_router_sections_to_issue_body(body: str, planning: ToolPlanningContext) -> str:
-    router_section = _build_router_analysis_markdown(planning)
-    metadata = json.dumps(planning.issue_metadata(), indent=2, ensure_ascii=False)
+def _append_task_stages_to_issue_body(
+    body: str,
+    stage_plan: Dict[str, Any],
+    planning: Optional[ToolPlanningContext] = None,
+) -> str:
+    stages_section = _build_task_stages_markdown(stage_plan)
+    metadata_value = planning.issue_metadata() if planning else {
+        'execution_mode': 'sequential_stages' if len(stage_plan.get('stages') or []) > 1 else 'single_model',
+        'recommended_stage_count': len(stage_plan.get('stages') or []),
+        'stages': stage_plan.get('stages') or [],
+    }
+    metadata = json.dumps(metadata_value, indent=2, ensure_ascii=False)
     metadata_section = "\n".join(
         [
             "## Parser Stage Metadata",
@@ -424,7 +446,7 @@ def _append_router_sections_to_issue_body(body: str, planning: ToolPlanningConte
         ]
     )
     base = (body or '').rstrip()
-    return f"{base}\n\n{router_section}\n\n{metadata_section}\n"
+    return f"{base}\n\n{stages_section}\n\n{metadata_section}\n"
 
 # Configuration
 HOST = os.environ.get('HOST', '127.0.0.1')
@@ -3559,33 +3581,34 @@ Stage planning rules:
 1. Task decomposition and model selection are separate concerns.
 2. You, the LLM parser, are responsible for deciding whether the user request requires multiple stages.
 3. The model router is only responsible for selecting the most appropriate model for a capability. Do not ask the model router to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
-4. Do not create multiple stages merely because multiple capabilities exist.
-5. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
-6. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
-7. Stages must follow producer -> consumer information flow, not capability ranking order.
-8. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
-9. Increase stage confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
-10. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
-11. Distinguish camera_motion vs navigation strictly:
+4. Always return at least one stage. For a single-stage task, return exactly one stage and set should_chain=false.
+5. Do not create multiple stages merely because multiple capabilities exist.
+6. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
+7. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
+8. Stages must follow producer -> consumer information flow, not capability ranking order.
+9. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
+10. Increase stage confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
+11. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
+12. Distinguish camera_motion vs navigation strictly:
     - camera_motion: camera framing or aiming actions (left/right/up/down, closer/farther, zoom, center target)
     - navigation: physical wayfinding and walking guidance through space
-12. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
-13. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
-14. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
-15. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
-16. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
-17. Optimize for the minimum useful stage count, not the minimum stage count alone.
-18. Use a complexity penalty to discourage unnecessary stages:
+13. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
+14. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
+15. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
+16. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
+17. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
+18. Optimize for the minimum useful stage count, not the minimum stage count alone.
+19. Use a complexity penalty to discourage unnecessary stages:
     pipeline_score = artifact_gain - complexity_penalty
     complexity_penalty = (stage_count - 1) * penalty_per_stage
-19. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
-20. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
-21. Each stage must include stage_name, goal, capability, input, and expected_output. Use input only when the stage consumes output from an earlier stage or another explicit input.
-22. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
-23. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
-24. Include information_reduction as "none", "minor", "moderate", or "significant".
-25. The generated issue must clearly enumerate the stages. Later stages may consume outputs from earlier stages.
-26. Copilot should implement sequential execution of stages and pass intermediate outputs between stages. The router only decides which model is appropriate for each capability.
+20. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
+21. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
+22. Each stage must include stage_name, goal, capability, input, and expected_output. Use input only when the stage consumes output from an earlier stage or another explicit input.
+23. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
+24. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
+25. Include information_reduction as "none", "minor", "moderate", or "significant".
+26. The generated issue must clearly enumerate the stages. Later stages may consume outputs from earlier stages.
+27. Copilot should implement sequential execution of stages and pass intermediate outputs between stages. The router only decides which model is appropriate for each capability.
 
 When should_chain=true, use this stage shape:
 {{
@@ -3649,7 +3672,16 @@ Return format:
         "artifact_gain": 0.0,
         "complexity_penalty": 0.0,
         "pipeline_score": 0.0,
-        "stages": []
+        "stages": [
+            {{
+                "stage_name": "Stage 1",
+                "goal": "Complete the user's requested task.",
+                "capability": "general_reasoning",
+                "input": "Original user request and current input.",
+                "expected_output": "A concise result for the user.",
+                "preferred_model_type": "general_model"
+            }}
+        ]
     }}
 }}"""
 
@@ -3682,9 +3714,9 @@ Return format:
             # Keep backward compatibility by allowing invalid field to be dropped.
             parsed_data.pop('routing_analysis', None)
 
-        parsed_data['pipeline_analysis'] = normalize_pipeline_analysis(
+        parsed_data['pipeline_analysis'] = _normalize_parser_stage_plan(
             parsed_data.get('pipeline_analysis'),
-            supported_capabilities=capability_names,
+            capability_names,
         )
 
         if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
@@ -3735,7 +3767,7 @@ Return format:
             json.dumps((parsed_data.get('routing_analysis') or {}).get('latency_sensitivity', {})),
         )
         logger.info(
-            "Pipeline decision=%s",
+            "Parser stage decision=%s",
             json.dumps({
                 'should_chain': parsed_data['pipeline_analysis'].get('should_chain'),
                 'reason': parsed_data['pipeline_analysis'].get('reason'),
@@ -3746,7 +3778,10 @@ Return format:
                 'pipeline_score': parsed_data['pipeline_analysis'].get('pipeline_score'),
             }),
         )
-        logger.info("Pipeline stages=%s", json.dumps(parsed_data['pipeline_analysis'].get('stages', [])))
+        logger.info(
+            "Parser stages for issue=%s",
+            json.dumps(parsed_data['pipeline_analysis'].get('stages', []), ensure_ascii=False),
+        )
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
         return parsed_data
@@ -4120,8 +4155,19 @@ async def create_github_issue(text: str):
             # Fallback if template doesn't exist
             body = f"**Transcript:**\n{text}\n\n**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
 
-        if planning_context:
-            body = _append_router_sections_to_issue_body(body, planning_context)
+        stage_plan = parsed_data.get('pipeline_analysis') or {}
+        issue_stages = stage_plan.get('stages') or []
+        if issue_stages:
+            body = _append_task_stages_to_issue_body(body, stage_plan, planning_context)
+            logger.info(
+                "Including Task Stages in GitHub issue: %s",
+                json.dumps(issue_stages, ensure_ascii=False),
+            )
+            _log_to_all_sessions(
+                "INFO",
+                f"Including {len(issue_stages)} Task Stages in GitHub issue: "
+                f"{json.dumps(issue_stages, ensure_ascii=False)}",
+            )
         
         # Create GitHub client
         g = Github(GITHUB_TOKEN)

@@ -1163,6 +1163,21 @@ def copilot_llm_call(
     route_text = _task_text(capability, task, task_category, messages, metadata)
     callable_profiles = [profile for profile in load_model_profiles() if profile.model]
     routing_analysis = metadata.get("routing_analysis") if isinstance(metadata, dict) else None
+    if routing_analysis is None:
+        declared_capability = capability or task_category
+        if isinstance(declared_capability, str) and declared_capability.strip():
+            routing_analysis = {
+                "tasks": [{
+                    "name": declared_capability.strip().lower(),
+                    "weight": 1.0,
+                    "reason": "Capability declared by the generated tool.",
+                }],
+                "latency_sensitivity": {
+                    "level": "medium",
+                    "weight": 0.5,
+                    "reason": "Default latency for a generated-tool capability call.",
+                },
+            }
     route = rank_models(route_text, callable_profiles, routing_analysis=routing_analysis)
     selected_profile = next(profile for profile in callable_profiles if profile.name == route["selected_model"])
     weights = {key: round(value, 3) for key, value in route["capability_weights"].items() if value > 0.005}
