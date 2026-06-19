@@ -18,7 +18,6 @@ import io
 import logging
 import sys
 from datetime import datetime
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import cv2
@@ -34,10 +33,8 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
-    load_capability_descriptions,
     load_capability_profiles,
     normalize_routing_analysis,
-    select_model,
     system_llm_call,
 )
 from litellm_utils import (
@@ -106,12 +103,22 @@ def _normalize_custom_gpt_value(value) -> str:
         "don't reask",
     )
 
-    if any(phrase in text for phrase in affirmative_phrases):
-        return 'yes'
     if any(phrase in text for phrase in negative_phrases):
         return 'no'
+    if any(phrase in text for phrase in affirmative_phrases):
+        return 'yes'
 
     return ''
+
+
+def _explicit_custom_gpt_value(transcript: str) -> str:
+    """Read an explicit Custom GPT or live-mode yes/no label from user text."""
+    match = re.search(
+        r'\b(?:custom\s*gpt|live\s*mode)\s*:\s*(yes|no)\b',
+        str(transcript or ''),
+        re.IGNORECASE,
+    )
+    return match.group(1).lower() if match else ''
 
 
 def _extract_issue_section(body: str, *section_names: str) -> str:
@@ -204,218 +211,6 @@ def _parse_llm_json_object(raw_text: str) -> Dict[str, Any]:
     return parsed
 
 
-@dataclass
-class ToolPlanningContext:
-    """Advisory parser stage plan plus router model-selection results."""
-
-    routing_analysis: Dict[str, Any]
-    stage_plan: Dict[str, Any]
-    selected_model: Optional[str]
-    execution_plan: Dict[str, Any]
-    stage_model_selection: List[Dict[str, Any]]
-
-    @classmethod
-    def from_parser_plan(
-        cls,
-        routing_analysis: Dict[str, Any],
-        stage_plan: Dict[str, Any],
-        selected_model: Optional[str],
-        execution_plan: Dict[str, Any],
-        stage_model_selection: List[Dict[str, Any]],
-    ) -> "ToolPlanningContext":
-        return cls(
-            routing_analysis=routing_analysis or {},
-            stage_plan=stage_plan or {},
-            selected_model=selected_model,
-            execution_plan=execution_plan or {},
-            stage_model_selection=stage_model_selection or [],
-        )
-
-    def to_routing_result(self) -> Dict[str, Any]:
-        return {
-            'routing_analysis': self.routing_analysis,
-            'stage_plan': self.stage_plan,
-            'selected_model': self.selected_model,
-            'final_execution_plan': self.execution_plan,
-            'stage_model_selection': self.stage_model_selection,
-        }
-
-    def execution_mode(self) -> str:
-        mode = str(self.execution_plan.get('mode') or '').strip().lower()
-        if mode:
-            return mode
-        should_chain = bool(self.stage_plan.get('should_chain'))
-        return 'sequential_stages' if should_chain else 'single_model'
-
-    def recommended_stage_count(self) -> int:
-        stages = self.stage_plan.get('stages') or []
-        if stages:
-            return len(stages)
-        return 1 if self.execution_mode() == 'single_model' else 0
-
-    def stage_summaries(self) -> List[Dict[str, Any]]:
-        stages = self.stage_plan.get('stages') or []
-        selected_models = {
-            int(selection.get('index', 0)): selection.get('selected_model') or ''
-            for selection in self.stage_model_selection
-        }
-        summaries: List[Dict[str, Any]] = []
-        for index, stage in enumerate(stages, start=1):
-            summaries.append(
-                {
-                    'index': index,
-                    'stage_name': stage.get('stage_name', '') or f"Stage {index}",
-                    'goal': stage.get('goal', '') or stage.get('purpose', ''),
-                    'capability': stage.get('capability', ''),
-                    'model': selected_models.get(index, ''),
-                    'expected_output': stage.get('expected_output', '') or stage.get('output', ''),
-                    'input': stage.get('input', ''),
-                }
-            )
-        return summaries
-
-    def selected_model_display(self) -> str:
-        if self.selected_model:
-            return str(self.selected_model)
-        if self.execution_mode() == 'sequential_stages':
-            return 'stage-specific'
-        selected = self.execution_plan.get('selected_model')
-        return str(selected) if selected else 'unavailable'
-
-    def issue_metadata(self) -> Dict[str, Any]:
-        return {
-            'execution_mode': self.execution_mode(),
-            'recommended_stage_count': self.recommended_stage_count(),
-            'stages': [
-                {key: value for key, value in stage.items() if key != 'model'}
-                for stage in self.stage_summaries()
-            ],
-        }
-
-
-def _build_tool_planning_context(task_text: str, parsed_data: dict) -> ToolPlanningContext:
-    routing_analysis = parsed_data.get('routing_analysis') or {}
-    stage_plan = parsed_data.get('pipeline_analysis') or {}
-    latency_sensitivity = routing_analysis.get('latency_sensitivity')
-    stages = stage_plan.get('stages') or []
-
-    if stage_plan.get('should_chain') and stages:
-        stage_model_selection: List[Dict[str, Any]] = []
-        plan_stages: List[Dict[str, Any]] = []
-        for index, stage in enumerate(stages, start=1):
-            capability = str(stage.get('capability', '')).strip().lower()
-            goal = stage.get('goal') or stage.get('purpose') or f"Select a model for {capability}."
-            stage_routing = {
-                'tasks': [{
-                    'name': capability,
-                    'weight': 1.0,
-                    'reason': f"Stage {index} capability selected by the LLM parser.",
-                }],
-                'latency_sensitivity': latency_sensitivity or {
-                    'level': 'medium',
-                    'weight': 0.5,
-                    'reason': 'Default stage model-selection latency.',
-                },
-            }
-            selection_result = select_model(str(goal), routing_analysis=stage_routing)
-            selected = selection_result.get('selected')
-            selected_model = selection_result.get('selected_model')
-            stage_selection = {
-                'index': index,
-                'stage_name': stage.get('stage_name') or f"Stage {index}",
-                'goal': goal,
-                'capability': capability,
-                'selected_model': selected_model,
-                'selected': selected,
-                'ranking': selection_result.get('ranking', []),
-            }
-            stage_model_selection.append(stage_selection)
-            plan_stages.append({
-                'index': index,
-                **stage,
-                'stage_name': stage.get('stage_name') or f"Stage {index}",
-                'goal': goal,
-                'selected_model': selected_model,
-                'selected': selected,
-            })
-
-        execution_plan = {
-            'mode': 'sequential_stages',
-            'task': task_text,
-            'reason': stage_plan.get('reason', ''),
-            'stages': plan_stages,
-            'owner': 'LLM parser and generated tool; router selects models only',
-        }
-        return ToolPlanningContext.from_parser_plan(
-            routing_analysis,
-            stage_plan,
-            None,
-            execution_plan,
-            stage_model_selection,
-        )
-
-    routing_result = select_model(task_text, routing_analysis=routing_analysis)
-    execution_plan = {
-        'mode': 'single_model',
-        'task': task_text,
-        'selected_model': routing_result.get('selected_model'),
-        'selected': routing_result.get('selected'),
-        'owner': 'Generated tool; router selects the model only',
-    }
-    return ToolPlanningContext.from_parser_plan(
-        routing_result.get('routing_analysis') or routing_analysis,
-        stage_plan,
-        routing_result.get('selected_model'),
-        execution_plan,
-        [],
-    )
-
-
-def _log_model_router_observability(task_text: str, planning: ToolPlanningContext):
-    """Emit concise, human-readable router logs for planning observability."""
-    logger.info("========== MODEL ROUTER ==========")
-    logger.info("Task:")
-    logger.info("%s", task_text)
-    logger.info("")
-    logger.info("Selected Model:")
-    logger.info("%s", planning.selected_model_display())
-    logger.info("")
-    logger.info("Parser Execution Mode:")
-    logger.info("%s", planning.execution_mode())
-    logger.info("")
-    logger.info("Parser Stage Count:")
-    logger.info("%s", planning.recommended_stage_count())
-    logger.info("")
-
-    stages = planning.stage_summaries()
-    for stage in stages:
-        logger.info("Stage %s:", stage.get('index'))
-        logger.info("%s", stage.get('stage_name') or f"Stage {stage.get('index')}")
-        logger.info("")
-        logger.info("Goal:")
-        logger.info("%s", stage.get('goal') or '')
-        logger.info("")
-        logger.info("Capability:")
-        logger.info("%s", stage.get('capability') or 'unknown')
-        logger.info("")
-        logger.info("Selected Model:")
-        logger.info("%s", stage.get('model') or 'unavailable')
-        logger.info("")
-        if stage.get('expected_output'):
-            logger.info("Expected Output:")
-            logger.info("%s", stage.get('expected_output'))
-            logger.info("")
-        if stage.get('input'):
-            logger.info("Input:")
-            logger.info("%s", stage.get('input'))
-            logger.info("")
-
-    reason = planning.stage_plan.get('reason') or planning.execution_plan.get('reason') or ''
-    if reason:
-        logger.info("Reason:")
-        logger.info("%s", reason)
-    logger.info("==================================")
-
 
 def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
     lines = [
@@ -447,10 +242,9 @@ def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
 def _append_task_stages_to_issue_body(
     body: str,
     stage_plan: Dict[str, Any],
-    planning: Optional[ToolPlanningContext] = None,
 ) -> str:
     stages_section = _build_task_stages_markdown(stage_plan)
-    metadata_value = planning.issue_metadata() if planning else {
+    metadata_value = {
         'execution_mode': 'sequential_stages' if len(stage_plan.get('stages') or []) > 1 else 'single_model',
         'recommended_stage_count': len(stage_plan.get('stages') or []),
         'stages': stage_plan.get('stages') or [],
@@ -3529,8 +3323,7 @@ def _build_issue_extraction_prompt(transcript: str, existing_data: Optional[dict
             for key, value in existing_data.items()
             if key not in {
                 'missing_fields', 'routing_analysis', 'pipeline_analysis',
-                'routing_result', 'selected_model', 'final_execution_plan',
-                'stage_model_selection', 'original_prompts',
+                'original_prompts',
             }
             and value
         }
@@ -3561,12 +3354,14 @@ Extract only these issue fields:
 - additional: other context
 - missing_fields: only missing important fields
 
-Important fields are title, description, problem, solution, example_usage, live_mode, and live_query.
-- Any meaningful content satisfies an issue field.
-- If live_mode is empty, include "live_mode" in missing_fields.
-- If live_mode is "yes" and live_query is empty, include "live_query".
-- If live_mode is "no", live_query is not missing.
-- Include "example_usage" when no concrete example of at least 10 characters is present.
+Only block creation when the core task is genuinely unclear.
+- Core context: problem or description.
+- Core goal: example_usage or another clear task goal in solution/description.
+- Derive a concise title, description, and solution from an explicit problem or example when possible without inventing new requirements.
+- implementation_details, alternatives, and additional are optional.
+- live_mode is optional when not explicitly stated.
+- If live_mode is "yes" and live_query is empty, include "live_query" in missing_fields.
+- If live_mode is "no", live_query is optional and must not be included in missing_fields.
 - Do not return routing_analysis, pipeline_analysis, capabilities, or stages.
 
 Return ONLY this JSON object:
@@ -3603,6 +3398,40 @@ def _merge_issue_and_stage_outputs(
     merged['routing_analysis'] = decomposition_data.get('routing_analysis')
     merged['pipeline_analysis'] = decomposition_data.get('pipeline_analysis')
     return merged
+
+
+def _normalize_issue_creation_requirements(
+    parsed_data: Dict[str, Any],
+    transcript: str,
+) -> Dict[str, Any]:
+    normalized = dict(parsed_data)
+    explicit_custom_gpt = _explicit_custom_gpt_value(transcript)
+    parsed_custom_gpt = _normalize_custom_gpt_value(
+        normalized.get('custom_gpt') or normalized.get('live_mode')
+    )
+    custom_gpt = explicit_custom_gpt or parsed_custom_gpt
+    gpt_query = str(normalized.get('gpt_query') or normalized.get('live_query') or '').strip()
+
+    normalized['custom_gpt'] = custom_gpt
+    normalized['gpt_query'] = '' if custom_gpt == 'no' else gpt_query
+
+    has_context = bool(str(normalized.get('problem') or normalized.get('description') or '').strip())
+    has_goal = bool(str(
+        normalized.get('example_usage')
+        or normalized.get('solution')
+        or normalized.get('description')
+        or ''
+    ).strip())
+
+    missing_fields = []
+    if not has_context:
+        missing_fields.append('description')
+    if not has_goal:
+        missing_fields.append('example_usage')
+    if custom_gpt == 'yes' and not normalized['gpt_query']:
+        missing_fields.append('gpt_query')
+    normalized['missing_fields'] = missing_fields
+    return normalized
 
 
 def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dict:
@@ -3685,33 +3514,7 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             len(parsed_data['pipeline_analysis'].get('stages') or []),
         )
 
-        if 'live_mode' in parsed_data and 'custom_gpt' not in parsed_data:
-            parsed_data['custom_gpt'] = parsed_data.get('live_mode', '')
-        if 'live_query' in parsed_data and 'gpt_query' not in parsed_data:
-            parsed_data['gpt_query'] = parsed_data.get('live_query', '')
-
-        parsed_custom_gpt = _normalize_custom_gpt_value(parsed_data.get('custom_gpt', ''))
-        if not parsed_custom_gpt:
-            parsed_custom_gpt = _normalize_custom_gpt_value(transcript)
-        parsed_data['custom_gpt'] = parsed_custom_gpt
-
-        missing_fields = [
-            'custom_gpt' if field == 'live_mode' else 'gpt_query' if field == 'live_query' else field
-            for field in parsed_data.get('missing_fields', [])
-        ]
-        if parsed_custom_gpt:
-            missing_fields = [field for field in missing_fields if field != 'custom_gpt']
-            if parsed_custom_gpt == 'no':
-                missing_fields = [field for field in missing_fields if field != 'gpt_query']
-            elif parsed_custom_gpt == 'yes' and not parsed_data.get('gpt_query'):
-                if 'gpt_query' not in missing_fields:
-                    missing_fields.append('gpt_query')
-
-        parsed_data['missing_fields'] = missing_fields
-        
-        # Ensure missing_fields exists
-        if 'missing_fields' not in parsed_data:
-            parsed_data['missing_fields'] = []
+        parsed_data = _normalize_issue_creation_requirements(parsed_data, transcript)
         
         # Preserve the original transcript for bookkeeping
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
@@ -4076,20 +3879,6 @@ async def create_github_issue(text: str):
         missing_fields = parsed_data.get('missing_fields', [])
         issue_type = 'visual AT'  # Always visual AT now
 
-        planning_context: Optional[ToolPlanningContext] = None
-        try:
-            planning_context = _build_tool_planning_context(text.strip(), parsed_data)
-            parsed_data['routing_result'] = planning_context.to_routing_result()
-
-            # Preserve existing keys for backward compatibility while introducing routing_result.
-            parsed_data['selected_model'] = planning_context.selected_model
-            parsed_data['final_execution_plan'] = planning_context.execution_plan
-            parsed_data['stage_model_selection'] = planning_context.stage_summaries()
-
-            _log_model_router_observability(text.strip(), planning_context)
-        except Exception as route_error:
-            logger.warning(f"Routing selection skipped due to error: {route_error}")
-        
         # If there are important missing fields, send feedback and save incomplete data
         if missing_fields:
             # Store incomplete issue for next round
@@ -4146,7 +3935,7 @@ async def create_github_issue(text: str):
             len(issue_stages),
         )
         if issue_stages:
-            body = _append_task_stages_to_issue_body(body, stage_plan, planning_context)
+            body = _append_task_stages_to_issue_body(body, stage_plan)
             logger.info(
                 "Including Task Stages in GitHub issue: %s",
                 json.dumps(issue_stages, ensure_ascii=False),

@@ -5,6 +5,7 @@ These tests test the logic in isolation without importing stream_server
 import unittest
 import json
 import ast
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,8 +28,24 @@ def load_stream_server_function(name: str):
         "List": List,
         "Optional": Optional,
         "json": json,
+        "re": re,
+        "ToolPlanningContext": Any,
     }
-    exec(compile(ast.Module(body=[function_node], type_ignores=[]), str(source_path), "exec"), namespace)
+    dependency_names = {
+        "_normalize_issue_creation_requirements": {
+            "_normalize_custom_gpt_value",
+            "_explicit_custom_gpt_value",
+        },
+        "_append_task_stages_to_issue_body": {"_build_task_stages_markdown"},
+    }.get(name, set())
+    dependencies = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in dependency_names
+    ]
+    exec(
+        compile(ast.Module(body=[*dependencies, function_node], type_ignores=[]), str(source_path), "exec"),
+        namespace,
+    )
     return namespace[name]
 
 
@@ -57,11 +74,29 @@ class TestParserStageIssueIntegration(unittest.TestCase):
     """Test parser-owned stage normalization and issue-section wiring."""
 
     def setUp(self):
+        self.normalize_requirements = load_stream_server_function("_normalize_issue_creation_requirements")
         self.extraction_prompt = load_stream_server_function("_build_issue_extraction_prompt")
         self.merge_outputs = load_stream_server_function("_merge_issue_and_stage_outputs")
         self.normalize = load_stream_server_function("_normalize_parser_stage_plan")
         self.render = load_stream_server_function("_build_task_stages_markdown")
+        self.append_stages = load_stream_server_function("_append_task_stages_to_issue_body")
         self.parse_json = load_stream_server_function("_parse_llm_json_object")
+
+    def test_custom_gpt_no_does_not_require_query(self):
+        normalized = self.normalize_requirements(
+            {
+                "description": "Find the user's Uber and guide them to it.",
+                "example_usage": "Find the white Toyota and guide me to its passenger door.",
+                "live_mode": "yes",
+                "live_query": "",
+                "missing_fields": ["live_query"],
+            },
+            "Custom GPT: No",
+        )
+
+        self.assertEqual(normalized["custom_gpt"], "no")
+        self.assertEqual(normalized["gpt_query"], "")
+        self.assertEqual(normalized["missing_fields"], [])
 
     def test_parser_uses_separate_extraction_and_decomposition_contracts(self):
         task = "Find my Uber, locate the passenger-side door, and guide me to it."
@@ -205,6 +240,38 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("### Identify vehicle", markdown)
         self.assertIn("### Locate passenger door", markdown)
         self.assertIn("### Guide user", markdown)
+
+        complete = self.normalize_requirements(
+            {
+                "problem": "Crowded pickup areas make the correct car difficult to find.",
+                "example_usage": "Find my Uber, locate its passenger door, and guide me to it.",
+                "implementation_details": "",
+                "custom_gpt": "no",
+                "gpt_query": "",
+            },
+            "Custom GPT: No",
+        )
+        body = self.append_stages("**Feature Description**\nUber guidance", plan)
+
+        self.assertEqual(complete["missing_fields"], [])
+        self.assertIn("## Task Stages", body)
+        self.assertIn("### Guide user", body)
+        self.assertNotIn("selected_model", body)
+
+    def test_issue_creation_path_does_not_call_model_router(self):
+        source_path = Path(__file__).resolve().parent / "stream_server.py"
+        source = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        create_node = next(
+            node for node in tree.body
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "create_github_issue"
+        )
+        create_source = ast.get_source_segment(source, create_node)
+
+        self.assertNotIn("_build_tool_planning_context", create_source)
+        self.assertNotIn("select_model(", create_source)
+        self.assertNotIn("final_execution_plan", create_source)
+        self.assertNotIn("stage_model_selection", create_source)
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):
