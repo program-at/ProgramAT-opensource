@@ -43,6 +43,7 @@ from model_router import (
 from litellm_utils import (
     extract_text,
 )
+from stage_decomposition import build_stage_decomposition_prompt
 from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
@@ -3520,148 +3521,55 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         logger.error(tb)
 
 
-def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dict:
-    """
-    Use AI to parse the transcript and extract structured information for issue template.
-    
-    Args:
-        transcript: The voice transcript to parse
-        existing_data: Optional existing incomplete issue data for context
-        
-    Returns:
-        Dictionary with parsed fields including 'missing_fields' list
-    """
-    try:
-        try:
-            capability_profiles_text, capability_names = _format_capability_profiles_for_prompt()
-        except Exception:
-            capability_profiles_text = ""
-            capability_names = ['general_reasoning', 'ocr', 'object_detection', 'map_web', 'spatial_relationship', 'navigation', 'camera_motion', 'video']
-        capability_names_text = ', '.join(capability_names)
+def _build_issue_extraction_prompt(transcript: str, existing_data: Optional[dict] = None) -> str:
+    context_info = ""
+    if existing_data:
+        issue_fields = {
+            key: value
+            for key, value in existing_data.items()
+            if key not in {
+                'missing_fields', 'routing_analysis', 'pipeline_analysis',
+                'routing_result', 'selected_model', 'final_execution_plan',
+                'stage_model_selection', 'original_prompts',
+            }
+            and value
+        }
+        context_info = f"""
+IMPORTANT: This is a follow-up response to an incomplete issue.
 
-        # Build context from existing data if this is a follow-up
-        context_info = ""
-        if existing_data:
-            # Filter out empty values and missing_fields for cleaner context
-            existing_fields = {k: v for k, v in existing_data.items() 
-                             if k != 'missing_fields' and v and (isinstance(v, str) and v.strip() or not isinstance(v, str))}
-            context_info = f"""
-IMPORTANT: This is a follow-up response to an incomplete issue. The user is providing additional information.
+Previously captured issue information:
+{json.dumps(issue_fields, indent=2)}
 
-Previously captured information:
-{json.dumps(existing_fields, indent=2)}
-
-Fields that were previously missing: {existing_data.get('missing_fields', [])}
-
-The new transcript below is the user providing the missing information. Focus on extracting the information they are providing now.
+Fields previously missing: {existing_data.get('missing_fields', [])}
+Merge the new transcript into those issue fields.
 """
-        
-        prompt = f"""Parse the following voice transcript and extract information for a visual assistive technology (AT) tool request.
 
-CRITICAL: Do not make up, infer, or extrapolate ANY content that was not explicitly said. If a field is empty or not mentioned, leave it empty - it can be filled in later. Only extract information that was directly stated in the transcript.
+    return f"""Parse the following voice transcript and extract information for a visual assistive technology (AT) tool request.
 
-For a visual AT request, extract:
-- title: A concise summary (max 100 characters)
+CRITICAL: Do not make up, infer, or extrapolate content that was not explicitly provided. Leave unmentioned fields empty.
+
+Extract only these issue fields:
+- title: concise summary, maximum 100 characters
 - description: description of the desired visual assistive technology
-- problem: Problem it solves
-- solution: Proposed solution
-- implementation_details: any specific tech stack details desired
-- example_usage: an example use case and how the tool should handle it
-- live_mode: should this tool use backend-managed live multimodal mode with a repeated query on each camera frame? ONLY set to "yes" or "no" if the user EXPLICITLY stated their preference. If they did not mention it at all, leave this field EMPTY (empty string "").
-- live_query: if live_mode is "yes", what is the exact prompt to re-ask on every frame?
-- alternatives: Alternative solutions considered
-- additional: Any other context
-- routing_analysis: Capability weights used only for backend model selection.
-- pipeline_analysis: The LLM parser's explicit stage plan. The parser owns the decision about whether multiple stages are required.
+- problem: problem it solves
+- solution: proposed solution
+- implementation_details: requested implementation details
+- example_usage: concrete example and expected behavior
+- alternatives: alternatives considered
+- live_mode: exactly "yes", "no", or empty when not explicitly stated
+- live_query: repeated live-mode query, otherwise empty
+- additional: other context
+- missing_fields: only missing important fields
 
-Capability routing rules:
-1. Provide 2-4 task entries when possible.
-2. Task weights should sum to approximately 1.0.
-3. Select only from these capability names: {capability_names_text}
-4. Do not create new capability names.
-5. Map the user request onto the closest existing capabilities from that list.
-6. Prefer the minimum necessary capability set.
-7. Prefer 1 capability when one capability is sufficient.
-8. Prefer 2 capabilities over 3 unless the task truly requires more.
-9. Do not include a capability unless removing it would significantly reduce task success.
-10. Use capability exclusions as hard negative evidence.
-11. You are given the full capability definitions below. Use them to decide what is required.
+Important fields are title, description, problem, solution, example_usage, live_mode, and live_query.
+- Any meaningful content satisfies an issue field.
+- If live_mode is empty, include "live_mode" in missing_fields.
+- If live_mode is "yes" and live_query is empty, include "live_query".
+- If live_mode is "no", live_query is not missing.
+- Include "example_usage" when no concrete example of at least 10 characters is present.
+- Do not return routing_analysis, pipeline_analysis, capabilities, or stages.
 
-Capability definitions:
-{capability_profiles_text}
-
-12. latency_sensitivity levels:
-    - high: live camera, navigation, object finding, real-time assistive feedback
-    - medium: normal interactive tasks
-    - low: offline generation, code generation, long-form reasoning, non-urgent analysis
-
-Stage planning rules:
-1. Task decomposition and model selection are separate concerns.
-2. You, the LLM parser, are responsible for deciding whether the user request requires multiple stages.
-3. The model router is only responsible for selecting the most appropriate model for a capability. Do not ask the model router to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
-4. Always return at least one stage. For a single-stage task, return exactly one stage and set should_chain=false.
-5. Do not create multiple stages merely because multiple capabilities exist.
-6. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
-7. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
-8. Stages must follow producer -> consumer information flow, not capability ranking order.
-9. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
-10. Increase stage confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
-11. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
-12. Distinguish camera_motion vs navigation strictly:
-    - camera_motion: camera framing or aiming actions (left/right/up/down, closer/farther, zoom, center target)
-    - navigation: physical wayfinding and walking guidance through space
-13. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
-14. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
-15. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
-16. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
-17. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
-18. Optimize for the minimum useful stage count, not the minimum stage count alone.
-19. Use a complexity penalty to discourage unnecessary stages:
-    pipeline_score = artifact_gain - complexity_penalty
-    complexity_penalty = (stage_count - 1) * penalty_per_stage
-20. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
-21. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
-22. Each stage must include stage_name, goal, capability, input, and expected_output. Use input only when the stage consumes output from an earlier stage or another explicit input.
-23. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
-24. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
-25. Include information_reduction as "none", "minor", "moderate", or "significant".
-26. The generated issue must clearly enumerate the stages. Later stages may consume outputs from earlier stages.
-27. Copilot should implement sequential execution of stages and pass intermediate outputs between stages. The router only decides which model is appropriate for each capability.
-
-When should_chain=true, use this stage shape:
-{{
-    "stage_name": "Stage 1",
-    "goal": "Identify the user's Uber vehicle.",
-    "capability": "navigation",
-    "input": "",
-    "expected_output": "Vehicle location and description.",
-    "preferred_model_type": "navigation_model"
-}}
-
-CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
-ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
-
-Important fields for visual AT: title, description, problem, solution, example_usage, live_mode, live_query
-In the event live_mode is explicitly "no", live_query is no longer important.
-
-
-Guidelines for determining if an IMPORTANT field is missing:
-1. A field should ONLY be marked as missing if it is completely absent or so vague it provides no useful information
-2. If a field has ANY meaningful content that addresses its purpose, it should NOT be marked as missing
-3. For "problem": If the user explains why they need the tool, this is sufficient
-4. For "solution": If the user describes what they want or how it should work, this is sufficient
-5. For "example_usage": If the user provides any concrete example use case, this is sufficient
-6. For "live_mode": Leave this field as an EMPTY STRING unless the user EXPLICITLY said "yes" or "no". If the transcript does not clearly contain the user saying they want or don't want live mode, the field MUST be empty. When it is empty, ALWAYS include "live_mode" in missing_fields. Do NOT guess, infer, or assume — this is a question we must ask the user directly.
-7. For "live_query": Always include this in missing_fields if live_mode is "yes" and no query has been provided. If live_mode is "no", do not include this.
-8. ALWAYS include example_usage in missing_fields if no concrete example use case (>= 10 characters) is present
-
-If ALL important fields have meaningful content (even if brief), return an empty missing_fields array: []
-
-Return ONLY a valid JSON object with the fields. Leave fields empty if not mentioned in the transcript.
-{context_info}
-Transcript: {transcript}
-
-Return format:
+Return ONLY this JSON object:
 {{
   "type": "visual AT",
   "title": "...",
@@ -3674,48 +3582,82 @@ Return format:
   "live_mode": "...",
   "live_query": "...",
   "additional": "...",
-    "missing_fields": ["field1", "field2"],
-    "routing_analysis": {{
-        "tasks": [
-            {{"name": "ocr", "weight": 0.8, "reason": "The user needs text from the image."}},
-            {{"name": "general_reasoning", "weight": 0.2, "reason": "The response should explain the extracted content."}}
-        ],
-        "latency_sensitivity": {{"level": "high|medium|low", "weight": 0.0, "reason": "..."}}
-    }},
-    "pipeline_analysis": {{
-        "should_chain": false,
-        "reason": "No structured intermediate artifact would significantly reduce later visual scope or reasoning burden.",
-        "artifact_value_score": 0.0,
-        "information_reduction": "none",
-        "artifact_gain": 0.0,
-        "complexity_penalty": 0.0,
-        "pipeline_score": 0.0,
-        "stages": [
-            {{
-                "stage_name": "Stage 1",
-                "goal": "Complete the user's requested task.",
-                "capability": "general_reasoning",
-                "input": "Original user request and current input.",
-                "expected_output": "A concise result for the user.",
-                "preferred_model_type": "general_model"
-            }}
-        ]
-    }}
-}}"""
+  "missing_fields": []
+}}
+{context_info}
+Transcript: {transcript}
+"""
 
-        response = system_llm_call(
-            messages=[{'role': 'user', 'content': prompt}],
+
+def _stage_decomposition_input(transcript: str, existing_data: Optional[dict] = None) -> str:
+    previous_prompts = list((existing_data or {}).get('original_prompts') or [])
+    prior_text = [entry.split('] ', 1)[-1] for entry in previous_prompts]
+    return "\n".join([*prior_text, transcript]).strip()
+
+
+def _merge_issue_and_stage_outputs(
+    issue_data: Dict[str, Any],
+    decomposition_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    merged = dict(issue_data)
+    merged['routing_analysis'] = decomposition_data.get('routing_analysis')
+    merged['pipeline_analysis'] = decomposition_data.get('pipeline_analysis')
+    return merged
+
+
+def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dict:
+    """
+    Use AI to parse the transcript and extract structured information for issue template.
+
+    Args:
+        transcript: The voice transcript to parse
+        existing_data: Optional existing incomplete issue data for context
+
+    Returns:
+        Dictionary with parsed fields including 'missing_fields' list
+    """
+    try:
+        try:
+            capability_names = sorted(load_capability_profiles())
+        except Exception:
+            capability_names = ['general_reasoning', 'ocr', 'object_detection', 'map_web', 'spatial_relationship', 'navigation', 'camera_motion', 'video']
+
+        issue_prompt = _build_issue_extraction_prompt(transcript, existing_data)
+        issue_response = system_llm_call(
+            messages=[{'role': 'user', 'content': issue_prompt}],
             metadata={'response_format': {'type': 'json_object'}},
         )
-
-        # Parse the AI response
-        ai_response = extract_text(response)
+        issue_raw = extract_text(issue_response)
+        issue_data = _parse_llm_json_object(issue_raw)
         logger.info(
-            "Parser raw response length=%s preview=%s",
-            len(ai_response),
-            ai_response[:2000],
+            "Issue extraction output=%s",
+            json.dumps(issue_data, ensure_ascii=False),
         )
-        parsed_data = _parse_llm_json_object(ai_response)
+
+        decomposition_input = _stage_decomposition_input(transcript, existing_data)
+        decomposition_prompt = build_stage_decomposition_prompt(decomposition_input)
+        decomposition_response = system_llm_call(
+            messages=[{'role': 'user', 'content': decomposition_prompt}],
+            metadata={'response_format': {'type': 'json_object'}},
+        )
+        decomposition_raw = extract_text(decomposition_response)
+        logger.info(
+            "Stage decomposition raw response length=%s preview=%s",
+            len(decomposition_raw),
+            decomposition_raw[:2000],
+        )
+        decomposition_data = _parse_llm_json_object(decomposition_raw)
+        logger.info(
+            "Stage decomposition output=%s",
+            json.dumps(decomposition_data, ensure_ascii=False),
+        )
+
+        parsed_data = _merge_issue_and_stage_outputs(issue_data, decomposition_data)
+        logger.info(
+            "Merged parser output=%s",
+            json.dumps(parsed_data, ensure_ascii=False),
+        )
+
         raw_stage_plan = parsed_data.get('pipeline_analysis')
         raw_stages = raw_stage_plan.get('stages') if isinstance(raw_stage_plan, dict) else []
         logger.info(
@@ -3811,8 +3753,8 @@ Return format:
         return parsed_data
         
     except Exception as e:
-        logger.exception("Failed to parse transcript with AI; using non-creating diagnostic fallback")
-        _log_to_all_sessions("ERROR", f"Stage-decomposition parser failed: {e}")
+        logger.exception("Failed to complete issue extraction and stage decomposition")
+        _log_to_all_sessions("ERROR", f"Issue parser workflow failed: {e}")
         # Fallback to simple parsing
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")

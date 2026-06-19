@@ -5,8 +5,12 @@ These tests test the logic in isolation without importing stream_server
 import unittest
 import json
 import ast
+import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from stage_decomposition import build_stage_decomposition_prompt
 
 
 def load_stream_server_function(name: str):
@@ -21,6 +25,7 @@ def load_stream_server_function(name: str):
         "Any": Any,
         "Dict": Dict,
         "List": List,
+        "Optional": Optional,
         "json": json,
     }
     exec(compile(ast.Module(body=[function_node], type_ignores=[]), str(source_path), "exec"), namespace)
@@ -52,9 +57,41 @@ class TestParserStageIssueIntegration(unittest.TestCase):
     """Test parser-owned stage normalization and issue-section wiring."""
 
     def setUp(self):
+        self.extraction_prompt = load_stream_server_function("_build_issue_extraction_prompt")
+        self.merge_outputs = load_stream_server_function("_merge_issue_and_stage_outputs")
         self.normalize = load_stream_server_function("_normalize_parser_stage_plan")
         self.render = load_stream_server_function("_build_task_stages_markdown")
         self.parse_json = load_stream_server_function("_parse_llm_json_object")
+
+    def test_parser_uses_separate_extraction_and_decomposition_contracts(self):
+        task = "Find my Uber, locate the passenger-side door, and guide me to it."
+        extraction = self.extraction_prompt(task)
+        decomposition = build_stage_decomposition_prompt(task)
+
+        self.assertIn('"missing_fields"', extraction)
+        self.assertNotIn('"routing_analysis"', extraction)
+        self.assertNotIn('"pipeline_analysis"', extraction)
+        self.assertIn('"routing_analysis"', decomposition)
+        self.assertIn('"pipeline_analysis"', decomposition)
+        self.assertIn("object_detection -> spatial_relationship", decomposition)
+        self.assertIn("spatial_relationship -> navigation", decomposition)
+        self.assertNotIn('"missing_fields"', decomposition)
+
+    def test_merges_issue_and_stage_outputs_without_changing_schemas(self):
+        issue_data = {"title": "Find my Uber", "missing_fields": []}
+        decomposition_data = {
+            "routing_analysis": {"tasks": [{"name": "navigation", "weight": 1.0}]},
+            "pipeline_analysis": {
+                "should_chain": True,
+                "stages": [{"capability": "object_detection"}, {"capability": "navigation"}],
+            },
+        }
+
+        merged = self.merge_outputs(issue_data, decomposition_data)
+
+        self.assertEqual(merged["title"], "Find my Uber")
+        self.assertIs(merged["routing_analysis"], decomposition_data["routing_analysis"])
+        self.assertIs(merged["pipeline_analysis"], decomposition_data["pipeline_analysis"])
 
     def test_parses_fenced_json_with_trailing_text(self):
         result = self.parse_json(
@@ -131,7 +168,7 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("Including Task Stages in GitHub issue", source)
         self.assertIn("Issue body stage handoff", source)
         self.assertIn("Issue creation stopped because stage decomposition failed", source)
-        self.assertIn("Always return at least one stage", source)
+        self.assertIn("Always return at least one stage", build_stage_decomposition_prompt("test"))
 
     def test_uber_stage_plan_reaches_issue_markdown(self):
         plan = self.normalize(
