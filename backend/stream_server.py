@@ -42,6 +42,7 @@ from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
 from video_summarizer import summarize_video
 import re
 import tempfile
+import secrets
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
@@ -109,7 +110,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8080 #port for listening
+PORT = 8081 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -444,6 +445,13 @@ last_text = {'content': None, 'timestamp': None, 'task': None, 'prev_raw': None}
 # Global state for tracking per-user data
 # Incomplete issue tracking for GitHub issue creation
 incomplete_issue = {'data': None, 'missing_fields': [], 'timestamp': None}
+
+# Ideation turn state — set after all fields are filled, before issue creation.
+# WebSocket path: keyed fields below; HTTP path uses pending_ideation_http dict.
+pending_ideation = {'active': False, 'parsed_data': None, 'video_summary': ''}
+
+# HTTP ideation tokens: token -> {'parsed_data': dict, 'video_summary': str, 'created_at': datetime}
+pending_ideation_http: dict = {}
 
 # Issue iteration tracking - for updating existing issues
 selected_issue = {'number': None, 'title': None, 'mode': 'create'}  # mode can be 'create' or 'update'
@@ -3326,6 +3334,60 @@ def generate_feedback_message(missing_fields: list, issue_type: str) -> str:
     return f"I need {friendly_name}."
 
 
+async def generate_ideation_question(parsed_data: dict, video_summary: str, model: str) -> str:
+    """
+    Ask an LLM to generate one open-ended ideation question based on the filled issue
+    fields and optional video summary. The question is meant to help the user think
+    through an edge case, environmental constraint, or failure behavior they may not
+    have considered.
+
+    Returns a plain question string, or a sensible fallback on any error.
+    """
+    import litellm
+    from litellm_utils import resolve_model_name, resolve_api_key, extract_text
+
+    title = parsed_data.get('title', '')
+    description = parsed_data.get('description', '')
+    solution = parsed_data.get('solution', '')
+    example_usage = parsed_data.get('example_usage', '')
+
+    video_section = ''
+    if video_summary:
+        video_section = f"\n\nVideo demonstration summary:\n{video_summary}"
+
+    prompt = (
+        "You are helping a blind or low-vision user design a camera-based assistive tool. "
+        "They have described the tool they want. Your job is to ask them ONE concise, "
+        "open-ended question that helps them think more deeply about their idea — "
+        "such as an edge case, an environmental condition, or how the tool should behave "
+        "when something goes wrong. Do not ask about things already answered below. "
+        "Return only the question itself, nothing else.\n\n"
+        f"Tool title: {title}\n"
+        f"Description: {description}\n"
+        f"Proposed solution: {solution}\n"
+        f"Example usage: {example_usage}"
+        f"{video_section}"
+    )
+
+    try:
+        resolved_model = resolve_model_name(model)
+        api_key = resolve_api_key(resolved_model)
+        response = await asyncio.to_thread(
+            litellm.completion,
+            model=resolved_model,
+            messages=[{'role': 'user', 'content': prompt}],
+            api_key=api_key,
+            max_tokens=120,
+        )
+        question = extract_text(response).strip()
+        if question:
+            return question
+    except Exception:
+        logger.warning("generate_ideation_question failed", exc_info=True)
+
+    return "Is there anything specific about how the tool should behave in difficult conditions, like low lighting or a cluttered background?"
+
+
 def _log_to_all_sessions(level: str, message: str):
     """Helper to log a message to all active session logs."""
     for session_log in active_session_loggers.values():
@@ -3488,12 +3550,41 @@ async def create_github_issue(text: str):
             logger.info("Issue incomplete, waiting for user to provide more details")
             return
         
-        # All required fields are filled! Clear incomplete state and create issue
-        logger.info("All required fields filled, creating issue")
+        # All required fields are filled! Clear incomplete state.
+        logger.info("All required fields filled")
         incomplete_issue['data'] = None
         incomplete_issue['missing_fields'] = []
         incomplete_issue['timestamp'] = None
-        
+
+        # --- Ideation turn ---
+        # If not yet done, send one open-ended question to help the user flesh out
+        # their idea, then wait for their answer before creating the issue.
+        if not pending_ideation['active']:
+            logger.info("Sending ideation question before issue creation")
+            _log_to_all_sessions("INFO", "Sending ideation question")
+            question = await generate_ideation_question(parsed_data, '', active_model)
+            pending_ideation['active'] = True
+            pending_ideation['parsed_data'] = parsed_data
+            pending_ideation['video_summary'] = ''
+            await _broadcast_ws({'type': 'ideation_question', 'message': question})
+            return  # wait for user's answer
+
+        # Ideation answer has arrived — fold it into the parsed data and proceed.
+        logger.info("Received ideation answer, proceeding to issue creation")
+        _log_to_all_sessions("INFO", "Received ideation answer")
+        parsed_data = pending_ideation['parsed_data']
+        ideation_answer = text.strip()
+        if ideation_answer:
+            parsed_data['additional'] = (
+                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer
+            ).strip()
+        pending_ideation['active'] = False
+        pending_ideation['parsed_data'] = None
+        pending_ideation['video_summary'] = ''
+
+        logger.info("Creating issue after ideation turn")
+        _log_to_all_sessions("INFO", "Creating issue after ideation turn")
+
         # Use visual AT template
         template_file = TEMPLATE_DIR / 'visual_at.md'
         
@@ -3581,10 +3672,13 @@ async def create_github_issue(text: str):
         _log_to_all_sessions("ERROR", tb)
         logger.error(f"Failed to create GitHub issue: {e}")
         logger.error(tb)
-        # Clear incomplete state on error
+        # Clear incomplete + ideation state on error
         incomplete_issue['data'] = None
         incomplete_issue['missing_fields'] = []
         incomplete_issue['timestamp'] = None
+        pending_ideation['active'] = False
+        pending_ideation['parsed_data'] = None
+        pending_ideation['video_summary'] = ''
 
 
 async def monitor_text_pause():
@@ -3818,19 +3912,35 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
     """
     POST /submit-creation
     Accepts multipart/form-data with:
-      - 'metadata'  (JSON string): creation fields; must include 'text' (transcript)
-      - 'video'     (bytes, optional): mp4/mov video to summarize via Gemini Files API
+      - 'metadata'  (JSON string): must include 'text'; optionally 'ideation_answer'
+                    and 'token' for the second call of the ideation round-trip.
+      - 'video'     (bytes, optional): mp4/mov to summarize via Gemini Files API
 
-    Parses the transcript, optionally appends a video summary, and creates a GitHub issue.
-    Returns JSON: {status, issue_number, issue_url, video_summary}
+    Two-shape protocol:
+      Shape A (first call)  — no token in metadata:
+        Parses transcript + video, generates ideation question.
+        Returns: {status: 'ideation', question, token}
+
+      Shape B (second call) — token + ideation_answer in metadata:
+        Looks up stored parsed_data, folds in the answer, creates GitHub issue.
+        Returns: {status: 'created', issue_number, issue_url, video_summary}
     """
     if not GITHUB_TOKEN:
         return web.json_response({'status': 'error', 'error': 'GitHub not configured'}, status=503)
+
+    # --- Purge stale HTTP ideation tokens (older than 10 min) ---
+    now = datetime.now()
+    stale = [t for t, v in pending_ideation_http.items()
+             if (now - v['created_at']).total_seconds() > 600]
+    for t in stale:
+        pending_ideation_http.pop(t, None)
 
     # --- Parse multipart ---
     text = ''
     video_bytes = None
     video_suffix = '.mp4'
+    ideation_answer = ''
+    token = ''
 
     try:
         reader = await request.multipart()
@@ -3840,6 +3950,8 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                 try:
                     meta = json.loads(raw)
                     text = meta.get('text', '')
+                    ideation_answer = meta.get('ideation_answer', '')
+                    token = meta.get('token', '')
                 except Exception:
                     text = raw.decode('utf-8', errors='replace')
             elif part.name == 'video':
@@ -3853,43 +3965,82 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
     if not text or not text.strip():
         return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
 
-    # --- Summarize video if present ---
-    video_summary = ''
-    if video_bytes:
-        tmp_path = None
+    # --- Shape B: ideation answer received — look up stored state and create issue ---
+    if token and ideation_answer:
+        entry = pending_ideation_http.pop(token, None)
+        if entry is None:
+            return web.json_response(
+                {'status': 'error', 'error': 'Ideation session expired or not found'},
+                status=400,
+            )
+        parsed_data = entry['parsed_data']
+        video_summary = entry['video_summary']
+        if ideation_answer.strip():
+            parsed_data['additional'] = (
+                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer.strip()
+            ).strip()
+        logger.info("Received ideation answer via HTTP — proceeding to issue creation")
+        # Fall through to template fill + issue creation below using this parsed_data.
+    else:
+        # --- Shape A: first call — summarize video, parse transcript ---
+        video_summary = ''
+        if video_bytes:
+            tmp_path = None
+            try:
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='creation_')
+                with os.fdopen(tmp_fd, 'wb') as fh:
+                    fh.write(video_bytes)
+                logger.info("Saved uploaded video to %s (%d bytes)", tmp_path, len(video_bytes))
+                video_summary = await summarize_video(tmp_path)
+            except Exception:
+                logger.error("Video temp-file handling failed", exc_info=True)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+
+        parse_input = text.strip()
+        if video_summary:
+            parse_input = (
+                f"{text.strip()}\n\n"
+                f"[Video demonstration summary – use this to populate example_usage "
+                f"and any other relevant fields]:\n{video_summary}"
+            )
+
         try:
-            tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='creation_')
-            with os.fdopen(tmp_fd, 'wb') as fh:
-                fh.write(video_bytes)
-            logger.info("Saved uploaded video to %s (%d bytes)", tmp_path, len(video_bytes))
-            video_summary = await summarize_video(tmp_path)
+            active_model = LLM_MODEL
+            parsed_data = await asyncio.to_thread(
+                parse_transcript_with_ai, parse_input, None, active_model
+            )
+        except Exception as e:
+            logger.error("AI parsing failed in /submit-creation: %s", e, exc_info=True)
+            return web.json_response(
+                {'status': 'error', 'error': 'Failed to process issue data',
+                 'video_failed': not bool(video_summary) and bool(video_bytes)},
+                status=500,
+            )
+
+        # Generate ideation question and return it for the client to present.
+        try:
+            active_model = LLM_MODEL
+            question = await generate_ideation_question(parsed_data, video_summary, active_model)
         except Exception:
-            logger.error("Video temp-file handling failed", exc_info=True)
-        finally:
-            if tmp_path:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
+            logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
+            question = "Is there anything specific about how the tool should behave in difficult conditions?"
 
-    # --- Parse transcript and fill template ---
-    # AI parsing always runs regardless of whether video summarization succeeded.
-    # When a video summary is available, augment the transcript so the AI can
-    # use the demonstrated behaviour (example_usage, solution, etc.).
-    parse_input = text.strip()
-    if video_summary:
-        parse_input = (
-            f"{text.strip()}\n\n"
-            f"[Video demonstration summary – use this to populate example_usage "
-            f"and any other relevant fields]:\n{video_summary}"
-        )
+        new_token = secrets.token_urlsafe(12)
+        pending_ideation_http[new_token] = {
+            'parsed_data': parsed_data,
+            'video_summary': video_summary,
+            'created_at': datetime.now(),
+        }
+        logger.info("Sending ideation question via HTTP (token=%s)", new_token)
+        return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
 
+    # --- Fill template and create GitHub issue (reached from Shape B) ---
     try:
-        active_model = LLM_MODEL
-        parsed_data = await asyncio.to_thread(
-            parse_transcript_with_ai, parse_input, None, active_model
-        )
-
         template_file = TEMPLATE_DIR / 'visual_at.md'
         if template_file.exists():
             template_content = template_file.read_text(encoding='utf-8')
@@ -3916,13 +4067,9 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             title = title[:253] + '...'
 
     except Exception as e:
-        logger.error("AI parsing/template fill failed in /submit-creation: %s", e, exc_info=True)
-        return web.json_response(
-            {'status': 'error', 'error': 'Failed to process issue data', 'video_failed': not bool(video_summary) and bool(video_bytes)},
-            status=500
-        )
+        logger.error("Template fill failed in /submit-creation: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': 'Failed to process issue data'}, status=500)
 
-    # --- Create GitHub issue ---
     try:
         def _create_issue():
             g = Github(GITHUB_TOKEN)
@@ -3930,9 +4077,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             return repo.create_issue(title=title, body=body, labels=['enhancement'])
 
         issue = await asyncio.to_thread(_create_issue)
-        logger.info(
-            "Created GitHub issue #%d via /submit-creation: %s", issue.number, title[:60]
-        )
+        logger.info("Created GitHub issue #%d via /submit-creation: %s", issue.number, title[:60])
 
         return web.json_response({
             'status': 'created',

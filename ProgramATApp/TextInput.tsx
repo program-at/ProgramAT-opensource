@@ -56,6 +56,10 @@ export default function TextInputComponent({
   const [isPickingFromLibrary, setIsPickingFromLibrary] = useState(false);
   const [isSending, setIsSending] = useState(false);
 
+  // Ideation round-trip state: set when server returns {status:'ideation'} from HTTP path.
+  // Cleared once the user submits their answer and the issue is created.
+  const [pendingIdeation, setPendingIdeation] = useState<{token: string} | null>(null);
+
   const isCreateMode = !selectedIssue;
 
   /** Convert the WebSocket URL to an HTTP base URL for REST endpoints. */
@@ -95,13 +99,24 @@ export default function TextInputComponent({
 
     try {
       const formData = new FormData();
-      formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
-      if (videoUri) {
-        formData.append('video', {
-          uri: videoUri,
-          type: 'video/mp4',
-          name: 'recording.mp4',
-        } as any);
+
+      if (pendingIdeation) {
+        // Shape B: user answered the ideation question — send answer + token, no video.
+        formData.append('metadata', JSON.stringify({
+          text: inputText.trim(),
+          ideation_answer: inputText.trim(),
+          token: pendingIdeation.token,
+        }));
+      } else {
+        // Shape A: first submission — include text and optional video.
+        formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
+        if (videoUri) {
+          formData.append('video', {
+            uri: videoUri,
+            type: 'video/mp4',
+            name: 'recording.mp4',
+          } as any);
+        }
       }
 
       const response = await fetch(`${baseUrl}/submit-creation`, {
@@ -116,6 +131,18 @@ export default function TextInputComponent({
         TextToSpeechService.speak(`Issue ${result.issue_number} created.${videoNote}`);
         setInputText('');
         setVideoUri(null);
+        setPendingIdeation(null);
+        Keyboard.dismiss();
+        return;
+      }
+
+      if (result.status === 'ideation') {
+        // Server wants one more turn — speak the question, clear input, store token.
+        if (result.question) {
+          TextToSpeechService.speak(result.question);
+        }
+        setPendingIdeation({ token: result.token });
+        setInputText('');
         Keyboard.dismiss();
         return;
       }
@@ -130,6 +157,7 @@ export default function TextInputComponent({
     }
 
     if (shouldFallbackToWebSocket) {
+      setPendingIdeation(null);
       if (!WebSocketService.isConnected()) {
         setError('Submission failed and server not connected. Please try again.');
         return;
@@ -223,6 +251,12 @@ export default function TextInputComponent({
       return;
     }
 
+    // Answering an ideation question (HTTP round-trip, video path) → second POST
+    if (pendingIdeation) {
+      await handleSubmitWithVideo();
+      return;
+    }
+
     // Create mode + video attached → submit via HTTP multipart (with AI parsing)
     if (isCreateMode && videoUri) {
       await handleSubmitWithVideo();
@@ -278,8 +312,7 @@ export default function TextInputComponent({
   const handleClear = () => {
     setInputText('');
     setError('');
-    
-    // Dismiss keyboard
+    setPendingIdeation(null);
     Keyboard.dismiss();
   };
 
