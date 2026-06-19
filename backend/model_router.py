@@ -243,12 +243,12 @@ def normalize_routing_analysis(
 
     if supported_capabilities is None:
         supported_capabilities = load_capability_descriptions().keys()
-    canonical_capabilities = {
-        str(name).strip().lower(): str(name).strip().lower()
+    supported = {
+        str(name).strip().lower()
         for name in supported_capabilities
         if str(name).strip()
     }
-    if not canonical_capabilities:
+    if not supported:
         return None
 
     tasks = routing_analysis.get("tasks")
@@ -259,9 +259,9 @@ def normalize_routing_analysis(
     for task in tasks:
         if not isinstance(task, dict):
             continue
-        raw_name = str(task.get("name", "")).strip().lower()
-        key = canonical_capabilities.get(raw_name)
-        if key is None:
+        key = str(task.get("name", "")).strip().lower()
+        if key not in supported:
+            logger.warning("[Model Router] unknown_capability=%s", key)
             continue
         weight = max(0.0, _safe_weight(task.get("weight"), 0.0))
         if weight <= 0.0:
@@ -299,11 +299,11 @@ def normalize_routing_analysis(
     }
 
 
-def _canonical_capability_map(supported_capabilities: Optional[Iterable[str]] = None) -> Dict[str, str]:
+def _supported_capabilities(supported_capabilities: Optional[Iterable[str]] = None) -> set[str]:
     if supported_capabilities is None:
         supported_capabilities = load_capability_descriptions().keys()
     return {
-        str(name).strip().lower(): str(name).strip().lower()
+        str(name).strip().lower()
         for name in supported_capabilities
         if str(name).strip()
     }
@@ -329,7 +329,7 @@ def normalize_pipeline_analysis(
 
     should_chain = bool(pipeline_analysis.get("should_chain"))
     reason = str(pipeline_analysis.get("reason", "")).strip()
-    canonical_capabilities = _canonical_capability_map(supported_capabilities)
+    supported = _supported_capabilities(supported_capabilities)
     normalized_stages = []
     raw_stages = pipeline_analysis.get("stages", [])
 
@@ -337,9 +337,9 @@ def normalize_pipeline_analysis(
         for raw_stage in raw_stages:
             if not isinstance(raw_stage, dict):
                 continue
-            raw_capability = str(raw_stage.get("capability", "")).strip().lower()
-            capability = canonical_capabilities.get(raw_capability)
-            if capability is None:
+            capability = str(raw_stage.get("capability", "")).strip().lower()
+            if capability not in supported:
+                logger.warning("[Model Router] unknown_capability=%s", capability)
                 continue
             stage_name = str(raw_stage.get("stage_name", raw_stage.get("name", ""))).strip()
             goal = str(raw_stage.get("goal", raw_stage.get("purpose", ""))).strip()
@@ -1143,7 +1143,6 @@ def system_llm_call(
     messages: Optional[List[Dict[str, Any]]] = None,
     images: Optional[Iterable[Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
-    **_: Any,
 ):
     """Call the fixed infrastructure model without semantic routing."""
     logger.info("[System LLM] model=%s", SYSTEM_MODEL)
@@ -1199,6 +1198,7 @@ __all__ = [
     "SYSTEM_MODEL",
     "ModelProfile",
     "load_capability_descriptions",
+    "load_capability_profiles",
     "load_model_profiles",
     "compute_capability_weights",
     "normalize_routing_analysis",

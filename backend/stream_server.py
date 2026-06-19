@@ -159,6 +159,7 @@ def _normalize_parser_stage_plan(raw_plan: Any, supported_capabilities: List[str
             continue
         capability = str(raw_stage.get('capability', '')).strip().lower()
         if capability not in supported:
+            logger.warning("Parser returned unknown capability: %s", capability)
             continue
         stages.append({
             'stage_name': str(
@@ -3338,7 +3339,6 @@ Return ONLY a valid JSON object:
 }}"""
 
         response = system_llm_call(
-            capability='tool_retrieval',
             messages=[{'role': 'user', 'content': prompt}],
         )
         ai_response = extract_text(response)
@@ -3686,7 +3686,6 @@ Return format:
 }}"""
 
         response = system_llm_call(
-            capability='text_parse',
             messages=[{'role': 'user', 'content': prompt}],
         )
 
@@ -5848,7 +5847,6 @@ async def handle_client(websocket):
                             # Send the follow-up through the fixed system LLM path.
                             try:
                                 response = system_llm_call(
-                                    capability='image_analysis',
                                     messages=[{'role': 'user', 'content': prompt}],
                                     images=[pil_image],
                                 )

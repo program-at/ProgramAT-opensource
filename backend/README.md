@@ -31,7 +31,7 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `SYSTEM_LLM_MODEL`: Fixed infrastructure model used for parsing, template filling, issue generation, and other ProgramAT internal LLM work. Defaults to `gemini/gemini-2.0-flash-preview`.
+- `SYSTEM_LLM_MODEL`: Fixed infrastructure model used for parsing, template filling, issue generation, and other ProgramAT internal LLM work. Defaults to `groq/llama-3.1-8b-instant`.
 
 - Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `MISTRAL_API_KEY`.
   - System calls use the fixed system model.

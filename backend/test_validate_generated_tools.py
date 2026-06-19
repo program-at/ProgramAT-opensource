@@ -52,7 +52,7 @@ def detect_vehicles(image):
             """
 from model_router_client import copilot_llm_call
 
-TASK_CATEGORY = "visual_reasoning"
+TASK_CATEGORY = "general_reasoning"
 
 def main(image, input_data=None):
     return copilot_llm_call(

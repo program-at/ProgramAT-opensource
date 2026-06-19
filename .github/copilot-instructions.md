@@ -72,7 +72,7 @@ Public backend capability interfaces available to generated tools:
 
 Treat this function as the existing Copilot-routed backend call exposed through the existing `model_router_client`. Do not implement it, wrap it, subclass it, replace it, create another client, or create an alternate router. Do not choose or instantiate any detector directly in generated tools.
 
-Specialized detection-style capabilities are not automatically sufficient for fine-grained identification, attributes, make/model, license plates, visual comparison, or contextual reasoning. For those requests, use `visual_understanding`, `visual_reasoning`, or `OCR` as the single nearest task category for the model-backed call.
+Specialized detection-style capabilities are not automatically sufficient for fine-grained identification, attributes, make/model, license plates, visual comparison, or contextual reasoning. For those requests, use the nearest canonical capability, usually `general_reasoning`, `spatial_relationship`, or `ocr`.
 
 The backend understands object labels and supported detector classes. Generated tools should only pass user-relevant labels and the declared capability; they should not inspect, copy, or encode backend class lists such as COCO class lists.
 For OCR or text extraction, call `copilot_llm_call(task_category="ocr", ...)` and let the backend choose the implementation.
@@ -82,7 +82,7 @@ For any LLM or VLM task, do not directly call `litellm.completion()` from a gene
 ```python
 from model_router_client import copilot_llm_call
 
-TASK_CATEGORY = "visual_understanding"
+TASK_CATEGORY = "general_reasoning"
 TOOL_NAME = "example_tool"
 
 response = copilot_llm_call(
@@ -100,15 +100,14 @@ response = copilot_llm_call(
 ```
 
 Use one of these task categories:
-- `simple_parsing`: parse short inputs, classify simple commands, or extract structured fields.
+- `general_reasoning`: general visual understanding, identification, planning, summarization, code-related reasoning, or concise assistant responses.
 - `object_detection`: detect/count known object categories with bounding boxes; no fine-grained identification or reasoning.
-- `object_localization`: locate a known target or part with a bounding box/position after the target is already specified.
-- `visual_understanding`: describe or identify visible objects, scenes, clothing, colors, layout, or text-adjacent visual context.
-- `visual_reasoning`: answer questions that require reasoning over visual relationships, accessibility context, spatial layout, or multi-step visual interpretation.
+- `spatial_relationship`: locate a known target or describe relative position, direction, and distance.
 - `ocr`: read or extract text from an image. Use the backend OCR capability path for text extraction; use a reasoning capability only when the extracted text needs interpretation or cleanup.
-- `summarization`: summarize logs, text, observations, or repeated results.
-- `code_generation`: generate, repair, or explain code.
-- `general_reasoning`: non-visual reasoning, classification, planning, or concise assistant responses.
+- `map_web`: interpret maps, charts, tables, layouts, diagrams, webpages, icons, or symbols.
+- `navigation`: provide physical wayfinding and walking guidance.
+- `camera_motion`: provide camera aiming, framing, centering, or zoom guidance.
+- `video`: reason over temporal events across video frames.
 
 When creating a new tool, explicitly choose the nearest task category before writing a model-backed call. Let the backend choose the actual model/backend and emit routing logs. Do not pass `model`, `requested_model`, provider-specific names, detector names, OCR engine names, or routing registries in generated tools. Do not import `litellm`, provider SDKs, detector libraries, OCR SDKs, `ultralytics`, or `YOLO` directly. Do not call `litellm.completion()` or `YOLO(...)`. Do not create a `ModelRouter` class, model registry, model cache, provider fallback logic, `COCO_CLASSES`, hardcoded model names, `.pt` model loading/discovery logic, wrapper functions, new client modules, or alternative model-routing helpers. If the approved API cannot support the needed capability, add support to the centralized backend router instead of implementing it inside the tool.
 

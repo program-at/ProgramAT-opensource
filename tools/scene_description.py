@@ -302,7 +302,7 @@ def analyze_scene(
         print(f"📋 Detail level: {detail_level}, Focus: {focus}")
         
         response = copilot_llm_call(
-            capability='image_analysis',
+            capability='general_reasoning',
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
             metadata={'api_key': api_key},

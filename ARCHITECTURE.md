@@ -243,7 +243,7 @@ AudioOutputService.speak()     setToolOutput() → UI text
 
 #### 6. **gemini_summarizer.py** – Log Summarizer
 - Summarizes batches of Copilot log entries into 1–3 sentence TTS-friendly strings
-- Uses `llm_call("summarization", ...)`; the semantic router currently selects `gemini/gemini-2.5-flash-lite`
+- Uses `system_llm_call(...)` with the fixed `SYSTEM_LLM_MODEL`; internal summaries do not use capability routing
 - Called periodically while a Copilot session is streaming
 
 #### 7. **GitHub Integration** (in `stream_server.py`)

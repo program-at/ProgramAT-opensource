@@ -167,7 +167,6 @@ def pick_tasks(indices: List[int]) -> List[Dict[str, Any]]:
 def eval_task(task: str, sleep_seconds: float) -> Dict[str, Any]:
     prompt = build_prompt(task)
     response = system_llm_call(
-        capability="text_parse",
         messages=[{"role": "user", "content": prompt}],
     )
     raw = extract_text(response)

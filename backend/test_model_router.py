@@ -26,6 +26,53 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         self.assertIn("YOLO-World", {profile.name for profile in profiles})
         self.assertIn("GoogleVisionOCR", {profile.name for profile in profiles})
 
+    def test_model_profiles_use_canonical_yaml_names(self):
+        canonical = set(model_router.load_capability_profiles())
+        profiles = model_router.load_model_profiles()
+
+        for profile in profiles:
+            self.assertTrue(
+                set(profile.capabilities).issubset(canonical),
+                f"{profile.name} has non-canonical capabilities",
+            )
+
+    def test_routing_analysis_rejects_noncanonical_capability(self):
+        with self.assertLogs(model_router.logger, level="WARNING") as logs:
+            result = model_router.normalize_routing_analysis({
+                "tasks": [{"name": "not_a_capability", "weight": 1.0}],
+            })
+
+        self.assertIsNone(result)
+        self.assertTrue(any("unknown_capability=not_a_capability" in line for line in logs.output))
+
+    def test_pipeline_analysis_keeps_only_canonical_capabilities(self):
+        with self.assertLogs(model_router.logger, level="WARNING") as logs:
+            result = model_router.normalize_pipeline_analysis({
+                "should_chain": True,
+                "stages": [
+                    {"capability": "not_a_capability", "purpose": "Describe target."},
+                    {"capability": "object_detection", "purpose": "Detect target."},
+                    {"capability": "spatial_relationship", "purpose": "Locate target."},
+                ],
+                "artifact_value_score": 1.0,
+                "information_reduction": "significant",
+            })
+
+        self.assertEqual(
+            [stage["capability"] for stage in result["stages"]],
+            ["object_detection", "spatial_relationship"],
+        )
+        self.assertTrue(any("unknown_capability=not_a_capability" in line for line in logs.output))
+
+    def test_unknown_capability_is_logged_instead_of_silent(self):
+        with self.assertLogs(model_router.logger, level="WARNING") as logs:
+            result = model_router.normalize_routing_analysis({
+                "tasks": [{"name": "not_a_capability", "weight": 1.0}],
+            })
+
+        self.assertIsNone(result)
+        self.assertTrue(any("unknown_capability=not_a_capability" in line for line in logs.output))
+
     def test_benchmark_profiles_use_benchmark_max_scaling(self):
         profiles = {profile.name: profile for profile in model_router.load_model_profiles()}
 
@@ -321,7 +368,7 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         self.assertEqual(result["stages"][0]["capability"], "object_detection")
         self.assertEqual(result["stages"][1]["capability"], "map_web")
 
-    def test_information_reduction_infers_parent_object_localization_pipeline(self):
+    def test_information_reduction_infers_parent_spatial_relationship_pipeline(self):
         result = model_router.infer_pipeline_from_information_reduction(
             "Find the passenger-side door handle.",
             {
@@ -341,7 +388,7 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
             ["object_detection", "general_reasoning"],
         )
 
-    def test_information_flow_camera_guidance_uses_detection_then_camera_motion(self):
+    def test_information_flow_camera_motion_uses_detection_then_camera_motion(self):
         result = model_router.infer_pipeline_from_information_reduction(
             "Guide my camera toward the target.",
             {
@@ -621,6 +668,14 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
         rank_models.assert_not_called()
         self.assertEqual(call_model.call_args.args[0], model_router.SYSTEM_MODEL)
 
+    def test_system_llm_call_rejects_routing_arguments(self):
+        for routing_argument in ("capability", "task_category", "task"):
+            with self.subTest(routing_argument=routing_argument), self.assertRaises(TypeError):
+                model_router.system_llm_call(
+                    messages=[{"role": "user", "content": "Parse this."}],
+                    **{routing_argument: "general_reasoning"},
+                )
+
     def test_copilot_llm_call_routes_then_calls_selected_profile_model(self):
         profiles = [
             model_router.ModelProfile(
@@ -641,7 +696,7 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
              patch.object(model_router, "rank_models", return_value=route) as rank_models, \
              patch.object(model_router, "call_model", return_value={"choices": []}) as call_model:
             model_router.copilot_llm_call(
-                task="code_generation",
+                task="Build a tool.",
                 messages=[{"role": "user", "content": "Build a tool."}],
             )
 
@@ -708,6 +763,37 @@ class TestSemanticCapabilityRouter(unittest.TestCase):
             )
 
         self.assertIs(rank_models.call_args.kwargs["routing_analysis"], explicit_analysis)
+
+    def test_copilot_llm_call_routes_canonical_spatial_capability(self):
+        profiles = [
+            model_router.ModelProfile(
+                "general",
+                "general_vlm",
+                100,
+                "test",
+                {"general_reasoning": 1.0, "spatial_relationship": 0.0},
+                latency=0.8,
+                model="test/general",
+            ),
+            model_router.ModelProfile(
+                "spatial",
+                "general_vlm",
+                100,
+                "test",
+                {"general_reasoning": 0.0, "spatial_relationship": 1.0},
+                latency=0.8,
+                model="test/spatial",
+            ),
+        ]
+
+        with patch.object(model_router, "load_model_profiles", return_value=profiles), \
+             patch.object(model_router, "call_model", return_value={"choices": []}) as call_model:
+            model_router.copilot_llm_call(
+                task_category="spatial_relationship",
+                messages=[{"role": "user", "content": "Locate the handle."}],
+            )
+
+        self.assertEqual(call_model.call_args.args[0], "test/spatial")
 
 
 if __name__ == "__main__":

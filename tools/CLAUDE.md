@@ -50,10 +50,9 @@ def main(image, input_data=None):
   Do not ask the router to execute stages, manage workflows, pass outputs
   between stages, or orchestrate pipelines.
   Import `copilot_llm_call` from `model_router_client` as the existing Copilot-routed backend entrypoint.
-  Supported categories for new tools include
-  `simple_parsing`, `object_detection`, `object_localization`,
-  `visual_understanding`, `visual_reasoning`, `ocr`, `summarization`,
-  `code_generation`, and `general_reasoning`. Include
+  Canonical categories for new tools are `general_reasoning`, `ocr`,
+  `object_detection`, `map_web`, `spatial_relationship`, `navigation`,
+  `camera_motion`, and `video`. Use only these category names. Include
   `metadata={"tool_name": "...", "route_text": "..."}` for routing logs. Do not
   hardcode provider/model names, detector names, provider-specific
   `DEFAULT_MODEL` constants, `COCO_CLASSES`, direct `litellm.completion()`

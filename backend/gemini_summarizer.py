@@ -47,7 +47,6 @@ Summary (1-3 sentences describing what was accomplished):"""
     
     try:
         response = system_llm_call(
-            capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
         )
         summary = extract_text(response)
@@ -111,7 +110,6 @@ Summary (one sentence only):"""
     
     try:
         response = system_llm_call(
-            capability="summarization",
             messages=[{'role': 'user', 'content': prompt}],
         )
         summary = extract_text(response)

@@ -15,7 +15,7 @@ from litellm_utils import extract_text, pil_image_to_data_uri
 from model_router_client import copilot_llm_call
 
 TOOL_NAME = "clothing_recognition"
-TASK_CATEGORY = "visual_understanding"
+TASK_CATEGORY = "general_reasoning"
 
 
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
@@ -147,7 +147,7 @@ def analyze_clothing(
             metadata['api_key'] = api_key
 
         response = copilot_llm_call(
-            task=TASK_CATEGORY,
+            task_category=TASK_CATEGORY,
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
             metadata=metadata,

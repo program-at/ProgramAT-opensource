@@ -17,7 +17,11 @@ def load_stream_server_function(name: str):
         node for node in tree.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
     )
-    namespace = {"Any": Any, "Dict": Dict, "List": List}
+    namespace = {
+        "Any": Any,
+        "Dict": Dict,
+        "List": List,
+    }
     exec(compile(ast.Module(body=[function_node], type_ignores=[]), str(source_path), "exec"), namespace)
     return namespace[name]
 
@@ -34,7 +38,8 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("pass intermediate outputs from earlier stages into later stages", template)
         self.assertIn("The model router only selects the most appropriate model for a capability", template)
         self.assertIn("existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`", template)
-        self.assertIn("object_localization", template)
+        self.assertIn("spatial_relationship", template)
+        self.assertIn("Choose only from these task categories", template)
         self.assertNotIn("Capability Pipeline", template)
         self.assertNotIn("should either utilize Yolo11", template)
         self.assertNotIn("Google Vision", template)
