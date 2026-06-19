@@ -151,36 +151,46 @@ def _format_capability_profiles_for_prompt() -> tuple[str, list[str]]:
 
 @dataclass
 class ToolPlanningContext:
-    """Advisory planning context derived from the model router result."""
+    """Advisory parser stage plan plus router model-selection results."""
 
     routing_analysis: Dict[str, Any]
-    pipeline_analysis: Dict[str, Any]
+    stage_plan: Dict[str, Any]
     selected_model: Optional[str]
     execution_plan: Dict[str, Any]
+    stage_model_selection: List[Dict[str, Any]]
 
     @classmethod
-    def from_routing_result(cls, routing_result: Dict[str, Any]) -> "ToolPlanningContext":
+    def from_parser_plan(
+        cls,
+        routing_analysis: Dict[str, Any],
+        stage_plan: Dict[str, Any],
+        selected_model: Optional[str],
+        execution_plan: Dict[str, Any],
+        stage_model_selection: List[Dict[str, Any]],
+    ) -> "ToolPlanningContext":
         return cls(
-            routing_analysis=routing_result.get('routing_analysis') or {},
-            pipeline_analysis=routing_result.get('pipeline_analysis') or {},
-            selected_model=routing_result.get('selected_model'),
-            execution_plan=routing_result.get('final_execution_plan') or {},
+            routing_analysis=routing_analysis or {},
+            stage_plan=stage_plan or {},
+            selected_model=selected_model,
+            execution_plan=execution_plan or {},
+            stage_model_selection=stage_model_selection or [],
         )
 
     def to_routing_result(self) -> Dict[str, Any]:
         return {
             'routing_analysis': self.routing_analysis,
-            'pipeline_analysis': self.pipeline_analysis,
+            'stage_plan': self.stage_plan,
             'selected_model': self.selected_model,
             'final_execution_plan': self.execution_plan,
+            'stage_model_selection': self.stage_model_selection,
         }
 
     def execution_mode(self) -> str:
         mode = str(self.execution_plan.get('mode') or '').strip().lower()
         if mode:
             return mode
-        should_chain = bool(self.pipeline_analysis.get('should_chain'))
-        return 'pipeline' if should_chain else 'single_model'
+        should_chain = bool(self.stage_plan.get('should_chain'))
+        return 'sequential_stages' if should_chain else 'single_model'
 
     def recommended_stage_count(self) -> int:
         stages = self.execution_plan.get('stages') or []
@@ -195,11 +205,12 @@ class ToolPlanningContext:
             summaries.append(
                 {
                     'index': index,
+                    'stage_name': stage.get('stage_name', '') or f"Stage {index}",
+                    'goal': stage.get('goal', '') or stage.get('purpose', ''),
                     'capability': stage.get('capability', ''),
-                    'model': stage.get('selected_model') or stage.get('preferred_model_type') or '',
-                    'produces': stage.get('output', ''),
-                    'consumes': stage.get('input', ''),
-                    'purpose': stage.get('purpose', ''),
+                    'model': stage.get('selected_model') or '',
+                    'expected_output': stage.get('expected_output', '') or stage.get('output', ''),
+                    'input': stage.get('input', ''),
                 }
             )
         return summaries
@@ -207,8 +218,8 @@ class ToolPlanningContext:
     def selected_model_display(self) -> str:
         if self.selected_model:
             return str(self.selected_model)
-        if self.execution_mode() == 'pipeline':
-            return 'stage-specific (pipeline)'
+        if self.execution_mode() == 'sequential_stages':
+            return 'stage-specific'
         selected = self.execution_plan.get('selected_model')
         return str(selected) if selected else 'unavailable'
 
@@ -221,12 +232,81 @@ class ToolPlanningContext:
 
 
 def _build_tool_planning_context(task_text: str, parsed_data: dict) -> ToolPlanningContext:
-    routing_result = select_model(
-        task_text,
-        routing_analysis=parsed_data.get('routing_analysis'),
-        pipeline_analysis=parsed_data.get('pipeline_analysis'),
+    routing_analysis = parsed_data.get('routing_analysis') or {}
+    stage_plan = parsed_data.get('pipeline_analysis') or {}
+    latency_sensitivity = routing_analysis.get('latency_sensitivity')
+    stages = stage_plan.get('stages') or []
+
+    if stage_plan.get('should_chain') and stages:
+        stage_model_selection: List[Dict[str, Any]] = []
+        plan_stages: List[Dict[str, Any]] = []
+        for index, stage in enumerate(stages, start=1):
+            capability = str(stage.get('capability', '')).strip().lower()
+            goal = stage.get('goal') or stage.get('purpose') or f"Select a model for {capability}."
+            stage_routing = {
+                'tasks': [{
+                    'name': capability,
+                    'weight': 1.0,
+                    'reason': f"Stage {index} capability selected by the LLM parser.",
+                }],
+                'latency_sensitivity': latency_sensitivity or {
+                    'level': 'medium',
+                    'weight': 0.5,
+                    'reason': 'Default stage model-selection latency.',
+                },
+            }
+            selection_result = select_model(str(goal), routing_analysis=stage_routing)
+            selected = selection_result.get('selected')
+            selected_model = selection_result.get('selected_model')
+            stage_selection = {
+                'index': index,
+                'stage_name': stage.get('stage_name') or f"Stage {index}",
+                'goal': goal,
+                'capability': capability,
+                'selected_model': selected_model,
+                'selected': selected,
+                'ranking': selection_result.get('ranking', []),
+            }
+            stage_model_selection.append(stage_selection)
+            plan_stages.append({
+                'index': index,
+                **stage,
+                'stage_name': stage.get('stage_name') or f"Stage {index}",
+                'goal': goal,
+                'selected_model': selected_model,
+                'selected': selected,
+            })
+
+        execution_plan = {
+            'mode': 'sequential_stages',
+            'task': task_text,
+            'reason': stage_plan.get('reason', ''),
+            'stages': plan_stages,
+            'owner': 'LLM parser and generated tool; router selects models only',
+        }
+        return ToolPlanningContext.from_parser_plan(
+            routing_analysis,
+            stage_plan,
+            None,
+            execution_plan,
+            stage_model_selection,
+        )
+
+    routing_result = select_model(task_text, routing_analysis=routing_analysis)
+    execution_plan = {
+        'mode': 'single_model',
+        'task': task_text,
+        'selected_model': routing_result.get('selected_model'),
+        'selected': routing_result.get('selected'),
+        'owner': 'Generated tool; router selects the model only',
+    }
+    return ToolPlanningContext.from_parser_plan(
+        routing_result.get('routing_analysis') or routing_analysis,
+        stage_plan,
+        routing_result.get('selected_model'),
+        execution_plan,
+        [],
     )
-    return ToolPlanningContext.from_routing_result(routing_result)
 
 
 def _log_model_router_observability(task_text: str, planning: ToolPlanningContext):
@@ -238,31 +318,37 @@ def _log_model_router_observability(task_text: str, planning: ToolPlanningContex
     logger.info("Selected Model:")
     logger.info("%s", planning.selected_model_display())
     logger.info("")
-    logger.info("Execution Mode:")
+    logger.info("Parser Execution Mode:")
     logger.info("%s", planning.execution_mode())
     logger.info("")
-    logger.info("Recommended Stage Count:")
+    logger.info("Parser Stage Count:")
     logger.info("%s", planning.recommended_stage_count())
     logger.info("")
 
     stages = planning.stage_summaries()
     for stage in stages:
         logger.info("Stage %s:", stage.get('index'))
+        logger.info("%s", stage.get('stage_name') or f"Stage {stage.get('index')}")
+        logger.info("")
+        logger.info("Goal:")
+        logger.info("%s", stage.get('goal') or '')
+        logger.info("")
+        logger.info("Capability:")
         logger.info("%s", stage.get('capability') or 'unknown')
         logger.info("")
-        logger.info("Model:")
+        logger.info("Selected Model:")
         logger.info("%s", stage.get('model') or 'unavailable')
         logger.info("")
-        if stage.get('produces'):
-            logger.info("Produces:")
-            logger.info("%s", stage.get('produces'))
+        if stage.get('expected_output'):
+            logger.info("Expected Output:")
+            logger.info("%s", stage.get('expected_output'))
             logger.info("")
-        if stage.get('consumes'):
-            logger.info("Consumes:")
-            logger.info("%s", stage.get('consumes'))
+        if stage.get('input'):
+            logger.info("Input:")
+            logger.info("%s", stage.get('input'))
             logger.info("")
 
-    reason = planning.pipeline_analysis.get('reason') or planning.execution_plan.get('reason') or ''
+    reason = planning.stage_plan.get('reason') or planning.execution_plan.get('reason') or ''
     if reason:
         logger.info("Reason:")
         logger.info("%s", reason)
@@ -271,15 +357,18 @@ def _log_model_router_observability(task_text: str, planning: ToolPlanningContex
 
 def _build_router_analysis_markdown(planning: ToolPlanningContext) -> str:
     lines = [
-        "## Router Analysis",
+        "## Parser Stage Plan and Model Selection",
         "",
-        "Execution Mode:",
+        "Responsibility split:",
+        "The LLM parser decides whether stages are needed and describes them. Generated tools execute stages sequentially and pass intermediate outputs. The model router only selects a model for each declared capability.",
+        "",
+        "Parser execution mode:",
         planning.execution_mode(),
         "",
-        "Selected model:",
+        "Selected model for single-stage request:",
         planning.selected_model_display(),
         "",
-        "Recommended stages:",
+        "Parser stages:",
         str(planning.recommended_stage_count()),
         "",
     ]
@@ -290,24 +379,28 @@ def _build_router_analysis_markdown(planning: ToolPlanningContext) -> str:
             lines.extend(
                 [
                     f"Stage {stage.get('index')}:",
+                    str(stage.get('stage_name') or f"Stage {stage.get('index')}"),
+                    "Goal:",
+                    str(stage.get('goal') or ''),
+                    "Capability:",
                     str(stage.get('capability') or 'unknown'),
-                    "Preferred Model:",
+                    "Selected model for this capability:",
                     str(stage.get('model') or 'unavailable'),
                 ]
             )
-            if stage.get('produces'):
+            if stage.get('input'):
                 lines.extend([
-                    "Produces:",
-                    str(stage.get('produces')),
+                    "Input:",
+                    str(stage.get('input')),
                 ])
-            if stage.get('consumes'):
+            if stage.get('expected_output'):
                 lines.extend([
-                    "Consumes:",
-                    str(stage.get('consumes')),
+                    "Expected output:",
+                    str(stage.get('expected_output')),
                 ])
             lines.append("")
 
-    reason = planning.pipeline_analysis.get('reason') or planning.execution_plan.get('reason') or ''
+    reason = planning.stage_plan.get('reason') or planning.execution_plan.get('reason') or ''
     if reason:
         lines.extend([
             "Reason:",
@@ -323,7 +416,7 @@ def _append_router_sections_to_issue_body(body: str, planning: ToolPlanningConte
     metadata = json.dumps(planning.issue_metadata(), indent=2, ensure_ascii=False)
     metadata_section = "\n".join(
         [
-            "## Router Metadata",
+            "## Parser Stage Metadata",
             "",
             "```json",
             metadata,
@@ -334,10 +427,66 @@ def _append_router_sections_to_issue_body(body: str, planning: ToolPlanningConte
     return f"{base}\n\n{router_section}\n\n{metadata_section}\n"
 
 # Configuration
-HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8081 #port for listening
+HOST = os.environ.get('HOST', '127.0.0.1')
+PORT = int(os.environ.get('PORT', '8081'))
+AUTH_TOKEN = os.environ.get('AUTH_TOKEN', '').strip()
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
+
+SENSITIVE_LOG_KEY_RE = re.compile(
+    r"(api[_-]?key|token|secret|authorization|credential|password)",
+    re.IGNORECASE,
+)
+SENSITIVE_TEXT_REPLACEMENTS = (
+    (
+        re.compile(
+            r"(?i)(api[_-]?key|token|secret|authorization|credential|password)([\"']?\s*[:=]\s*[\"']?)([^\"'\s,}]+)"
+        ),
+        r"\1\2<redacted>",
+    ),
+    (re.compile(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1<redacted>"),
+)
+
+
+def _is_sensitive_log_key(key: Any) -> bool:
+    return bool(SENSITIVE_LOG_KEY_RE.search(str(key or "")))
+
+
+def _summarize_log_string(value: str) -> str:
+    if len(value) > 2000:
+        return f"<str length={len(value)}>"
+    redacted = value
+    for pattern, replacement in SENSITIVE_TEXT_REPLACEMENTS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def _redact_for_log(value: Any, key: Any = "") -> Any:
+    if _is_sensitive_log_key(key):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {k: _redact_for_log(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_for_log(item) for item in value]
+    if isinstance(value, str):
+        return _summarize_log_string(value)
+    return value
+
+
+def _websocket_auth_failed(request: web.Request) -> bool:
+    if not AUTH_TOKEN:
+        return False
+
+    supplied = (
+        request.query.get('auth')
+        or request.query.get('token')
+        or request.headers.get('X-ProgramAT-Auth', '')
+    )
+    auth_header = request.headers.get('Authorization', '')
+    if auth_header.lower().startswith('bearer '):
+        supplied = auth_header[7:].strip()
+
+    return supplied != AUTH_TOKEN
 
 # Directory setup
 FRAMES_DIR = Path("backend/received_frames")
@@ -431,28 +580,13 @@ class SessionLogger:
             obj = None
 
         if obj and isinstance(obj, dict):
-            # Summarize any large binary fields while keeping other data intact
-            summarized = {}
-            for k, v in obj.items():
-                if k == 'data' and isinstance(v, dict):
-                    # summarize inner data
-                    inner = {}
-                    for ik, iv in v.items():
-                        if isinstance(iv, str) and len(iv) > 1000:
-                            inner[ik] = f"<str length={len(iv)}>"
-                        else:
-                            inner[ik] = iv
-                    summarized[k] = inner
-                elif isinstance(v, str) and len(v) > 2000:
-                    summarized[k] = f"<str length={len(v)}>"
-                else:
-                    summarized[k] = v
+            summarized = _redact_for_log(obj)
             try:
                 detail_str = _json.dumps(summarized, ensure_ascii=False)
             except Exception:
                 detail_str = str(summarized)
         else:
-            detail_str = details
+            detail_str = _summarize_log_string(details) if isinstance(details, str) else details
 
         self.log("MSG", f"{arrow} {msg_type}: {detail_str}")
     
@@ -3397,10 +3531,10 @@ For a visual AT request, extract:
 - live_query: if live_mode is "yes", what is the exact prompt to re-ask on every frame?
 - alternatives: Alternative solutions considered
 - additional: Any other context
-- routing_analysis: A lightweight routing plan used by backend model selection.
-- pipeline_analysis: A conservative execution-plan decision using the same capabilities.
+- routing_analysis: Capability weights used only for backend model selection.
+- pipeline_analysis: The LLM parser's explicit stage plan. The parser owns the decision about whether multiple stages are required.
 
-Routing rules:
+Capability routing rules:
 1. Provide 2-4 task entries when possible.
 2. Task weights should sum to approximately 1.0.
 3. Select only from these capability names: {capability_names_text}
@@ -3421,33 +3555,47 @@ Capability definitions:
     - medium: normal interactive tasks
     - low: offline generation, code generation, long-form reasoning, non-urgent analysis
 
-Pipeline decision rules:
-1. First decide the capability distribution in routing_analysis. Then separately decide whether those capabilities should run inside one model or as a pipeline.
-2. Do not create a pipeline merely because multiple capabilities exist.
-3. Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
-4. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
-5. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
-6. Stages must follow producer -> consumer information flow, not capability ranking order.
-7. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
-8. Increase chaining confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
-9. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
-10. Distinguish camera_motion vs navigation strictly:
+Stage planning rules:
+1. Task decomposition and model selection are separate concerns.
+2. You, the LLM parser, are responsible for deciding whether the user request requires multiple stages.
+3. The model router is only responsible for selecting the most appropriate model for a capability. Do not ask the model router to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
+4. Do not create multiple stages merely because multiple capabilities exist.
+5. The primary criterion is information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
+6. Good intermediate artifacts include bounding boxes, object coordinates, segmentation masks, cropped regions, OCR text, object lists, target locations, clock-face directions, and navigation waypoints.
+7. Stages must follow producer -> consumer information flow, not capability ranking order.
+8. Do not add stage capabilities that are unrelated to routing_analysis, unless that stage is strictly required to produce an intermediate artifact for a downstream stage.
+9. Increase stage confidence for useful transitions: object_detection -> camera_motion, object_detection -> navigation, object_detection -> general_reasoning, ocr -> general_reasoning, ocr -> map_web, map_web -> general_reasoning.
+10. Avoid redundant overlapping stages. If one capability can directly consume the upstream artifact, do not insert an extra stage.
+11. Distinguish camera_motion vs navigation strictly:
     - camera_motion: camera framing or aiming actions (left/right/up/down, closer/farther, zoom, center target)
     - navigation: physical wayfinding and walking guidance through space
-11. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
-12. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
-13. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
-14. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
-15. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
-16. Optimize for the minimum useful stage count, not the minimum stage count alone.
-17. Use a complexity penalty to discourage unnecessary stages:
+12. Do not treat camera_motion and navigation as interchangeable. Include both only if both are explicitly required.
+13. Prefer should_chain=true for tasks like "find X then guide me", "find X then localize Y", "detect X then reason about X", and "extract text then analyze text" because Stage 1 compresses the problem.
+14. Prefer should_chain=false for holistic tasks such as describing a room, explaining a chart, rating an outfit, summarizing an image, or interpreting an overall scene when no meaningful intermediate artifact reduces later work.
+15. Default to should_chain=false only when no useful intermediate artifact or information reduction exists.
+16. Do not hardcode or assume a maximum stage count. Infer the stage count dynamically from useful artifact flow.
+17. Optimize for the minimum useful stage count, not the minimum stage count alone.
+18. Use a complexity penalty to discourage unnecessary stages:
     pipeline_score = artifact_gain - complexity_penalty
     complexity_penalty = (stage_count - 1) * penalty_per_stage
-18. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
-19. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
-20. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
-21. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
-22. Include information_reduction as "none", "minor", "moderate", or "significant".
+19. Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
+20. Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
+21. Each stage must include stage_name, goal, capability, input, and expected_output. Use input only when the stage consumes output from an earlier stage or another explicit input.
+22. Stage preferred_model_type should describe the kind of model wanted, such as "fast_detector", "ocr_extractor", "reasoning_vlm", "navigation_model", or "response_generator"; do not name a specific model.
+23. Include artifact_value_score from 0.0 to 1.0. Set it high when Stage 1 removes substantial irrelevant visual information.
+24. Include information_reduction as "none", "minor", "moderate", or "significant".
+25. The generated issue must clearly enumerate the stages. Later stages may consume outputs from earlier stages.
+26. Copilot should implement sequential execution of stages and pass intermediate outputs between stages. The router only decides which model is appropriate for each capability.
+
+When should_chain=true, use this stage shape:
+{{
+    "stage_name": "Stage 1",
+    "goal": "Identify the user's Uber vehicle.",
+    "capability": "navigation",
+    "input": "",
+    "expected_output": "Vehicle location and description.",
+    "preferred_model_type": "navigation_model"
+}}
 
 CRITICAL: Evaluate which IMPORTANT fields are missing or insufficiently specified.
 ONLY mark IMPORTANT fields in the missing_fields array. Optional/nice-to-have fields should NOT be included even if empty.
@@ -5768,6 +5916,10 @@ async def handle_client(websocket):
 
 
 async def websocket_handler(request: web.Request):
+    if _websocket_auth_failed(request):
+        logger.warning("Rejected unauthorized WebSocket connection from %s", request.remote)
+        return web.Response(status=401, text="Unauthorized")
+
     websocket = web.WebSocketResponse(
         max_msg_size=20 * 1024 * 1024,
         heartbeat=20,

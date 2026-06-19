@@ -341,11 +341,17 @@ def normalize_pipeline_analysis(
             capability = canonical_capabilities.get(raw_capability)
             if capability is None:
                 continue
+            stage_name = str(raw_stage.get("stage_name", raw_stage.get("name", ""))).strip()
+            goal = str(raw_stage.get("goal", raw_stage.get("purpose", ""))).strip()
+            expected_output = str(raw_stage.get("expected_output", raw_stage.get("output", ""))).strip()
             normalized_stages.append({
+                "stage_name": stage_name,
+                "goal": goal,
                 "capability": capability,
-                "purpose": str(raw_stage.get("purpose", "")).strip(),
+                "purpose": goal,
                 "input": str(raw_stage.get("input", "")).strip(),
-                "output": str(raw_stage.get("output", "")).strip(),
+                "expected_output": expected_output,
+                "output": expected_output,
                 "preferred_model_type": str(raw_stage.get("preferred_model_type", "")).strip(),
             })
 

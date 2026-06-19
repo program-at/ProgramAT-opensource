@@ -3,8 +3,8 @@
 
 This script:
 1. Picks tasks from route_task_batch.TASKS by index.
-2. Calls the existing system LLM once per task to get routing_analysis and pipeline_analysis.
-3. Runs centralized model_router.select_model(task, routing_analysis=..., pipeline_analysis=...).
+2. Calls the existing system LLM once per task to get routing_analysis and parser-owned pipeline_analysis.
+3. Runs centralized model_router.select_model for model selection only.
 4. Sleeps between requests to reduce rate-limit risk.
 """
 
@@ -95,7 +95,10 @@ Capability definitions:
 - high latency_sensitivity for live camera, navigation, object finding, real-time assistive feedback.
 - medium latency_sensitivity for normal interactive tasks.
 - low latency_sensitivity for non-urgent/offline/codegen tasks.
-- First determine the capability distribution. Then separately decide whether those capabilities should run in one model or as a pipeline.
+- First determine the capability distribution. Then separately decide whether the user request needs multiple parser-owned stages.
+- Task decomposition and model selection are separate concerns.
+- The LLM parser decides whether multiple stages are required and must explicitly describe them.
+- The model router only selects the most appropriate model for a capability. It must not execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
 - Do not chain simply because multiple capabilities exist.
 - Do NOT decide should_chain=false because a single modern VLM could theoretically perform all capabilities. That is not the criterion.
 - Decide based on information reduction: can an earlier stage produce a structured intermediate artifact that reduces the search space, visual scope, or reasoning burden for a later stage?
@@ -112,10 +115,11 @@ Capability definitions:
   complexity_penalty = (stage_count - 1) * penalty_per_stage
 - Add another stage when it preserves an important intermediate artifact or materially improves information reduction/task success probability.
 - Do not add another stage when it only repeats work, changes wording, or does not improve downstream inputs.
-- Stage capabilities must use the same allowed task names. preferred_model_type should describe a model type, not a specific model name.
+- Stage capabilities must use the same allowed task names. Each stage must include stage_name, goal, capability, input, expected_output, and preferred_model_type. preferred_model_type should describe a model type, not a specific model name.
+- Generated tools should execute stages sequentially and pass intermediate outputs between stages.
 
 If should_chain=true, use this stage shape:
-{{"capability": "object_detection", "purpose": "...", "input": "...", "output": "...", "preferred_model_type": "fast_detector"}}
+{{"stage_name": "Stage 1", "goal": "...", "capability": "object_detection", "input": "", "expected_output": "...", "preferred_model_type": "fast_detector"}}
 
 User request:
 {task_text}
@@ -161,27 +165,14 @@ def eval_task(task: str, sleep_seconds: float) -> Dict[str, Any]:
     routing_analysis = parsed.get("routing_analysis") if isinstance(parsed, dict) else None
     pipeline_analysis = parsed.get("pipeline_analysis") if isinstance(parsed, dict) else None
 
-    route_result = model_router.select_model(
-        task,
-        routing_analysis=routing_analysis,
-        pipeline_analysis=pipeline_analysis,
-    )
+    route_result = model_router.select_model(task, routing_analysis=routing_analysis)
 
     row = {
         "task": task,
         "raw_response": raw,
         "routing_analysis": route_result.get("routing_analysis"),
-        "pipeline_analysis": route_result.get("pipeline_analysis"),
+        "pipeline_analysis": pipeline_analysis,
         "selected_model": route_result.get("selected_model"),
-        "final_execution_plan": route_result.get("final_execution_plan"),
-        "stage_model_selection": [
-            {
-                "index": x.get("index"),
-                "capability": x.get("capability"),
-                "selected_model": x.get("selected_model"),
-            }
-            for x in route_result.get("stage_model_selection", [])
-        ],
         "top3": [
             {
                 "model": x.get("model"),
