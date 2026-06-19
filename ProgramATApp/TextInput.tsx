@@ -157,17 +157,9 @@ export default function TextInputComponent({
     }
 
     if (shouldFallbackToWebSocket) {
-      setPendingIdeation(null);
-      if (!WebSocketService.isConnected()) {
-        setError('Submission failed and server not connected. Please try again.');
-        return;
-      }
-      TextToSpeechService.speak('Video submission failed. Processing your text.');
-      setVideoUri(null);
-      WebSocketService.sendIssueSelection('create');
-      WebSocketService.sendText(inputText.trim());
-      setInputText('');
-      Keyboard.dismiss();
+      const msg = 'Video submission failed. Please try again.';
+      TextToSpeechService.speak(msg);
+      setError(msg);
     }
   };
 
