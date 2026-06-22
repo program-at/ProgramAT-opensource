@@ -3,8 +3,9 @@ Test script for playing_card_reader.py
 Tests the playing card reader tool with sample data
 """
 
-import sys
 import os
+import sys
+
 import cv2
 import numpy as np
 
