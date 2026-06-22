@@ -3377,7 +3377,7 @@ async def generate_ideation_question(parsed_data: dict, video_summary: str, mode
             model=resolved_model,
             messages=[{'role': 'user', 'content': prompt}],
             api_key=api_key,
-            max_tokens=120,
+
         )
         question = extract_text(response).strip()
         if question:
