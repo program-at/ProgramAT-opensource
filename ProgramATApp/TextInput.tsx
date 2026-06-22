@@ -87,6 +87,7 @@ export default function TextInputComponent({
 
   const handleSubmitWithVideo = async () => {
     const baseUrl = getHttpBaseUrl();
+    console.log('[TextInput] submit-creation baseUrl=', JSON.stringify(baseUrl), 'videoUri=', JSON.stringify(videoUri));
     if (!baseUrl) {
       setError('Server URL not configured');
       return;
@@ -136,6 +137,7 @@ export default function TextInputComponent({
       }
 
       const result = await response.json();
+      console.log('[TextInput] submit-creation response status=', response.status, 'body=', JSON.stringify(result));
 
       if (result.status === 'created') {
         const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
@@ -164,8 +166,9 @@ export default function TextInputComponent({
         serverError = result.error;
       }
       shouldFallbackToWebSocket = true;
-    } catch {
+    } catch (e) {
       // Network error — fall back to WebSocket so AI parsing still applies
+      console.log('[TextInput] submit-creation fetch threw:', String(e));
       shouldFallbackToWebSocket = true;
     } finally {
       setIsSending(false);
