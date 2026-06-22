@@ -96,6 +96,7 @@ export default function TextInputComponent({
     setError('');
 
     let shouldFallbackToWebSocket = false;
+    let serverError = '';
 
     try {
       const formData = new FormData();
@@ -119,10 +120,20 @@ export default function TextInputComponent({
         }
       }
 
-      const response = await fetch(`${baseUrl}/submit-creation`, {
-        method: 'POST',
-        body: formData,
-      });
+      // Video summarization + two Gemini calls can take 20s+, well past the
+      // platform default network timeout. Allow up to 120s before aborting.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/submit-creation`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       const result = await response.json();
 
@@ -147,7 +158,11 @@ export default function TextInputComponent({
         return;
       }
 
-      // Server returned an error — fall back to WebSocket so AI parsing still applies
+      // Server returned an error — capture its message, then fall back to
+      // WebSocket so AI parsing still applies.
+      if (typeof result.error === 'string') {
+        serverError = result.error;
+      }
       shouldFallbackToWebSocket = true;
     } catch {
       // Network error — fall back to WebSocket so AI parsing still applies
@@ -159,7 +174,7 @@ export default function TextInputComponent({
     if (shouldFallbackToWebSocket) {
       const msg = 'Video submission failed. Please try again.';
       TextToSpeechService.speak(msg);
-      setError(msg);
+      setError(serverError || msg);
     }
   };
 
@@ -191,10 +206,18 @@ export default function TextInputComponent({
         } as any);
       }
 
-      const response = await fetch(`${baseUrl}/submit-update`, {
-        method: 'POST',
-        body: formData,
-      });
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/submit-update`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       const result = await response.json();
 

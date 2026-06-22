@@ -103,8 +103,8 @@ async def _summarize_via_gcs(path: Path, mime_type: str, loop) -> str:
         await loop.run_in_executor(None, _upload)
         logger.info("GCS upload complete — %s", gs_uri)
 
-    except Exception:
-        logger.error("GCS upload failed", exc_info=True)
+    except Exception as e:
+        logger.error("GCS upload failed (%s): %s", type(e).__name__, e, exc_info=True)
         return ""
 
     try:
@@ -122,8 +122,8 @@ async def _summarize_via_gcs(path: Path, mime_type: str, loop) -> str:
         logger.info("GCS video summary generated (%d chars)", len(summary))
         return summary
 
-    except Exception:
-        logger.error("Vertex AI summarization via GCS failed", exc_info=True)
+    except Exception as e:
+        logger.error("Vertex AI summarization via GCS failed (%s): %s", type(e).__name__, e, exc_info=True)
         return ""
 
     finally:
