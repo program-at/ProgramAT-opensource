@@ -3980,6 +3980,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                 (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer.strip()
             ).strip()
         logger.info("Received ideation answer via HTTP — proceeding to issue creation")
+        await _broadcast_ws({'type': 'progress', 'message': 'Creating your GitHub issue…'})
         # Fall through to template fill + issue creation below using this parsed_data.
     else:
         # --- Shape A: first call — summarize video, parse transcript ---
@@ -3991,7 +3992,12 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                 with os.fdopen(tmp_fd, 'wb') as fh:
                     fh.write(video_bytes)
                 logger.info("Saved uploaded video to %s (%d bytes)", tmp_path, len(video_bytes))
+                await _broadcast_ws({'type': 'progress', 'message': 'Summarizing video…'})
                 video_summary = await summarize_video(tmp_path)
+                if video_summary:
+                    await _broadcast_ws({'type': 'progress', 'message': 'Video summarized. Parsing your description…'})
+                else:
+                    await _broadcast_ws({'type': 'progress', 'message': 'Parsing your description…'})
             except Exception:
                 logger.error("Video temp-file handling failed", exc_info=True)
             finally:
@@ -4000,6 +4006,8 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                         os.unlink(tmp_path)
                     except OSError:
                         pass
+        else:
+            await _broadcast_ws({'type': 'progress', 'message': 'Parsing your description…'})
 
         parse_input = text.strip()
         if video_summary:
@@ -4023,6 +4031,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             )
 
         # Generate ideation question and return it for the client to present.
+        await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
         try:
             active_model = LLM_MODEL
             question = await generate_ideation_question(parsed_data, video_summary, active_model)
