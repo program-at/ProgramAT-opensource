@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import argparse
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -35,6 +36,163 @@ ALLOWED_SHARED_TOOL_FILES = {
     "litellm_utils.py",
     "model_router_client.py",
 }
+
+CANONICAL_TASK_CATEGORIES = {
+    "general_reasoning",
+    "ocr",
+    "object_detection",
+    "map_web",
+    "spatial_relationship",
+    "navigation",
+    "camera_motion",
+    "video",
+}
+
+
+def _extract_task_stages_section(issue_text: str) -> str:
+    match = re.search(r"^##\s+Task\s+Stages\s*$", issue_text, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return ""
+
+    start = match.end()
+    remainder = issue_text[start:]
+    next_header = re.search(r"^##\s+", remainder, re.MULTILINE)
+    if next_header:
+        return remainder[: next_header.start()]
+    return remainder
+
+
+def extract_stage_capabilities(issue_text: str) -> List[str]:
+    section = _extract_task_stages_section(issue_text)
+    if not section:
+        return []
+
+    capabilities: List[str] = []
+    for cap in re.findall(r"^\s*(?:[-*]\s*)?Capability\s*:\s*`?([a-z_]+)`?\s*$", section, re.IGNORECASE | re.MULTILINE):
+        capability = cap.strip()
+        if capability in CANONICAL_TASK_CATEGORIES:
+            capabilities.append(capability)
+    return capabilities
+
+
+def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
+    constants: dict[str, str] = {}
+    if not isinstance(tree, ast.Module):
+        return constants
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                constants[target.id] = node.value.value
+    return constants
+
+
+def extract_copilot_llm_task_categories(tool_text: str) -> List[Optional[str]]:
+    try:
+        tree = ast.parse(tool_text)
+    except SyntaxError:
+        return []
+
+    constants = _extract_string_constants(tree)
+    categories: List[Optional[str]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        is_copilot_call = False
+        if isinstance(node.func, ast.Name) and node.func.id == "copilot_llm_call":
+            is_copilot_call = True
+        elif isinstance(node.func, ast.Attribute) and node.func.attr == "copilot_llm_call":
+            is_copilot_call = True
+
+        if not is_copilot_call:
+            continue
+
+        category: Optional[str] = None
+        for kw in node.keywords:
+            if kw.arg != "task_category":
+                continue
+            if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                category = kw.value.value
+            elif isinstance(kw.value, ast.Name):
+                category = constants.get(kw.value.id)
+            break
+
+        categories.append(category)
+
+    return categories
+
+
+def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
+    failures: List[str] = []
+    stage_capabilities = extract_stage_capabilities(issue_text)
+    if not stage_capabilities:
+        return failures
+
+    categories = extract_copilot_llm_task_categories(tool_text)
+    if len(categories) < len(stage_capabilities):
+        failures.append(
+            f"{rel_path}: Task Stages lists {len(stage_capabilities)} model-backed stage(s), "
+            f"but tool has only {len(categories)} copilot_llm_call() call(s)."
+        )
+
+    unresolved_indexes = [index + 1 for index, category in enumerate(categories) if category is None]
+    if unresolved_indexes:
+        failures.append(
+            f"{rel_path}: copilot_llm_call() missing resolvable task_category at call(s) {unresolved_indexes}."
+        )
+
+    for index, category in enumerate(categories):
+        if category is None:
+            continue
+        if category not in CANONICAL_TASK_CATEGORIES:
+            failures.append(
+                f"{rel_path}: non-canonical task_category '{category}' in copilot_llm_call #{index + 1}."
+            )
+
+    comparable_length = min(len(stage_capabilities), len(categories))
+    for index in range(comparable_length):
+        actual = categories[index]
+        expected = stage_capabilities[index]
+        if actual is None:
+            continue
+        if actual != expected:
+            failures.append(
+                f"{rel_path}: Task Stage {index + 1} requires task_category '{expected}', "
+                f"found '{actual}'."
+            )
+
+    if len(stage_capabilities) > 1 and len(set(stage_capabilities)) > 1 and len(categories) == 1:
+        only_category = categories[0]
+        if only_category is None or only_category not in stage_capabilities:
+            failures.append(
+                f"{rel_path}: multiple stage capabilities {stage_capabilities} cannot be combined into a single call."
+            )
+
+    return failures
+
+
+def validate_canonical_task_categories(tool_text: str, rel_path: Path) -> List[str]:
+    failures: List[str] = []
+    categories = extract_copilot_llm_task_categories(tool_text)
+    unresolved_indexes = [index + 1 for index, category in enumerate(categories) if category is None]
+
+    if unresolved_indexes:
+        failures.append(
+            f"{rel_path}: copilot_llm_call() missing resolvable task_category at call(s) {unresolved_indexes}."
+        )
+
+    for index, category in enumerate(categories):
+        if category is None:
+            continue
+        if category not in CANONICAL_TASK_CATEGORIES:
+            failures.append(
+                f"{rel_path}: non-canonical task_category '{category}' in copilot_llm_call #{index + 1}."
+            )
+
+    return failures
 
 
 def _changed_tool_files(base_ref: str) -> List[Path]:
@@ -64,7 +222,7 @@ def _normalize_paths(paths: Iterable[str]) -> List[Path]:
     return result
 
 
-def validate_files(paths: Iterable[Path]) -> List[str]:
+def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> List[str]:
     failures: List[str] = []
     for path in sorted(set(paths)):
         if path.name in ALLOWED_SHARED_TOOL_FILES or not path.exists():
@@ -78,6 +236,10 @@ def validate_files(paths: Iterable[Path]) -> List[str]:
                 line_number = text.count("\n", 0, match.start()) + 1
                 failures.append(f"{rel_path}:{line_number}: forbidden generated-tool pattern: {label}")
 
+        failures.extend(validate_canonical_task_categories(text, rel_path))
+        if issue_text:
+            failures.extend(validate_stage_enforcement(text, issue_text, rel_path))
+
     return failures
 
 
@@ -86,6 +248,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("paths", nargs="*", help="Specific tool files to validate.")
     parser.add_argument("--changed", metavar="BASE_REF", help="Validate changed tools relative to BASE_REF.")
     parser.add_argument("--all", action="store_true", help="Validate all Python tool files.")
+    parser.add_argument("--issue-file", help="Optional issue markdown/body file used for Task Stages validation.")
     args = parser.parse_args(argv)
 
     paths: List[Path] = []
@@ -96,10 +259,17 @@ def main(argv: List[str] | None = None) -> int:
     if args.paths:
         paths.extend(_normalize_paths(args.paths))
 
-    failures = validate_files(paths)
+    issue_text: Optional[str] = None
+    if args.issue_file:
+        issue_text = Path(args.issue_file).read_text(encoding="utf-8")
+
+    failures = validate_files(paths, issue_text=issue_text)
     if failures:
         print("Generated tools must use from model_router_client import copilot_llm_call for LLM/VLM operations.")
         print("Do not implement detection, OCR, VLM, LLM, model loading, provider calls, or model discovery in tool files.")
+        print(
+            "When Task Stages are provided, map each model-backed stage to one copilot_llm_call() and use canonical task_category values."
+        )
         print()
         for failure in failures:
             print(failure)
