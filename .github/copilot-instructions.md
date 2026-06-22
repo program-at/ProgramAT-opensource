@@ -8,7 +8,20 @@ When using other tool files as building blocks, use their patterns but do not im
 
 From the Github agent, tools must NOT connect to the backend server or use WebSockets. Tools execute ON the backend server and receive data as function parameters. The mobile app handles all network communication. Tools should only process the image and input_data parameters passed to their main() function and return results as strings or dictionaries.
 
-Assume each generated tool implements one user-facing task. If the generated issue explicitly enumerates multiple stages, implement those stages sequentially inside the tool and pass intermediate outputs from earlier stages into later stages. Task decomposition and model selection are separate concerns: the issue parser decides whether stages are required, and the generated tool owns stage execution. The model router only selects the most appropriate model for each declared capability. Do not ask the model router to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
+Assume each generated tool implements one user-facing task.
+
+Hierarchy for staged issues:
+- One user-facing task = one generated tool.
+- One generated tool may contain multiple internal stages.
+- Each model-backed stage = one `copilot_llm_call()`.
+
+If the generated issue explicitly enumerates a `Task Stages` section, generated tools must follow that stage list exactly:
+- Each model-backed stage MUST map to its own `copilot_llm_call(...)`.
+- Do NOT merge multiple stage capabilities into one generic call.
+- Use exactly that stage's listed capability as `task_category`.
+- Pass earlier stage outputs into later stages via prompts/context/metadata.
+
+Task decomposition and model selection are separate concerns: the issue parser decides whether stages are required, and the generated tool owns stage execution. The model router only selects the most appropriate model for each declared capability. Do not ask the model router to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
 
 From the Github agent, ALL tools MUST return audio-friendly output. Tool results are automatically spoken aloud via text-to-speech on the mobile device unless another form of audio is specified. Return values should be:
 - Natural language strings that sound good when spoken (not JSON, not code, not cryptic abbreviations)
@@ -113,7 +126,49 @@ Do not invent or substitute task categories. In particular, never use `visual_re
 
 When creating a new tool, explicitly choose the nearest task category before writing a model-backed call. Let the backend choose the actual model/backend and emit routing logs. Do not pass `model`, `requested_model`, provider-specific names, detector names, OCR engine names, or routing registries in generated tools. Do not import `litellm`, provider SDKs, detector libraries, OCR SDKs, `ultralytics`, or `YOLO` directly. Do not call `litellm.completion()` or `YOLO(...)`. Do not create a `ModelRouter` class, model registry, model cache, provider fallback logic, `COCO_CLASSES`, hardcoded model names, `.pt` model loading/discovery logic, wrapper functions, new client modules, or alternative model-routing helpers. If the approved API cannot support the needed capability, add support to the centralized backend router instead of implementing it inside the tool.
 
-For multi-stage issues, follow the issue's stage list. Each stage should have a stage name, goal, capability, input if it consumes an earlier result, and expected output. For each model-backed stage, call `copilot_llm_call` with that stage's capability as the task category and include stage-specific `route_text` metadata. Store the stage output in a local variable and pass it into later stage prompts as needed. The final spoken response should summarize the completed user-facing task, not expose raw intermediate JSON unless that is the requested output.
+For multi-stage issues, follow the issue's stage list. Each stage should have a stage name, goal, capability, input if it consumes an earlier result, and expected output. For each model-backed stage, call `copilot_llm_call` with that stage's capability as the task category and include stage-specific metadata. Store the stage output in a local variable and pass it into later stage prompts as needed. The final spoken response should summarize the completed user-facing task, not expose raw intermediate JSON unless that is the requested output.
+
+Example (Uber pickup guidance):
+
+```python
+vehicle_result = copilot_llm_call(
+    task_category="object_detection",
+    messages=[{"role": "user", "content": "Locate the correct vehicle."}],
+    images=[image],
+    metadata={
+        "tool_name": TOOL_NAME,
+        "stage_name": "Stage 1",
+        "stage_goal": "Locate the correct vehicle",
+    },
+)
+
+door_result = copilot_llm_call(
+    task_category="spatial_relationship",
+    messages=[{"role": "user", "content": "Locate the passenger-side door."}],
+    images=[image],
+    metadata={
+        "tool_name": TOOL_NAME,
+        "stage_name": "Stage 2",
+        "stage_goal": "Locate the passenger-side door",
+        "previous_stage_output": vehicle_result,
+    },
+)
+
+guidance_result = copilot_llm_call(
+    task_category="navigation",
+    messages=[{"role": "user", "content": "Guide the user toward the door."}],
+    images=[image],
+    metadata={
+        "tool_name": TOOL_NAME,
+        "stage_name": "Stage 3",
+        "stage_goal": "Guide the user toward the door",
+        "previous_stage_outputs": {
+            "vehicle": vehicle_result,
+            "door": door_result,
+        },
+    },
+)
+```
 
 For tools where the live-mode field is filled to indicate that is what they want, use the backend-managed live multimodal mode. For these tools, arrange for the specified query to be re-pushed without the user needing to say anything new every 5 seconds.
 
