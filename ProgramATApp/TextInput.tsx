@@ -68,6 +68,24 @@ export default function TextInputComponent({
     return wsUrl.replace(/^wss?/, 'http');
   };
 
+  /**
+   * Build the multipart 'video' part from a file:// URI, using the real file
+   * extension for the name and MIME type. Hardcoding .mp4 for a .mov file makes
+   * iOS reject the upload with "Network request failed", so derive both.
+   */
+  const buildVideoPart = (uri: string) => {
+    const ext = (uri.split('.').pop() || 'mp4').toLowerCase().split('?')[0];
+    const mimeByExt: Record<string, string> = {
+      mp4: 'video/mp4',
+      m4v: 'video/mp4',
+      mov: 'video/quicktime',
+      qt: 'video/quicktime',
+      webm: 'video/webm',
+    };
+    const type = mimeByExt[ext] || 'video/mp4';
+    return { uri, type, name: `recording.${ext}` } as any;
+  };
+
   const handlePickFromLibrary = async () => {
     setIsPickingFromLibrary(true);
     try {
@@ -113,11 +131,7 @@ export default function TextInputComponent({
         // Shape A: first submission — include text and optional video.
         formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
         if (videoUri) {
-          formData.append('video', {
-            uri: videoUri,
-            type: 'video/mp4',
-            name: 'recording.mp4',
-          } as any);
+          formData.append('video', buildVideoPart(videoUri));
         }
       }
 
@@ -202,11 +216,7 @@ export default function TextInputComponent({
         issue_number: selectedIssue.number,
       }));
       if (videoUri) {
-        formData.append('video', {
-          uri: videoUri,
-          type: 'video/mp4',
-          name: 'recording.mp4',
-        } as any);
+        formData.append('video', buildVideoPart(videoUri));
       }
 
       const controller = new AbortController();
