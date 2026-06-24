@@ -27,6 +27,7 @@ import os
 import json
 import base64
 import io
+import re
 from typing import Dict, List, Optional, Any
 
 from PIL import Image
@@ -151,6 +152,17 @@ _MAIL_CRITERIA = """Classification rules:
   personal letters, cheques, packages, or anything that could require action.
 - NO MAIL: no mail item is visible in the image."""
 
+_JUNK_SIGNALS = (
+    'junk', 'advertisement', 'advertising', 'promo', 'promotion',
+    'offer', 'coupon', 'catalog', 'flyer', 'solicitation', 'spam'
+)
+_IMPORTANT_SIGNALS = (
+    'bank', 'statement', 'bill', 'invoice', 'government', 'legal',
+    'medical', 'letter', 'personal', 'package', 'parcel', 'check', 'cheque'
+)
+_NO_MAIL_SIGNALS = ('no mail', 'no envelope', 'no letter', 'no package visible')
+_STREAMING_WORD_LIMIT = 15
+
 
 _CLASSIFICATION_PROMPT = """You are helping a blind person sort their physical mail.
 
@@ -158,7 +170,7 @@ You will be given:
 1. An image of a mail item (envelope, package, postcard, etc.)
 2. Any text detected on the mail by OCR (may be empty if OCR failed)
 
-Your task: decide whether this mail item is junk mail or not junk mail.
+Your task: decide whether this is junk mail, not-junk mail that should be opened, or no-mail-visible.
 You MUST make the decision for the user.
 
 {mail_criteria}
@@ -166,7 +178,7 @@ You MUST make the decision for the user.
 Response format (follow exactly):
 - If IGNORE → reply with exactly: Ignore
 - If OPEN → reply with exactly: Open. From [sender name or company] for [recipient name].
-  Use "Unknown sender" / "Unknown recipient" when a name is not legible.
+  Use "sender not visible" / "recipient not visible" when a name is not legible.
 - If NO MAIL → reply with exactly: No mail found. [One sentence describing the scene.]
 
 OCR text detected on this image:
@@ -253,7 +265,7 @@ def _normalize_mail_decision(raw_text: str, streaming: bool = False) -> str:
     """
     cleaned = ' '.join((raw_text or '').split())
     if not cleaned:
-        return ""
+        return "Ignore"
 
     lower = cleaned.lower()
 
@@ -264,36 +276,26 @@ def _normalize_mail_decision(raw_text: str, streaming: bool = False) -> str:
     elif lower.startswith('open'):
         normalized = cleaned
     else:
-        junk_signals = (
-            'junk', 'advertisement', 'advertising', 'promo', 'promotion',
-            'offer', 'coupon', 'catalog', 'flyer', 'solicitation', 'spam'
-        )
-        important_signals = (
-            'bank', 'statement', 'bill', 'invoice', 'government', 'legal',
-            'medical', 'letter', 'personal', 'package', 'parcel', 'check', 'cheque'
-        )
-        no_mail_signals = ('no mail', 'no envelope', 'no letter', 'no package visible')
-
-        if any(signal in lower for signal in no_mail_signals):
+        if any(signal in lower for signal in _NO_MAIL_SIGNALS):
             normalized = "No mail found."
-        elif any(signal in lower for signal in important_signals):
-            normalized = "Open. From Unknown sender for Unknown recipient."
-        elif any(signal in lower for signal in junk_signals):
+        elif any(signal in lower for signal in _IMPORTANT_SIGNALS):
+            normalized = "Open. From sender not visible for recipient not visible."
+        elif any(signal in lower for signal in _JUNK_SIGNALS):
             normalized = "Ignore"
         else:
-            # Conservative default: only recommend Open when the result clearly indicates non-junk.
+            # Conservative default: assume junk mail unless there is a clear important-mail signal.
             normalized = "Ignore"
 
     # Ensure Open output always includes sender and recipient placeholders.
-    if normalized.lower().startswith('open'):
-        normalized_lower = normalized.lower()
-        if ' from ' not in normalized_lower or ' for ' not in normalized_lower:
-            normalized = "Open. From Unknown sender for Unknown recipient."
+    if normalized.casefold().startswith('open'):
+        word_tokens = set(re.findall(r"\b\w+\b", normalized.casefold()))
+        if 'from' not in word_tokens or 'for' not in word_tokens:
+            normalized = "Open. From sender not visible for recipient not visible."
 
     if streaming:
         words = normalized.split()
-        if len(words) > 15:
-            normalized = ' '.join(words[:15])
+        if len(words) > _STREAMING_WORD_LIMIT:
+            normalized = ' '.join(words[:_STREAMING_WORD_LIMIT])
             if not normalized.endswith(('.', '!', '?')):
                 normalized = normalized.rstrip('.,;:') + '.'
 
