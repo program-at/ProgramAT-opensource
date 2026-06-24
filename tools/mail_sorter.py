@@ -144,20 +144,24 @@ def extract_text_from_image(image: np.ndarray) -> str:
 # Gemini classification
 # ---------------------------------------------------------------------------
 
+_MAIL_CRITERIA = """Classification rules:
+- IGNORE: advertisements, promotional offers, coupons, catalogs, political flyers,
+  charity solicitations, or any obvious junk mail.
+- OPEN: bank statements, bills, legal notices, government mail, medical correspondence,
+  personal letters, cheques, packages, or anything that could require action.
+- NO MAIL: no mail item is visible in the image."""
+
+
 _CLASSIFICATION_PROMPT = """You are helping a blind person sort their physical mail.
 
 You will be given:
 1. An image of a mail item (envelope, package, postcard, etc.)
 2. Any text detected on the mail by OCR (may be empty if OCR failed)
 
-Your task: decide whether this mail item should be opened or ignored.
+Your task: decide whether this mail item is junk mail or not junk mail.
+You MUST make the decision for the user.
 
-Classification rules:
-- IGNORE: advertisements, promotional offers, coupons, catalogs, political flyers,
-  charity solicitations, or any obvious junk mail.
-- OPEN: bank statements, bills, legal notices, government mail, medical correspondence,
-  personal letters, cheques, packages, or anything that could require action.
-- NO MAIL: no mail item is visible in the image.
+{mail_criteria}
 
 Response format (follow exactly):
 - If IGNORE → reply with exactly: Ignore
@@ -194,6 +198,7 @@ def classify_mail(
         image_uri = pil_image_to_data_uri(pil_img)
 
         prompt = _CLASSIFICATION_PROMPT.format(
+            mail_criteria=_MAIL_CRITERIA,
             ocr_text=ocr_text if ocr_text else "(none detected)"
         )
 
@@ -211,7 +216,7 @@ def classify_mail(
             ],
             api_key=api_key,
         )
-        return extract_text(response).strip()
+        return _normalize_mail_decision(extract_text(response).strip(), streaming=False)
     except Exception as e:
         return f"Error classifying mail: {str(e)}"
 
@@ -224,15 +229,75 @@ _STREAMING_PROMPT = """You are helping a blind person sort mail in real time.
 
 Look at the current camera frame and answer: should this mail be opened?
 
-Rules:
-- Junk mail / ads / offers → say: Ignore
-- Important mail → say: Open. From [sender] for [recipient].
-- No mail visible → say: No mail found. [brief scene, ≤5 words]
+{mail_criteria}
+
+Response format:
+- If IGNORE → say: Ignore
+- If OPEN → say: Open. From [sender] for [recipient].
+- If NO MAIL → say: No mail found. [brief scene, ≤5 words]
+
+You MUST decide for the user. Never say "up to you", "unclear", "maybe", or ask questions.
 
 Keep the ENTIRE response under 15 words. No extra words.
 
 OCR text on this image:
 {ocr_text}"""
+
+
+def _normalize_mail_decision(raw_text: str, streaming: bool = False) -> str:
+    """
+    Enforce deterministic tool output:
+    - Ignore
+    - Open. From ... for ...
+    - No mail found. ...
+    """
+    cleaned = ' '.join((raw_text or '').split())
+    if not cleaned:
+        return ""
+
+    lower = cleaned.lower()
+
+    if lower.startswith('no mail found'):
+        normalized = cleaned
+    elif lower.startswith('ignore'):
+        normalized = "Ignore"
+    elif lower.startswith('open'):
+        normalized = cleaned
+    else:
+        junk_signals = (
+            'junk', 'advertisement', 'advertising', 'promo', 'promotion',
+            'offer', 'coupon', 'catalog', 'flyer', 'solicitation', 'spam'
+        )
+        important_signals = (
+            'bank', 'statement', 'bill', 'invoice', 'government', 'legal',
+            'medical', 'letter', 'personal', 'package', 'parcel', 'check', 'cheque'
+        )
+        no_mail_signals = ('no mail', 'no envelope', 'no letter', 'no package visible')
+
+        if any(signal in lower for signal in no_mail_signals):
+            normalized = "No mail found."
+        elif any(signal in lower for signal in important_signals):
+            normalized = "Open. From Unknown sender for Unknown recipient."
+        elif any(signal in lower for signal in junk_signals):
+            normalized = "Ignore"
+        else:
+            # Conservative default: only recommend Open when the result clearly indicates non-junk.
+            normalized = "Ignore"
+
+    # Ensure Open output always includes sender and recipient placeholders.
+    if normalized.lower().startswith('open'):
+        normalized_lower = normalized.lower()
+        if ' from ' not in normalized_lower or ' for ' not in normalized_lower:
+            normalized = "Open. From Unknown sender for Unknown recipient."
+
+    if streaming:
+        words = normalized.split()
+        if len(words) > 15:
+            normalized = ' '.join(words[:15])
+            if not normalized.endswith(('.', '!', '?')):
+                normalized = normalized.rstrip('.,;:') + '.'
+
+    return normalized
 
 
 def classify_mail_streaming(
@@ -258,6 +323,7 @@ def classify_mail_streaming(
         image_uri = pil_image_to_data_uri(pil_img)
 
         prompt = _STREAMING_PROMPT.format(
+            mail_criteria=_MAIL_CRITERIA,
             ocr_text=ocr_text if ocr_text else "(none)"
         )
 
@@ -275,16 +341,7 @@ def classify_mail_streaming(
             ],
             api_key=api_key,
         )
-        result = extract_text(response).strip()
-
-        # Hard cap at 15 words for streaming mode
-        words = result.split()
-        if len(words) > 15:
-            result = ' '.join(words[:15])
-            if not result.endswith(('.', '!', '?')):
-                result = result.rstrip('.,;:') + '.'
-
-        return result
+        return _normalize_mail_decision(extract_text(response).strip(), streaming=True)
     except Exception:
         return ""
 
