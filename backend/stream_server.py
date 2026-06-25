@@ -110,7 +110,7 @@ def _normalize_custom_gpt_value(value) -> str:
 
 # Configuration
 HOST = '0.0.0.0'  # Listen on all interfaces
-PORT = 8081 #port for listening
+PORT = 8080 #port for listening
 SAVE_FRAMES = True  # Set to True to save frames to disk
 FRAMES_DIR = Path(__file__).parent / 'received_frames'
 
@@ -472,6 +472,11 @@ LATEST_META_FRAME_FILENAME = 'latest_meta_frame.jpg'
 # Format: {client_id: {'tool': {...}, 'last_run': timestamp, 'throttle_ms': 1000}}
 active_streaming_tools = {}
 
+# Tracks the asyncio.Task currently running a streaming tool for each client.
+# Cancelled on stop or when a new tool starts to prevent stale results arriving
+# after the tool has been swapped out.
+active_streaming_tasks: dict = {}
+
 # Conversation images - stores images for chat follow-up questions
 # Format: {conversation_id: PIL.Image}
 conversation_images = {}
@@ -504,10 +509,13 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
     if client_id not in active_streaming_tools:
         logger.warning(f"Client {client_id} not in active_streaming_tools")
         return
-    
+
     tool_config = active_streaming_tools[client_id]
+    # Snapshot generation at dispatch time so we can discard results that
+    # arrive after a stop/restart replaced the tool config.
+    dispatched_generation = tool_config.get('generation', 0)
     now = datetime.now()
-    
+
     # Gemini Live tools handle their own query loop — don't exec code here
     if tool_config.get('gemini_live'):
         return
@@ -697,6 +705,13 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 except Exception:
                     raise
             
+            # Discard the result if the tool was stopped or replaced while
+            # the thread was running (generation mismatch or client gone).
+            current_config = active_streaming_tools.get(client_id)
+            if current_config is None or current_config.get('generation') != dispatched_generation:
+                logger.info(f"Discarding stale result for {client_id} (tool changed or stopped)")
+                return
+
             # Combine printed output with result
             # Check if result is advanced format with audio config
             if isinstance(result, dict) and ('audio' in result or 'text' in result):
@@ -708,17 +723,17 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     'result': result.get('text', ''),
                     'timestamp': now.isoformat()
                 }
-                
+
                 # Add audio configuration if provided
                 if 'audio' in result:
                     response_data['audio'] = result['audio']
-                
+
                 # Prepend printed output if any
                 if printed_output.strip():
                     response_data['result'] = printed_output.strip() + '\n' + response_data['result']
                     if 'audio' in response_data and 'text' in response_data['audio']:
                         response_data['audio']['text'] = printed_output.strip() + '. ' + response_data['audio']['text']
-                
+
                 await websocket.send(json.dumps(response_data))
                 logger.info(f"Sent tool_stream_result to {client_id} for {tool_name}")
             else:
@@ -728,9 +743,9 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     output_parts.append(printed_output.strip())
                 if result is not None:
                     output_parts.append(str(result))
-                
+
                 final_result = '\n'.join(output_parts) if output_parts else "Tool executed (no output)"
-                
+
                 # Send result back to client
                 await websocket.send(json.dumps({
                     'type': 'tool_stream_result',
@@ -4460,10 +4475,21 @@ async def handle_client(websocket):
                 if msg_type == 'start_streaming_tool':
                     logger.info(f"Client {client_id} started streaming tool: {data.get('tool_name')}")
                     session_log.log("INFO", f"Started streaming tool: {data.get('tool_name')}")
-                    
+
+                    # Cancel any in-flight task from the previous tool so its
+                    # stale result can't arrive after the new tool is registered.
+                    if client_id in active_streaming_tasks:
+                        old_task = active_streaming_tasks.pop(client_id)
+                        if not old_task.done():
+                            old_task.cancel()
+
                     custom_gpt = data.get('custom_gpt', False)
                     gpt_query = data.get('gpt_query', '')
-                    
+
+                    # Increment generation so any already-running thread (which
+                    # can't be cancelled mid-blocking-call) knows to discard its result.
+                    prev_gen = (active_streaming_tools.get(client_id) or {}).get('generation', 0)
+
                     active_streaming_tools[client_id] = {
                         'tool': {
                             'name': data.get('tool_name', 'unknown'),
@@ -4473,6 +4499,7 @@ async def handle_client(websocket):
                         },
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
+                        'generation': prev_gen + 1,
                     }
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
@@ -4566,6 +4593,10 @@ async def handle_client(websocket):
                 # Handle stop_streaming_tool message type
                 if msg_type == 'stop_streaming_tool':
                     logger.info(f"Client {client_id} stopped streaming tool")
+                    if client_id in active_streaming_tasks:
+                        old_task = active_streaming_tasks.pop(client_id)
+                        if not old_task.done():
+                            old_task.cancel()
                     if client_id in active_streaming_tools:
                         tool_name = active_streaming_tools[client_id]['tool']['name']
                         # Clean up Gemini Live session if active
@@ -5050,10 +5081,13 @@ async def handle_client(websocket):
                     # Run active streaming tools asynchronously
                     if last_frame['image'] is not None and client_id in active_streaming_tools:
                         logger.info(f"About to run streaming tools for {client_id}")
-                        # Run tool execution in background task to avoid blocking frame processing
-                        task = asyncio.create_task(run_streaming_tools(websocket, client_id, last_frame['image'], last_frame['base64']))
-                        # Add error handling to the task
-                        task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if t.exception() else None)
+                        # Only run if no task is already in flight for this client
+                        # (prevents piling up concurrent runs per frame)
+                        existing = active_streaming_tasks.get(client_id)
+                        if existing is None or existing.done():
+                            task = asyncio.create_task(run_streaming_tools(websocket, client_id, last_frame['image'], last_frame['base64']))
+                            active_streaming_tasks[client_id] = task
+                            task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if not t.cancelled() and t.exception() else None)
                     elif last_frame['image'] is None:
                         logger.debug(f"No image available for {client_id}")
                     elif client_id not in active_streaming_tools:
@@ -5627,6 +5661,11 @@ async def handle_client(websocket):
                 active_session_loggers[client_id].log("ERROR", f"Connection error: {e}")
     finally:
         connected_clients.discard(websocket)
+        # Cancel any in-flight streaming task
+        if client_id in active_streaming_tasks:
+            t = active_streaming_tasks.pop(client_id)
+            if not t.done():
+                t.cancel()
         # Clean up streaming tools for this client
         if client_id in active_streaming_tools:
             logger.info(f"Stopping streaming tool for disconnected client {client_id}")
