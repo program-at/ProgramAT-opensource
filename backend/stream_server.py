@@ -594,54 +594,87 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
             stdout_capture.seek(0)
             stdout_capture.truncate(0)
             
-            # Capture stdout to get print() output
+            # Run exec + function call in a thread so blocking LLM/CV calls
+            # inside the tool don't stall the event loop (which would cause
+            # the aiohttp heartbeat to miss and the app to declare disconnect).
             import sys
-            old_stdout = sys.stdout
-            
-            # Retry loop for automatic module installation
+            import inspect
+            import io as _io
+
+            def _run_tool_in_thread():
+                _capture = _io.StringIO()
+                _old = sys.stdout
+                sys.stdout = _capture
+                try:
+                    exec(tool_code, exec_globals, exec_locals)
+                finally:
+                    sys.stdout = _old
+
+                exec_globals.update(exec_locals)
+
+                _result = None
+                if 'main' in exec_locals and callable(exec_locals['main']):
+                    sig = inspect.signature(exec_locals['main'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['main'](image, parsed_input)
+                    else:
+                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
+                elif 'run' in exec_locals and callable(exec_locals['run']):
+                    sig = inspect.signature(exec_locals['run'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['run'](image, parsed_input)
+                    else:
+                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
+                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
+                    sig = inspect.signature(exec_locals['process_image'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['process_image'](image, parsed_input)
+                    else:
+                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
+                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
+                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
+                        verbalizer = exec_locals['get_verbalizer']()
+                        if not verbalizer and GEMINI_API_KEY:
+                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
+                    _result = exec_locals['process_frame_for_text'](image_base64)
+                elif 'result' in exec_locals:
+                    _result = exec_locals['result']
+                else:
+                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
+                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
+                    if available_funcs or available_classes:
+                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+
+                return _capture.getvalue(), _result
+
             retry_count = 0
             max_retries = 3
-            
+            printed_output = ''
+            result = None
+
             while retry_count < max_retries:
                 try:
                     logger.info(f"Executing {tool_name} code for {client_id}, attempt {retry_count + 1}")
-                    # Redirect stdout to capture print statements
-                    sys.stdout = stdout_capture
-                    try:
-                        # Execute tool code
-                        logger.info(f"About to exec() tool code for {client_id}")
-                        exec(tool_code, exec_globals, exec_locals)
-                        logger.info(f"Successfully exec()d tool code for {client_id}")
-                    finally:
-                        sys.stdout = old_stdout
-                    break  # Success, exit retry loop
+                    printed_output, result = await asyncio.to_thread(_run_tool_in_thread)
+                    logger.info(f"Tool {tool_name} completed for {client_id}: {type(result)}")
+                    break
                 except (ImportError, ModuleNotFoundError) as e:
-                    sys.stdout = old_stdout  # Restore stdout for logging
                     error_msg = str(e)
                     logger.warning(f"Module error in streaming {tool_name}: {error_msg}")
-                    
-                    # PAUSE STREAMING: Mark as installing
+
                     tool_config['installing_module'] = True
-                    
-                    # Notify client that streaming is paused for installation
                     await websocket.send(json.dumps({
                         'type': 'module_installing',
                         'tool_name': tool_name,
                         'message': f"Pausing streaming to install required module...",
                         'timestamp': datetime.now().isoformat()
                     }))
-                    
-                    # Install the module synchronously (just like one-shot mode)
-                    # This will block, but streaming is already paused
-                    installed_module = module_mgr.install_from_error(error_msg)
-                    
-                    # RESUME STREAMING: Clear installing flag
+
+                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
                     tool_config['installing_module'] = False
-                    
+
                     if installed_module:
                         logger.info(f"Installed {installed_module}, resuming streaming execution...")
-                        
-                        # Notify client that streaming is resuming
                         await websocket.send(json.dumps({
                             'type': 'module_installed',
                             'tool_name': tool_name,
@@ -649,13 +682,10 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                             'message': f"Successfully installed {installed_module}. Resuming streaming...",
                             'timestamp': datetime.now().isoformat()
                         }))
-                        
-                        # Reload common modules to include newly installed one
                         common_modules = module_mgr.get_common_modules()
                         exec_globals.update(common_modules)
                         retry_count += 1
                     else:
-                        # Could not identify/install module
                         await websocket.send(json.dumps({
                             'type': 'module_install_failed',
                             'tool_name': tool_name,
@@ -665,85 +695,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                         }))
                         raise
                 except Exception:
-                    # Non-module errors should be raised immediately
-                    sys.stdout = old_stdout  # Restore stdout before raising
                     raise
-            
-            # Get captured print output
-            printed_output = stdout_capture.getvalue()
-            
-            # IMPORTANT: Merge exec_locals into exec_globals so functions can see each other
-            # This allows main() to call helper functions defined in the same file
-            exec_globals.update(exec_locals)
-            
-            # Get result from function or variable
-            # Check function signatures to avoid calling helper functions
-            import inspect
-            
-            result = None
-            
-            # Try main() - highest priority
-            if 'main' in exec_locals and callable(exec_locals['main']):
-                try:
-                    logger.info(f"Calling main() function for {tool_name} on {client_id}")
-                    sig = inspect.signature(exec_locals['main'])
-                    if len(sig.parameters) == 2:  # Should take (image, input_data)
-                        result = exec_locals['main'](image, parsed_input)
-                        logger.info(f"main() returned result for {tool_name}: {type(result)}")
-                    else:
-                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                except Exception as e:
-                    logger.error(f"Error calling main(): {e}")
-            
-            # Try run() - second priority
-            elif 'run' in exec_locals and callable(exec_locals['run']):
-                try:
-                    sig = inspect.signature(exec_locals['run'])
-                    if len(sig.parameters) == 2:
-                        result = exec_locals['run'](image, parsed_input)
-                    else:
-                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                except Exception as e:
-                    logger.error(f"Error calling run(): {e}")
-            
-            # Try process_image() - but check signature carefully
-            elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                try:
-                    sig = inspect.signature(exec_locals['process_image'])
-                    # Only call if it takes 2 params (entry point), not 1 (helper function)
-                    if len(sig.parameters) == 2:
-                        result = exec_locals['process_image'](image, parsed_input)
-                    else:
-                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                except Exception as e:
-                    logger.error(f"Error calling process_image(): {e}")
-            
-            # Try process_frame_for_text() - special case for text tools
-            elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                try:
-                    # Initialize verbalizer if needed
-                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
-                        verbalizer = exec_locals['get_verbalizer']()
-                        if not verbalizer and GEMINI_API_KEY:
-                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                    result = exec_locals['process_frame_for_text'](image_base64)
-                except Exception as e:
-                    logger.error(f"Error calling process_frame_for_text(): {e}")
-            
-            # Check for result variable
-            elif 'result' in exec_locals:
-                result = exec_locals['result']
-            else:
-                # Tool is a library - show available functions
-                available_funcs = [name for name, obj in exec_locals.items() 
-                                 if callable(obj) and not name.startswith('_')]
-                available_classes = [name for name, obj in exec_locals.items() 
-                                   if isinstance(obj, type) and not name.startswith('_')]
-                
-                if available_funcs or available_classes:
-                    result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
-                else:
-                    result = None
             
             # Combine printed output with result
             # Check if result is advanced format with audio config
@@ -5339,119 +5291,83 @@ async def handle_client(websocket):
                             
                             exec_locals = {}
                             
-                            # Capture stdout to get print() output
-                            import io
+                            # Run exec + function call in a thread so blocking LLM/CV
+                            # calls inside the tool don't stall the event loop.
                             import sys
-                            stdout_capture = io.StringIO()
-                            old_stdout = sys.stdout
-                            
-                            # Execute the tool code with retry on module errors
-                            max_retries = 3
-                            retry_count = 0
-                            
-                            while retry_count < max_retries:
-                                try:
-                                    # Redirect stdout to capture print statements
-                                    sys.stdout = stdout_capture
-                                    try:
-                                        exec(tool_code, exec_globals, exec_locals)
-                                    finally:
-                                        sys.stdout = old_stdout
-                                    break  # Success, exit retry loop
-                                except (ImportError, ModuleNotFoundError) as e:
-                                    error_msg = str(e)
-                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
-                                    
-                                    # Try to install the missing module
-                                    installed_module = module_mgr.install_from_error(error_msg)
-                                    
-                                    if installed_module:
-                                        logger.info(f"Installed {installed_module}, retrying execution...")
-                                        # Reload common modules to include newly installed one
-                                        common_modules = module_mgr.get_common_modules()
-                                        exec_globals.update(common_modules)
-                                        retry_count += 1
-                                    else:
-                                        # Could not identify/install module, raise error
-                                        raise
-                                except Exception:
-                                    # Non-module errors should be raised immediately
-                                    sys.stdout = old_stdout  # Restore stdout before raising
-                                    raise
-                            
-                            # Get captured print output
-                            printed_output = stdout_capture.getvalue()
-                            
-                            # IMPORTANT: Merge exec_locals into exec_globals so functions can see each other
-                            # This allows main() to call helper functions defined in the same file
-                            exec_globals.update(exec_locals)
-                            
-                            # Try to find a main function or use the result
-                            # Check function signatures to avoid calling helper functions
                             import inspect
-                            
-                            result = None
-                            
-                            # Try main() - highest priority
-                            if 'main' in exec_locals and callable(exec_locals['main']):
+                            import io as _io
+
+                            _fi = frame_image
+                            _fb = frame_base64
+
+                            def _run_one_shot_in_thread():
+                                _capture = _io.StringIO()
+                                _old = sys.stdout
+                                sys.stdout = _capture
                                 try:
+                                    exec(tool_code, exec_globals, exec_locals)
+                                finally:
+                                    sys.stdout = _old
+
+                                exec_globals.update(exec_locals)
+
+                                _result = None
+                                if 'main' in exec_locals and callable(exec_locals['main']):
                                     sig = inspect.signature(exec_locals['main'])
-                                    if len(sig.parameters) == 2:  # Should take (image, input_data)
-                                        result = exec_locals['main'](frame_image, parsed_input)
+                                    if len(sig.parameters) == 2:
+                                        _result = exec_locals['main'](_fi, parsed_input)
                                     else:
                                         logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                                except Exception as e:
-                                    logger.error(f"Error calling main(): {e}")
-                            
-                            # Try run() - second priority
-                            elif 'run' in exec_locals and callable(exec_locals['run']):
-                                try:
+                                elif 'run' in exec_locals and callable(exec_locals['run']):
                                     sig = inspect.signature(exec_locals['run'])
                                     if len(sig.parameters) == 2:
-                                        result = exec_locals['run'](frame_image, parsed_input)
+                                        _result = exec_locals['run'](_fi, parsed_input)
                                     else:
                                         logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                                except Exception as e:
-                                    logger.error(f"Error calling run(): {e}")
-                            
-                            # Try process_image() - but check signature carefully
-                            elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                                try:
+                                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
                                     sig = inspect.signature(exec_locals['process_image'])
-                                    # Only call if it takes 2 params (entry point), not 1 (helper function)
                                     if len(sig.parameters) == 2:
-                                        result = exec_locals['process_image'](frame_image, parsed_input)
+                                        _result = exec_locals['process_image'](_fi, parsed_input)
                                     else:
                                         logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                                except Exception as e:
-                                    logger.error(f"Error calling process_image(): {e}")
-                            
-                            # Try process_frame_for_text() - special case for text tools
-                            elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                                try:
-                                    # Initialize verbalizer if needed
+                                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
                                     if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
                                         verbalizer = exec_locals['get_verbalizer']()
                                         if not verbalizer and GEMINI_API_KEY:
                                             exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                                    result = exec_locals['process_frame_for_text'](frame_base64)
-                                except Exception as e:
-                                    logger.error(f"Error calling process_frame_for_text(): {e}")
-                            
-                            # Check for result variable
-                            elif 'result' in exec_locals:
-                                result = exec_locals['result']
-                            else:
-                                # Tool is a library - show available functions
-                                available_funcs = [name for name, obj in exec_locals.items() 
-                                                 if callable(obj) and not name.startswith('_')]
-                                available_classes = [name for name, obj in exec_locals.items() 
-                                                   if isinstance(obj, type) and not name.startswith('_')]
-                                
-                                if available_funcs or available_classes:
-                                    result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+                                    _result = exec_locals['process_frame_for_text'](_fb)
+                                elif 'result' in exec_locals:
+                                    _result = exec_locals['result']
                                 else:
-                                    result = None
+                                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
+                                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
+                                    if available_funcs or available_classes:
+                                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+
+                                return _capture.getvalue(), _result
+
+                            max_retries = 3
+                            retry_count = 0
+                            printed_output = ''
+                            result = None
+
+                            while retry_count < max_retries:
+                                try:
+                                    printed_output, result = await asyncio.to_thread(_run_one_shot_in_thread)
+                                    break
+                                except (ImportError, ModuleNotFoundError) as e:
+                                    error_msg = str(e)
+                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
+                                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
+                                    if installed_module:
+                                        logger.info(f"Installed {installed_module}, retrying execution...")
+                                        common_modules = module_mgr.get_common_modules()
+                                        exec_globals.update(common_modules)
+                                        retry_count += 1
+                                    else:
+                                        raise
+                                except Exception:
+                                    raise
                             
                             # Combine printed output with result
                             # Check if result is a dict with 'audio' and 'text' keys (advanced format)
