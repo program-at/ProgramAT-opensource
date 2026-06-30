@@ -59,7 +59,7 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("one user-facing task", template)
         self.assertIn("If this issue enumerates multiple stages", template)
         self.assertIn("one ordered `copilot_llm_call(...)` per stage", template)
-        self.assertIn("first implementation configured", template)
+        self.assertIn("evaluate and escalate reasoning capabilities", template)
         self.assertIn("pass useful structured artifacts to later calls", template)
         self.assertIn("spatial_reasoning", template)
         self.assertIn("Choose only from these capabilities", template)

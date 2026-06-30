@@ -555,7 +555,7 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
     """Log only the exact text selected for speech by the mobile client."""
     audio = response_data.get('audio')
     spoken = audio.get('text') if isinstance(audio, dict) and audio.get('text') else response_data.get('result', '')
-    logger.info("[FINAL SPOKEN RESPONSE] %s", spoken)
+    logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
 async def run_streaming_tools(websocket, client_id: str, image, image_base64: str): 

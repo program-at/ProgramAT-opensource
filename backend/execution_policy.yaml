@@ -1,31 +1,31 @@
+cascade_profiles:
+  default_reasoning:
+    candidates:
+      - llava
+      - gemini
+      - gpt4o
+    evaluator: gpt4o
+
 general_reasoning:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning
 
 ocr:
-  implementations:
-    - google_vision
+  implementation: google_vision
 
 object_detection_localization:
-  implementations:
-    - yolo
+  implementation: yolo
 
 structured_visual_understanding:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning
 
 spatial_reasoning:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning
 
 navigation:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning
 
 camera_motion:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning
 
 temporal_reasoning:
-  implementations:
-    - groq_vision
+  cascade: default_reasoning

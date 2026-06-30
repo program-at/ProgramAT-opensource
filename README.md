@@ -94,9 +94,10 @@ Use the table below as a quick reference for what each value does.
 | Variable                           | Required                       | Description                                                                                                                                       |
 | ---------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GEMINI_API_KEY`                   | Optional                       | Provider API key for Google Gemini system calls. |
-| `GROQ_API_KEY`                     | For system and fast vision calls | Provider key used by the default system model and `groq_vision` implementation. |
-| `DASHSCOPE_API_KEY`                | For default Qwen fallback      | Provider key used by the `qwen2.5-omni-7b` implementation. |
-| `GOOGLE_VISION_API_KEY`            | For OCR cascade                | API key used by the first OCR implementation. |
+| `GROQ_API_KEY`                     | Required by the default system model | Provider key for parsing, issue generation, and other infrastructure calls. |
+| `OPENAI_API_KEY`                   | For reasoning evaluation and escalation | Provider key used by the GPT-4o implementation. |
+| `OLLAMA_API_BASE`                  | Optional local Ollama endpoint | Used by the local LLaVA implementation when Ollama is not on its default endpoint. |
+| `GOOGLE_VISION_API_KEY`            | For OCR                        | API key used by the OCR implementation. |
 | `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
 | `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
 | `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |

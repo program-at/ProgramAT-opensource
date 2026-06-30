@@ -21,7 +21,7 @@ If the generated issue explicitly enumerates a `Task Stages` section, generated 
 - The generated tool owns stage composition and artifact handoff.
 - Planner stages contain only `goal` and `capability`.
 
-Task decomposition and capability execution are separate concerns: the issue parser decides which stages are required, and the generated tool invokes those stages in order. Each call executes exactly one capability using the first implementation in the execution policy. Generated tools compose calls but never select implementations or implement retries.
+Task decomposition and capability execution are separate concerns: the issue parser decides which stages are required, and the generated tool invokes those stages in order. Each call executes exactly one capability. The backend may evaluate and escalate reasoning capabilities according to the execution policy; generated tools compose calls but never select implementations or implement retries.
 
 From the Github agent, ALL tools MUST return audio-friendly output. Tool results are automatically spoken aloud via text-to-speech on the mobile device unless another form of audio is specified. Return values should be:
 - Natural language strings that sound good when spoken (not JSON, not code, not cryptic abbreviations)
@@ -141,12 +141,12 @@ vehicle = copilot_llm_call(
 door = copilot_llm_call(
     capability="spatial_reasoning",
     goal="Locate the passenger-side door.",
-    messages=[{"role": "user", "content": f"Vehicle detection: {vehicle['artifact']}"}],
+    metadata={"previous_stage_artifact": vehicle["artifact"]},
 )
 guidance = copilot_llm_call(
     capability="navigation",
     goal="Guide the user toward the door.",
-    messages=[{"role": "user", "content": f"Door location: {door['artifact']}"}],
+    metadata={"previous_stage_artifact": door["artifact"]},
 )
 return guidance["response"]
 ```

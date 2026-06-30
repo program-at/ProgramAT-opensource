@@ -28,14 +28,35 @@ SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "groq/llama-3.1-8b-instant")
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 LEGACY_CAPABILITY_ALIASES = {
     "object_detection": "object_detection_localization",
+    "spatial_relationship": "spatial_reasoning",
+    "map_web": "structured_visual_understanding",
+    "video": "temporal_reasoning",
 }
 NAVIGATION_SYSTEM_PROMPT = (
     "You provide navigation guidance for a blind or low-vision user. "
     "Use previous-stage detection results as the primary source of truth. "
-    "Give concise spoken instructions in at most 2-3 short sentences. "
-    "Do not use a numbered list, conversational filler, 'keep an eye out', "
+    "Use the image only to refine navigation. Give concise spoken instructions "
+    "in at most 2 short sentences. Do not use a numbered list, introduction, "
+    "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
 )
+EVALUATION_PROMPT = """Evaluate the previous response for the requested capability.
+
+Consider:
+- Did it answer the requested capability?
+- Is it actionable?
+- Is it specific enough for a blind or low-vision user?
+- Is important information missing?
+- Does it contradict previous-stage artifacts?
+
+Answer only YES or NO.
+
+Capability: {capability}
+Goal: {goal}
+Previous-stage artifact: {artifact}
+Previous response: {response}
+
+Is the previous response sufficient to accomplish the requested capability for a blind or low-vision user?"""
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 
 
@@ -121,15 +142,46 @@ def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[
     return descriptions
 
 
-def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, List[str]]:
+def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dict[str, Any]]:
+    config = _load_yaml(path)
+    cascade_profiles = config.pop("cascade_profiles", {})
+    if not isinstance(cascade_profiles, dict):
+        raise ExecutionPolicyError("cascade_profiles must be a mapping")
+
     policies = {}
-    for capability, raw in _load_yaml(path).items():
-        if not isinstance(raw, dict) or not isinstance(raw.get("implementations"), list):
-            raise ExecutionPolicyError(f"Capability {capability!r} must define an implementations list")
-        names = [str(value).strip() for value in raw["implementations"] if str(value).strip()]
-        if not names:
-            raise ExecutionPolicyError(f"Capability {capability!r} has no implementations")
-        policies[str(capability).strip()] = names
+    for capability, raw in config.items():
+        if not isinstance(raw, dict):
+            raise ExecutionPolicyError(f"Capability {capability!r} must be a mapping")
+        implementation = str(raw.get("implementation") or "").strip()
+        cascade_name = str(raw.get("cascade") or "").strip()
+        if bool(implementation) == bool(cascade_name):
+            raise ExecutionPolicyError(
+                f"Capability {capability!r} must define exactly one of implementation or cascade"
+            )
+        if implementation:
+            policy = {"candidates": [implementation], "evaluator": None, "cascade": None}
+        else:
+            profile = cascade_profiles.get(cascade_name)
+            if not isinstance(profile, dict):
+                raise ExecutionPolicyError(
+                    f"Capability {capability!r} references unknown cascade profile {cascade_name!r}"
+                )
+            candidates = [
+                str(value).strip()
+                for value in profile.get("candidates", [])
+                if str(value).strip()
+            ]
+            evaluator = str(profile.get("evaluator") or "").strip()
+            if not candidates or not evaluator:
+                raise ExecutionPolicyError(
+                    f"Cascade profile {cascade_name!r} requires candidates and evaluator"
+                )
+            policy = {
+                "candidates": candidates,
+                "evaluator": evaluator,
+                "cascade": cascade_name,
+            }
+        policies[str(capability).strip()] = policy
     taxonomy = set(load_capability_profiles())
     if set(policies) != taxonomy:
         missing = taxonomy - set(policies)
@@ -160,7 +212,7 @@ def load_implementation_profiles(path: Path = MODEL_PROFILES_PATH) -> Dict[str, 
 
 
 def validate_execution_configuration(
-    policies: Optional[Mapping[str, Sequence[str]]] = None,
+    policies: Optional[Mapping[str, Mapping[str, Any]]] = None,
     implementations: Optional[Mapping[str, ImplementationProfile]] = None,
 ) -> None:
     taxonomy = set(load_capability_profiles())
@@ -177,9 +229,15 @@ def validate_execution_configuration(
             f"missing_policies={sorted(missing)}, unknown_policies={sorted(extra)}"
         )
 
-    unknown = {values[0] for values in policies.values() if values[0] not in implementations}
+    configured_names = {
+        name
+        for policy in policies.values()
+        for name in [*policy["candidates"], policy.get("evaluator")]
+        if name
+    }
+    unknown = configured_names - set(implementations)
     if unknown:
-        raise ExecutionPolicyError(f"Unknown first implementations: {', '.join(sorted(unknown))}")
+        raise ExecutionPolicyError(f"Unknown implementations: {', '.join(sorted(unknown))}")
 
 
 def _response_text(response: Any) -> str:
@@ -333,11 +391,9 @@ def copilot_llm_call(
         raise ExecutionPolicyError(
             f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
         )
-    implementation = policies[declared][0]
-    profile = implementations[implementation]
-    executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
-    if executor is None:
-        raise ExecutionPolicyError(f"No executor for implementation kind {profile.kind!r}")
+    policy = policies[declared]
+    candidates = policy["candidates"]
+    evaluator_name = policy.get("evaluator")
 
     call_metadata = dict(metadata or {})
     call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
@@ -347,11 +403,123 @@ def copilot_llm_call(
     call_messages = list(messages or [])
     if declared == "navigation":
         call_messages.insert(0, {"role": "system", "content": NAVIGATION_SYSTEM_PROMPT})
+    previous_artifact = call_metadata.get("previous_stage_artifact")
+    if previous_artifact is not None:
+        call_messages.append({
+            "role": "user",
+            "content": "Previous-stage artifact (primary source of truth): "
+            + json.dumps(previous_artifact, ensure_ascii=False, default=str),
+        })
     if goal:
         call_metadata["goal"] = str(goal)
         call_messages.append({"role": "user", "content": str(goal)})
-    logger.info("[Execution Policy] capability=%s implementation=%s", declared, implementation)
-    output = executor(profile, call_messages, list(images or []), call_metadata)
+    call_images = list(images or [])
+    output = None
+    implementation = ""
+    best_output = None
+    best_implementation = ""
+    selected = False
+    for index, candidate in enumerate(candidates):
+        logger.info("[Execution Policy] capability=%s trying=%s", declared, candidate)
+        try:
+            profile = implementations[candidate]
+            executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
+            if executor is None:
+                raise ExecutionPolicyError(
+                    f"No executor for implementation kind {profile.kind!r}"
+                )
+            candidate_output = executor(profile, call_messages, call_images, call_metadata)
+        except Exception as exc:
+            logger.warning(
+                "[Execution Policy] capability=%s implementation=%s failed=%s",
+                declared,
+                candidate,
+                exc,
+            )
+            continue
+
+        response_text = _response_text(candidate_output.response)
+        if not response_text:
+            logger.warning(
+                "[Execution Policy] capability=%s implementation=%s failed=empty response",
+                declared,
+                candidate,
+            )
+            continue
+
+        best_output = candidate_output
+        best_implementation = candidate
+        logger.info(
+            "[Execution Policy] capability=%s implementation=%s response:\n%s",
+            declared,
+            candidate,
+            response_text,
+        )
+
+        if evaluator_name and index < len(candidates) - 1:
+            try:
+                evaluator_profile = implementations[evaluator_name]
+                evaluator = IMPLEMENTATION_EXECUTORS.get(evaluator_profile.kind)
+                if evaluator is None:
+                    raise ExecutionPolicyError(
+                        f"No executor for evaluator implementation kind {evaluator_profile.kind!r}"
+                    )
+                evaluation = evaluator(
+                    evaluator_profile,
+                    [{
+                        "role": "user",
+                        "content": EVALUATION_PROMPT.format(
+                            capability=declared,
+                            goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
+                            artifact=json.dumps(previous_artifact, ensure_ascii=False, default=str),
+                            response=response_text,
+                        ),
+                    }],
+                    [],
+                    {**call_metadata, "temperature": 0, "max_tokens": 3},
+                )
+                raw_decision = _response_text(evaluation.response).strip().upper()
+                if raw_decision not in {"YES", "NO"}:
+                    raise ValueError("evaluator did not return YES or NO")
+                decision = raw_decision
+            except Exception as exc:
+                logger.warning(
+                    "[Execution Policy] capability=%s evaluator=%s decision=FAILED error=%s",
+                    declared,
+                    evaluator_name,
+                    exc,
+                )
+                continue
+
+            logger.info(
+                "[Execution Policy] capability=%s evaluator=%s decision=%s",
+                declared,
+                evaluator_name,
+                decision,
+            )
+            if decision == "NO":
+                continue
+
+        output = candidate_output
+        implementation = candidate
+        selected = True
+        logger.info("[Execution Policy] capability=%s selected=%s", declared, candidate)
+        break
+
+    if not selected:
+        if best_output is not None:
+            output = best_output
+            implementation = best_implementation
+            logger.info(
+                "[Execution Policy] capability=%s fallback=%s",
+                declared,
+                best_implementation,
+            )
+        else:
+            fallback_text = "Sorry, I couldn't generate guidance from this image."
+            output = ImplementationResult(_simple_response(fallback_text), {"text": fallback_text})
+            implementation = "fallback"
+            logger.warning("[Execution Policy] capability=%s fallback=none", declared)
     artifact = output.artifact
     if artifact is None:
         artifact = {"text": _response_text(output.response)}
@@ -366,6 +534,7 @@ def copilot_llm_call(
 __all__ = [
     "BACKEND_DIR", "MODEL_PROFILES_PATH", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
     "SYSTEM_MODEL", "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
+    "EVALUATION_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
