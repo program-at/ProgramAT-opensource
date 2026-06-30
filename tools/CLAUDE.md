@@ -40,20 +40,22 @@ def main(image, input_data=None):
   the user hears the same thing every ~500ms. Streaming output is capped at ~15 words.
 - **Model-backed work:** treat capability categories as declarations, not
   implementation requirements. Assume each generated tool implements one
-  user-facing task. If the issue enumerates multiple stages, implement those
-  stages sequentially inside the tool and pass intermediate outputs from earlier
-  stages into later stages. Use the existing backend model router
-  through the existing tool-facing client for model selection only. Do
+  user-facing task. If the issue enumerates multiple stages, execute one
+  `copilot_llm_call()` per stage and explicitly pass useful artifact fields to
+  the next call. Use the existing backend model router
+  through the existing tool-facing client for capability execution. Do
   not implement routing, create routers, create capability registries, create
   detector/OCR/LLM wrappers, concrete detector functions, model-backed
   inference, model loading, or provider calls inside a generated tool.
-  Do not ask the router to execute stages, manage workflows, pass outputs
-  between stages, or orchestrate pipelines.
-  Import `copilot_llm_call` from `model_router_client` as the existing Copilot-routed backend entrypoint.
+  Do not choose candidate implementations inside the generated tool.
+  Import `copilot_llm_call` from `model_router_client` for every stage.
   Canonical categories for new tools are `general_reasoning`, `ocr`,
-  `object_detection`, `map_web`, `spatial_relationship`, `navigation`,
-  `camera_motion`, and `video`. Use only these category names. Include
-  `metadata={"tool_name": "...", "route_text": "..."}` for routing logs. Do not
+  `object_detection_localization`, `structured_visual_understanding`,
+  `spatial_reasoning`, `navigation`, `camera_motion`, and
+  `temporal_reasoning`. Use only these category names. Include
+  `metadata={"tool_name": "...", "route_text": "..."}` for routing logs.
+  For `object_detection_localization`, also provide
+  `metadata={"target_labels": ["requested label"]}`. Do not
   hardcode provider/model names, detector names, provider-specific
   `DEFAULT_MODEL` constants, `COCO_CLASSES`, direct `litellm.completion()`
   calls, `YOLO(...)` calls, detector library imports, provider SDK imports,
@@ -77,10 +79,8 @@ def main(image, input_data=None):
 
 1. Create `tools/your_tool.py` with `main(image, input_data)`.
 2. Write a `backend/test_<tool>.py` script and verify with `python test_<tool>.py`.
-3. Default building blocks: express each needed stage capability and call the
-   matching backend-provided capability entrypoint. The generated tool owns
-   sequential stage execution and intermediate outputs; the backend decides
-   concrete models, providers, detector backends, OCR engines, and fallback
-   behavior for each capability call.
+3. Compose planner-produced stages explicitly with ordered `copilot_llm_call()`
+   invocations. The tool owns artifact passing; the backend chooses the first
+   configured implementation for each atomic capability call.
 4. `MODEL_SETUP.md` covers model files; `.github/copilot-instructions.md` has the
    full tool-generation spec. `CONTRIBUTING.md` has the PR and review process.

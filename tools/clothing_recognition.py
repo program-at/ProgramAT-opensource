@@ -146,15 +146,15 @@ def analyze_clothing(
         if api_key:
             metadata['api_key'] = api_key
 
-        response = copilot_llm_call(
-            task_category=TASK_CATEGORY,
+        result = copilot_llm_call(
+            capability=TASK_CATEGORY,
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
             metadata=metadata,
         )
         
         # Extract description
-        description = extract_text(response)
+        description = result['response']
         
         print(f"\n👔 Clothing Analysis:\n{description}\n")
         

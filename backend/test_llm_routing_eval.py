@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Sample Gemini routing-analysis eval on selected route_task_batch tasks.
+"""Sample Gemini semantic-decomposition eval on selected task-corpus entries.
 
 This script:
 1. Picks tasks from route_task_batch.TASKS by index.
-2. Calls the existing system LLM once per task to get routing_analysis and parser-owned pipeline_analysis.
-3. Runs centralized model_router.select_model for model selection only.
+2. Calls the existing system LLM once per task to get an ordered semantic stage list.
+3. Records the ordered execution-policy candidates for each planned capability.
 4. Sleeps between requests to reduce rate-limit risk.
 """
 
@@ -22,7 +22,7 @@ import model_router
 from litellm_utils import extract_text
 from model_router import system_llm_call
 from route_task_batch import TASKS
-from stage_decomposition import build_stage_decomposition_prompt
+from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -70,27 +70,21 @@ def eval_task(task: str, sleep_seconds: float) -> Dict[str, Any]:
     )
     raw = extract_text(response)
     parsed = parse_json_text(raw)
-    routing_analysis = parsed.get("routing_analysis") if isinstance(parsed, dict) else None
-    pipeline_analysis = parsed.get("pipeline_analysis") if isinstance(parsed, dict) else None
-
-    route_result = model_router.select_model(task, routing_analysis=routing_analysis)
+    planner_output = normalize_stage_plan(parsed)
+    stages = planner_output["stages"]
+    capability_sequence = [
+        stage["capability"] for stage in stages
+    ]
+    policies = model_router.load_execution_policies()
 
     row = {
         "task": task,
         "raw_response": raw,
-        "routing_analysis": route_result.get("routing_analysis"),
-        "pipeline_analysis": pipeline_analysis,
-        "selected_model": route_result.get("selected_model"),
-        "top3": [
-            {
-                "model": x.get("model"),
-                "final_score": round(float(x.get("final_score", 0.0)), 4),
-                "task_match_score": round(float(x.get("task_match_score", x.get("capability_score", 0.0))), 4),
-                "latency_match_score": round(float(x.get("latency_match_score", 0.0)), 4),
-            }
-            for x in route_result.get("ranking", [])[:3]
-        ],
-        "capability_count": len(route_result.get("routing_analysis", {}).get("tasks", [])) if route_result.get("routing_analysis") else 0,
+        "planner_output": planner_output,
+        "execution_policies": {
+            capability: policies.get(capability, [])
+            for capability in capability_sequence
+        },
     }
 
     if sleep_seconds > 0:
@@ -134,7 +128,8 @@ def main() -> None:
             result = eval_task(task, args.sleep_seconds)
             result["index"] = idx
             rows.append(result)
-            print(f"  -> selected_model: {result['selected_model']}")
+            capabilities = [stage["capability"] for stage in result["planner_output"]["stages"]]
+            print(f"  -> capabilities: {', '.join(capabilities)}")
         except Exception as exc:
             errors.append({"index": idx, "task": task, "error": str(exc)})
             print(f"  -> ERROR: {exc}")

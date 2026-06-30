@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from stage_decomposition import build_stage_decomposition_prompt
+from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
 
 
 def load_stream_server_function(name: str):
@@ -58,16 +58,16 @@ class TestIssueTemplateGuidance(unittest.TestCase):
 
         self.assertIn("one user-facing task", template)
         self.assertIn("If this issue enumerates multiple stages", template)
-        self.assertIn("pass intermediate outputs from earlier stages into later stages", template)
-        self.assertIn("The model router only selects the most appropriate model for a capability", template)
-        self.assertIn("existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`", template)
-        self.assertIn("spatial_relationship", template)
-        self.assertIn("Choose only from these task categories", template)
+        self.assertIn("one ordered `copilot_llm_call(...)` per stage", template)
+        self.assertIn("first implementation configured", template)
+        self.assertIn("pass useful structured artifacts to later calls", template)
+        self.assertIn("spatial_reasoning", template)
+        self.assertIn("Choose only from these capabilities", template)
         self.assertNotIn("Capability Pipeline", template)
         self.assertNotIn("should either utilize Yolo11", template)
         self.assertNotIn("Google Vision", template)
-        self.assertIn("call `YOLO(...)`", template)
-        self.assertIn("define provider-specific `DEFAULT_MODEL` constants", template)
+        self.assertIn("must not choose implementations", template)
+        self.assertIn("provider-specific `DEFAULT_MODEL` constants", template)
 
 
 class TestParserStageIssueIntegration(unittest.TestCase):
@@ -77,7 +77,7 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.normalize_requirements = load_stream_server_function("_normalize_issue_creation_requirements")
         self.extraction_prompt = load_stream_server_function("_build_issue_extraction_prompt")
         self.merge_outputs = load_stream_server_function("_merge_issue_and_stage_outputs")
-        self.normalize = load_stream_server_function("_normalize_parser_stage_plan")
+        self.normalize = normalize_stage_plan
         self.render = load_stream_server_function("_build_task_stages_markdown")
         self.append_stages = load_stream_server_function("_append_task_stages_to_issue_body")
         self.parse_json = load_stream_server_function("_parse_llm_json_object")
@@ -104,102 +104,127 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         decomposition = build_stage_decomposition_prompt(task)
 
         self.assertIn('"missing_fields"', extraction)
-        self.assertNotIn('"routing_analysis"', extraction)
-        self.assertNotIn('"pipeline_analysis"', extraction)
-        self.assertIn('"routing_analysis"', decomposition)
-        self.assertIn('"pipeline_analysis"', decomposition)
-        self.assertIn("object_detection -> spatial_relationship", decomposition)
-        self.assertIn("spatial_relationship -> navigation", decomposition)
+        self.assertNotIn('"stages"', extraction)
+        self.assertIn('"stages"', decomposition)
+        self.assertIn('"goal"', decomposition)
+        self.assertIn('"capability"', decomposition)
+        self.assertIn("Each stage must contain exactly two fields: goal and capability", decomposition)
         self.assertNotIn('"missing_fields"', decomposition)
 
-    def test_merges_issue_and_stage_outputs_without_changing_schemas(self):
+    def test_merges_only_stages_into_issue_data(self):
         issue_data = {"title": "Find my Uber", "missing_fields": []}
         decomposition_data = {
-            "routing_analysis": {"tasks": [{"name": "navigation", "weight": 1.0}]},
-            "pipeline_analysis": {
-                "should_chain": True,
-                "stages": [{"capability": "object_detection"}, {"capability": "navigation"}],
-            },
+            "stages": [
+                {"goal": "Find the vehicle", "capability": "object_detection_localization"},
+                {"goal": "Guide the user", "capability": "navigation"},
+            ],
         }
 
         merged = self.merge_outputs(issue_data, decomposition_data)
 
         self.assertEqual(merged["title"], "Find my Uber")
-        self.assertIs(merged["routing_analysis"], decomposition_data["routing_analysis"])
-        self.assertIs(merged["pipeline_analysis"], decomposition_data["pipeline_analysis"])
+        self.assertIs(merged["stages"], decomposition_data["stages"])
+        self.assertEqual(set(merged), {"title", "missing_fields", "stages"})
 
     def test_parses_fenced_json_with_trailing_text(self):
         result = self.parse_json(
-            '```json\n{"pipeline_analysis":{"stages":[{"capability":"navigation"}]}}\n```\nDone.'
+            '```json\n{"stages":[{"goal":"Guide the user","capability":"navigation"}]}\n```\nDone.'
         )
 
-        self.assertEqual(
-            result["pipeline_analysis"]["stages"][0]["capability"],
-            "navigation",
-        )
+        self.assertEqual(result["stages"][0]["capability"], "navigation")
 
     def test_preserves_single_stage(self):
         result = self.normalize(
             {
-                "should_chain": False,
                 "stages": [{
-                    "stage_name": "Read label",
                     "goal": "Extract the medication instructions.",
                     "capability": "ocr",
-                    "input": "Current camera frame",
-                    "expected_output": "Extracted label text",
                 }],
             },
             ["ocr", "general_reasoning"],
         )
 
-        self.assertFalse(result["should_chain"])
-        self.assertEqual(len(result["stages"]), 1)
-        self.assertEqual(result["stages"][0]["stage_name"], "Read label")
-        self.assertEqual(result["stages"][0]["expected_output"], "Extracted label text")
+        self.assertEqual(result, {"stages": [{"goal": "Extract the medication instructions.", "capability": "ocr"}]})
 
-    def test_preserves_multi_stage_dependencies(self):
+    def test_preserves_multi_stage_order(self):
         result = self.normalize(
             {
                 "stages": [
                     {
-                        "name": "Find vehicle",
-                        "purpose": "Identify the user's vehicle.",
-                        "capability": "object_detection",
-                        "output": "Vehicle location and description",
+                        "goal": "Identify the user's vehicle.",
+                        "capability": "object_detection_localization",
                     },
                     {
-                        "name": "Find handle",
-                        "purpose": "Locate the passenger-side handle.",
-                        "capability": "spatial_relationship",
-                        "input": "Vehicle information from Stage 1",
-                        "output": "Door handle location",
+                        "goal": "Locate the passenger-side handle.",
+                        "capability": "spatial_reasoning",
                     },
                 ],
             },
-            ["object_detection", "spatial_relationship"],
+            ["object_detection_localization", "spatial_reasoning"],
         )
 
-        self.assertTrue(result["should_chain"])
-        self.assertEqual(len(result["stages"]), 2)
-        self.assertEqual(result["stages"][1]["input"], "Vehicle information from Stage 1")
+        self.assertEqual(
+            result["stages"],
+            [
+                {"goal": "Identify the user's vehicle.", "capability": "object_detection_localization"},
+                {"goal": "Locate the passenger-side handle.", "capability": "spatial_reasoning"},
+            ],
+        )
+        self.assertTrue(all(set(stage) == {"goal", "capability"} for stage in result["stages"]))
+
+    def test_rejects_fields_outside_the_planner_schema(self):
+        with self.assertRaisesRegex(ValueError, "only goal and capability"):
+            self.normalize(
+                {
+                    "stages": [{
+                        "goal": "Read the label.",
+                        "capability": "ocr",
+                        "extra": "not allowed",
+                    }],
+                },
+                ["ocr"],
+            )
+
+        with self.assertRaisesRegex(ValueError, "only the stages field"):
+            self.normalize(
+                {
+                    "stages": [{"goal": "Read the label.", "capability": "ocr"}],
+                    "extra": "not allowed",
+                },
+                ["ocr"],
+            )
+
+    def test_rejects_empty_stage_list(self):
+        with self.assertRaisesRegex(ValueError, "non-empty stages list"):
+            self.normalize({"stages": []}, ["ocr"])
+
+    def test_rejects_unknown_capability_name(self):
+        with self.assertRaisesRegex(ValueError, "unknown capability"):
+            self.normalize(
+                {
+                    "stages": [{
+                        "goal": "Find the target object.",
+                        "capability": "not_a_real_capability",
+                    }],
+                },
+                ["object_detection_localization", "navigation"],
+            )
 
     def test_issue_flow_contains_task_stages_section_and_logging(self):
         source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
         stage_plan = {
             "stages": [{
-                "stage_name": "Find handle",
                 "goal": "Locate the passenger-side handle.",
-                "capability": "spatial_relationship",
-                "input": "Vehicle information from Stage 1",
-                "expected_output": "Door handle location",
+                "capability": "spatial_reasoning",
             }],
         }
         markdown = self.render(stage_plan)
 
         self.assertIn("## Task Stages", markdown)
-        self.assertIn("### Find handle", markdown)
-        self.assertIn("**Input dependencies:** Vehicle information from Stage 1", markdown)
+        self.assertIn("### Stage 1", markdown)
+        self.assertIn("**Goal:** Locate the passenger-side handle.", markdown)
+        self.assertNotIn("Input dependencies", markdown)
+        self.assertNotIn("Expected output", markdown)
         self.assertIn("Including Task Stages in GitHub issue", source)
         self.assertIn("Issue body stage handoff", source)
         self.assertIn("Issue creation stopped because stage decomposition failed", source)
@@ -208,38 +233,29 @@ class TestParserStageIssueIntegration(unittest.TestCase):
     def test_uber_stage_plan_reaches_issue_markdown(self):
         plan = self.normalize(
             {
-                "should_chain": True,
                 "stages": [
                     {
-                        "stage_name": "Identify vehicle",
                         "goal": "Identify the white Toyota Camry with plate ABC123.",
-                        "capability": "object_detection",
-                        "expected_output": "Vehicle location and description",
+                        "capability": "object_detection_localization",
                     },
                     {
-                        "stage_name": "Locate passenger door",
                         "goal": "Locate the passenger-side door.",
-                        "capability": "spatial_relationship",
-                        "input": "Vehicle information from Stage 1",
-                        "expected_output": "Passenger-side door location",
+                        "capability": "spatial_reasoning",
                     },
                     {
-                        "stage_name": "Guide user",
                         "goal": "Guide the user toward the passenger-side door.",
                         "capability": "navigation",
-                        "input": "Door location from Stage 2",
-                        "expected_output": "Walking guidance",
                     },
                 ],
             },
-            ["object_detection", "spatial_relationship", "navigation"],
+            ["object_detection_localization", "spatial_reasoning", "navigation"],
         )
         markdown = self.render(plan)
 
         self.assertIn("## Task Stages", markdown)
-        self.assertIn("### Identify vehicle", markdown)
-        self.assertIn("### Locate passenger door", markdown)
-        self.assertIn("### Guide user", markdown)
+        self.assertIn("### Stage 1", markdown)
+        self.assertIn("### Stage 2", markdown)
+        self.assertIn("### Stage 3", markdown)
 
         complete = self.normalize_requirements(
             {
@@ -255,8 +271,8 @@ class TestParserStageIssueIntegration(unittest.TestCase):
 
         self.assertEqual(complete["missing_fields"], [])
         self.assertIn("## Task Stages", body)
-        self.assertIn("### Guide user", body)
-        self.assertNotIn("selected_model", body)
+        self.assertIn("### Stage 3", body)
+        self.assertEqual(body, f"**Feature Description**\nUber guidance\n\n{markdown}\n")
 
     def test_issue_creation_path_does_not_call_model_router(self):
         source_path = Path(__file__).resolve().parent / "stream_server.py"
@@ -371,7 +387,7 @@ class TestTemplateFilling(unittest.TestCase):
             'type': 'visual AT',
             'description': 'Object detection tool',
             'problem': 'Need to identify objects in environment',
-            'solution': 'Declare object_detection capability and use the backend capability layer',
+            'solution': 'Declare object_detection_localization capability and use the backend capability layer',
             'example_usage': 'User points camera at table, tool identifies cup and phone'
         }
         
@@ -379,7 +395,7 @@ class TestTemplateFilling(unittest.TestCase):
         
         self.assertIn('Object detection tool', result)
         self.assertIn('Need to identify objects in environment', result)
-        self.assertIn('Declare object_detection capability and use the backend capability layer', result)
+        self.assertIn('Declare object_detection_localization capability and use the backend capability layer', result)
         self.assertIn('User points camera at table, tool identifies cup and phone', result)
         self.assertNotIn('<!--', result.replace('<!--', '', 1))  # Check most placeholders replaced
     
@@ -514,7 +530,7 @@ class TestDataMerging(unittest.TestCase):
             'title': '',
             'description': '',
             'problem': 'Hard to identify objects',
-            'solution': 'Declare object_detection capability and use the backend capability layer',
+            'solution': 'Declare object_detection_localization capability and use the backend capability layer',
             'example_usage': 'Point camera at table to identify items',
             'missing_fields': []
         }
@@ -527,7 +543,7 @@ class TestDataMerging(unittest.TestCase):
         
         # Should add new fields
         self.assertEqual(merged['problem'], 'Hard to identify objects')
-        self.assertEqual(merged['solution'], 'Declare object_detection capability and use the backend capability layer')
+        self.assertEqual(merged['solution'], 'Declare object_detection_localization capability and use the backend capability layer')
         self.assertEqual(merged['example_usage'], 'Point camera at table to identify items')
         
         # Should update missing_fields to empty

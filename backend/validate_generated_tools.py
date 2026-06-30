@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
@@ -37,16 +39,19 @@ ALLOWED_SHARED_TOOL_FILES = {
     "model_router_client.py",
 }
 
-CANONICAL_TASK_CATEGORIES = {
-    "general_reasoning",
-    "ocr",
-    "object_detection",
-    "map_web",
-    "spatial_relationship",
-    "navigation",
-    "camera_motion",
-    "video",
-}
+CAPABILITY_PROFILES_PATH = REPO_ROOT / "backend" / "capability_profiles.yaml"
+
+
+def _load_canonical_task_categories() -> frozenset[str]:
+    with CAPABILITY_PROFILES_PATH.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    capabilities = data.get("capabilities", {})
+    if not isinstance(capabilities, dict) or not capabilities:
+        raise ValueError(f"No capabilities configured in {CAPABILITY_PROFILES_PATH}")
+    return frozenset(str(name) for name in capabilities)
+
+
+CANONICAL_TASK_CATEGORIES = _load_canonical_task_categories()
 
 
 def _extract_task_stages_section(issue_text: str) -> str:
@@ -112,7 +117,7 @@ def extract_copilot_llm_task_categories(tool_text: str) -> List[Optional[str]]:
 
         category: Optional[str] = None
         for kw in node.keywords:
-            if kw.arg != "task_category":
+            if kw.arg not in {"capability", "task_category"}:
                 continue
             if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
                 category = kw.value.value
@@ -131,45 +136,12 @@ def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) 
     if not stage_capabilities:
         return failures
 
-    categories = extract_copilot_llm_task_categories(tool_text)
-    if len(categories) < len(stage_capabilities):
+    actual_capabilities = extract_copilot_llm_task_categories(tool_text)
+    if actual_capabilities != stage_capabilities:
         failures.append(
-            f"{rel_path}: Task Stages lists {len(stage_capabilities)} model-backed stage(s), "
-            f"but tool has only {len(categories)} copilot_llm_call() call(s)."
+            f"{rel_path}: ordered copilot_llm_call capabilities {actual_capabilities} do not match "
+            f"Task Stages {stage_capabilities}."
         )
-
-    unresolved_indexes = [index + 1 for index, category in enumerate(categories) if category is None]
-    if unresolved_indexes:
-        failures.append(
-            f"{rel_path}: copilot_llm_call() missing resolvable task_category at call(s) {unresolved_indexes}."
-        )
-
-    for index, category in enumerate(categories):
-        if category is None:
-            continue
-        if category not in CANONICAL_TASK_CATEGORIES:
-            failures.append(
-                f"{rel_path}: non-canonical task_category '{category}' in copilot_llm_call #{index + 1}."
-            )
-
-    comparable_length = min(len(stage_capabilities), len(categories))
-    for index in range(comparable_length):
-        actual = categories[index]
-        expected = stage_capabilities[index]
-        if actual is None:
-            continue
-        if actual != expected:
-            failures.append(
-                f"{rel_path}: Task Stage {index + 1} requires task_category '{expected}', "
-                f"found '{actual}'."
-            )
-
-    if len(stage_capabilities) > 1 and len(set(stage_capabilities)) > 1 and len(categories) == 1:
-        only_category = categories[0]
-        if only_category is None or only_category not in stage_capabilities:
-            failures.append(
-                f"{rel_path}: multiple stage capabilities {stage_capabilities} cannot be combined into a single call."
-            )
 
     return failures
 
@@ -181,7 +153,7 @@ def validate_canonical_task_categories(tool_text: str, rel_path: Path) -> List[s
 
     if unresolved_indexes:
         failures.append(
-            f"{rel_path}: copilot_llm_call() missing resolvable task_category at call(s) {unresolved_indexes}."
+            f"{rel_path}: copilot_llm_call() missing resolvable capability at call(s) {unresolved_indexes}."
         )
 
     for index, category in enumerate(categories):
@@ -189,7 +161,7 @@ def validate_canonical_task_categories(tool_text: str, rel_path: Path) -> List[s
             continue
         if category not in CANONICAL_TASK_CATEGORIES:
             failures.append(
-                f"{rel_path}: non-canonical task_category '{category}' in copilot_llm_call #{index + 1}."
+                f"{rel_path}: non-canonical capability '{category}' in copilot_llm_call #{index + 1}."
             )
 
     return failures
@@ -265,10 +237,10 @@ def main(argv: List[str] | None = None) -> int:
 
     failures = validate_files(paths, issue_text=issue_text)
     if failures:
-        print("Generated tools must use from model_router_client import copilot_llm_call for LLM/VLM operations.")
+        print("Generated tools must use model_router_client capability interfaces for LLM/VLM operations.")
         print("Do not implement detection, OCR, VLM, LLM, model loading, provider calls, or model discovery in tool files.")
         print(
-            "When Task Stages are provided, map each model-backed stage to one copilot_llm_call() and use canonical task_category values."
+            "When Task Stages are provided, compose one ordered copilot_llm_call() per stage."
         )
         print()
         for failure in failures:

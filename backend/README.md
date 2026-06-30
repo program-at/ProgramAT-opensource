@@ -33,31 +33,27 @@ The server uses environment variables for configuration:
 
 - `SYSTEM_LLM_MODEL`: Fixed infrastructure model used for parsing, template filling, issue generation, and other ProgramAT internal LLM work. Defaults to `groq/llama-3.1-8b-instant`.
 
-- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GROQ_API_KEY`, or `MISTRAL_API_KEY`.
+- Provider API keys: the default execution policies use `GROQ_API_KEY`, `DASHSCOPE_API_KEY`, and `GOOGLE_VISION_API_KEY`.
   - System calls use the fixed system model.
-  - Copilot/tool-facing calls use the semantic router and the selected profile's `model` value from `backend/model_profiles.yaml`.
-- Local Ollama models remain optional. Set `OLLAMA_API_BASE` if you override a routed model to an Ollama model and your Ollama server is not at `http://localhost:11434`.
+  - Each take-photo capability call uses the first implementation defined in `backend/execution_policy.yaml`.
 
 ### LLM Interfaces
 
-ProgramAT separates fixed infrastructure LLM calls from Copilot-routed model selection.
+ProgramAT separates fixed infrastructure LLM calls from take-photo capability execution.
 
-Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses the fixed `SYSTEM_LLM_MODEL` configuration and bypasses the semantic router.
+Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses the fixed `SYSTEM_LLM_MODEL` configuration and bypasses execution policies.
 
-Copilot/tool-facing model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. This path uses semantic capability matching, YAML model profiles, and latency-aware scoring:
+Take-photo model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. The declared capability selects the first configured implementation:
 
 ```yaml
-models:
-  Gemini-2.5-pro:
-    type: general_vlm
-    model: gemini/gemini-2.5-pro
-    latency_ms: 1200
-    source: benchmark
-    capabilities:
-      general_reasoning: 1.0
+ocr:
+  implementations:
+    - google_vision
 ```
 
-Add or edit `backend/model_profiles.yaml` and `backend/capability_profiles.yaml` to change Copilot routing behavior.
+Edit `backend/execution_policy.yaml` to choose an implementation and `backend/model_profiles.yaml` to change concrete implementation metadata.
+
+`copilot_llm_call(...)` returns a dictionary containing `response`, `artifact`, `implementation`, and `capability`. Generated tools execute planner-produced stages as explicit ordered calls and decide which artifact fields to pass to each subsequent call. The backend does not run capability sequences.
 
 ### Optional
 

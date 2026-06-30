@@ -301,7 +301,7 @@ def analyze_scene(
         prompt = build_scene_prompt(detail_level, focus, context)
         print(f"📋 Detail level: {detail_level}, Focus: {focus}")
         
-        response = copilot_llm_call(
+        result = copilot_llm_call(
             capability='general_reasoning',
             messages=[{'role': 'user', 'content': prompt}],
             images=[image_data_uri],
@@ -309,7 +309,7 @@ def analyze_scene(
         )
         
         # Extract description
-        description = extract_text(response)
+        description = result['response']
         
         print(f"\n📋 Scene Description:\n{description}\n")
         

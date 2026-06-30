@@ -10,8 +10,8 @@ TOOL_NAME = "router_reachability_test"
 
 def main(image, input_data=None):
     prompt = "Reply with one short sentence confirming that the image was received."
-    return copilot_llm_call(
-        task_category="general_reasoning",
+    result = copilot_llm_call(
+        capability="general_reasoning",
         messages=[
             {"role": "system", "content": "Keep responses concise and audio-friendly."},
             {"role": "user", "content": prompt},
@@ -22,3 +22,4 @@ def main(image, input_data=None):
             "route_text": "minimal generated tool reachability test for a general reasoning call",
         },
     )
+    return result["response"]

@@ -1,142 +1,19 @@
-models:
-  Gemini-2.5-pro:
-    type: general_vlm
-    model: gemini/gemini-2.5-pro
-    latency_ms: 1200
-    latency: 0.76
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.736
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.000
-      spatial_relationship: 0.000
-      navigation: 0.672
-      camera_motion: 0.282
-      video: 0.000
+implementations:
+  groq_vision:
+    kind: model
+    model: ollama/llava:7b
 
-  GPT-4.1:
-    type: general_vlm
-    model: openai/gpt-4.1
-    latency_ms: 2500
-    latency: 0.50
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.698
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.780
-      spatial_relationship: 0.787
-      navigation: 0.558
-      camera_motion: 0.000
-      video: 0.000
-
-  Qwen2.5-VL-72B:
-    type: general_vlm
+  qwen2.5-omni-7b:
+    kind: model
     model: dashscope/qwen2.5-vl-72b-instruct
-    latency_ms: 1800
-    latency: 0.64
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.705
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.795
-      spatial_relationship: 0.753
-      navigation: 0.000
-      camera_motion: 0.274
-      video: 0.686
 
-  Qwen2.5-VL-7B:
-    type: general_vlm
-    model: dashscope/qwen2.5-vl-7b-instruct
-    latency_ms: 900
-    latency: 0.82
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.641
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.770
-      spatial_relationship: 0.684
-      navigation: 0.000
-      camera_motion: 0.259
-      video: 0.628
+  google_vision:
+    kind: google_vision
 
-  GPT-4o:
-    type: general_vlm
-    model: openai/gpt-4o
-    latency_ms: 1200
-    latency: 0.76
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.647
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.767
-      spatial_relationship: 0.765
-      navigation: 0.000
-      camera_motion: 0.298
-      video: 0.676
+  yolo:
+    kind: yolo
+    model_name: yolo11n.pt
 
-  LLaVA-OneVision-7B:
-    type: general_vlm
-    model: openrouter/llava/llava-onevision-qwen2-7b-ov
-    latency_ms: 650
-    latency: 0.87
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.619
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.767
-      spatial_relationship: 0.699
-      navigation: 0.000
-      camera_motion: 0.000
-      video: 0.000
-
-  LLaVA-Video-7B:
-    type: general_vlm
-    model: openrouter/lmms-lab/llava-video-7b-qwen2
-    latency_ms: 750
-    latency: 0.85
-    source: benchmark
-    capabilities:
-      general_reasoning: 0.000
-      ocr: 0.000
-      object_detection: 0.000
-      map_web: 0.000
-      spatial_relationship: 0.000
-      navigation: 0.000
-      camera_motion: 0.241
-      video: 0.637
-
-  YOLO-World:
-    type: specialized_expert
-    latency_ms: 80
-    latency: 0.98
-    source: specialized_expert
-    capabilities:
-      general_reasoning: 0.000
-      ocr: 0.000
-      object_detection: 1.000
-      map_web: 0.000
-      spatial_relationship: 0.000
-      navigation: 0.000
-      camera_motion: 0.000
-      video: 0.000
-
-  GoogleVisionOCR:
-    type: specialized_expert
-    latency_ms: 300
-    latency: 0.94
-    source: specialized_expert
-    capabilities:
-      general_reasoning: 0.000
-      ocr: 1.000
-      object_detection: 0.000
-      map_web: 0.000
-      spatial_relationship: 0.000
-      navigation: 0.000
-      camera_motion: 0.000
-      video: 0.000
+  groundingdino:
+    kind: groundingdino
+    model_name: IDEA-Research/grounding-dino-tiny

@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
-"""Benchmark VLM latency on a single image for non-Qwen models.
+"""Benchmark configured VLM implementation latency on a single image.
 
-This script measures end-to-end latency for VLMs listed in model_profiles.yaml,
-excluding any model whose name or model id contains "qwen".
-
-Supported execution modes:
-- Remote/API models: use the existing LiteLLM call path.
-- Local open-source models: use Transformers for LLaVA-OneVision and LLaVA-Video.
+This script measures end-to-end latency for model implementations listed in
+model_profiles.yaml through the same LiteLLM call path used at runtime.
 
 The script writes a JSON report with timings and a short response preview for each model.
 You can also run grouped benchmarks with --group:
-- all: all non-Qwen VLMs
-- gemini: only Gemini models
-- llava: only LLaVA models
-- others: non-Gemini and non-LLaVA models
+- all: every configured VLM
+- groq: Groq implementations
+- dashscope: DashScope implementations
 """
 
 from __future__ import annotations
@@ -29,19 +24,13 @@ from PIL import Image
 
 import model_router
 from litellm_utils import extract_text
-from model_router import load_model_profiles
+from model_router import load_implementation_profiles
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
 DEFAULT_IMAGE = BACKEND_DIR / "latency_test_image.jpg"
 DEFAULT_OUT = BACKEND_DIR / "vlm_latency_results.json"
 DEFAULT_PROMPT = "Briefly describe the image and mention the main objects or text."
-
-LOCAL_TRANSFORMER_MODELS = {
-    "LLaVA-OneVision-7B": "lmms-lab/llava-onevision-qwen2-7b-ov",
-    "LLaVA-Video-7B": "lmms-lab/LLaVA-Video-7B-Qwen2",
-}
-
 
 @dataclass
 class BenchmarkResult:
@@ -60,39 +49,15 @@ def _normalize_name(value: str) -> str:
     return str(value or "").strip().lower()
 
 
-def _is_qwen_profile(profile: Any) -> bool:
-    # Exclude explicit Qwen profile entries only.
-    # Some non-Qwen profiles (e.g. LLaVA variants) may contain "qwen" in their
-    # upstream model id but should still be benchmarked.
-    name = _normalize_name(getattr(profile, "name", ""))
-    return name.startswith("qwen")
-
-
-def _is_gemini_profile(profile: Any) -> bool:
-    name = _normalize_name(getattr(profile, "name", ""))
+def _provider(profile: Any) -> str:
     model = _normalize_name(getattr(profile, "model", ""))
-    return name.startswith("gemini") or model.startswith("gemini/")
+    return model.split("/", 1)[0]
 
 
-def _is_llava_profile(profile: Any) -> bool:
-    name = _normalize_name(getattr(profile, "name", ""))
-    model = _normalize_name(getattr(profile, "model", ""))
-    return "llava" in name or "llava" in model
-
-
-def _select_profiles(group: Literal["all", "gemini", "llava", "others"] = "all") -> List[Any]:
-    profiles = [profile for profile in load_model_profiles() if getattr(profile, "type", "") == "general_vlm"]
-    profiles = [profile for profile in profiles if not _is_qwen_profile(profile)]
-    if group == "gemini":
-        return [profile for profile in profiles if _is_gemini_profile(profile)]
-    if group == "llava":
-        return [profile for profile in profiles if _is_llava_profile(profile)]
-    if group == "others":
-        return [
-            profile
-            for profile in profiles
-            if not _is_gemini_profile(profile) and not _is_llava_profile(profile)
-        ]
+def _select_profiles(group: Literal["all", "groq", "dashscope"] = "all") -> List[Any]:
+    profiles = [profile for profile in load_implementation_profiles().values() if profile.kind == "model"]
+    if group != "all":
+        return [profile for profile in profiles if _provider(profile) == group]
     return profiles
 
 
@@ -146,131 +111,14 @@ def _benchmark_api_model(profile: Any, image: Image.Image, prompt: str) -> Bench
         )
 
 
-def _build_transformers_messages(prompt: str, image: Image.Image) -> List[Dict[str, Any]]:
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
-
-
-def _benchmark_local_model(profile: Any, image: Image.Image, prompt: str, model_id: str) -> BenchmarkResult:
-    try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoModelForImageTextToText, AutoProcessor
-    except Exception as exc:
-        return BenchmarkResult(
-            profile_name=profile.name,
-            profile_model=model_id,
-            backend="transformers",
-            status="error",
-            load_time_s=None,
-            inference_time_s=None,
-            total_time_s=None,
-            response_text="",
-            error=f"Transformers backend unavailable: {exc}",
-        )
-
-    load_started = time.perf_counter()
-    try:
-        processor = AutoProcessor.from_pretrained(model_id, trust_remote_code=True)
-        try:
-            model = AutoModelForImageTextToText.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-            )
-        except Exception:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-                device_map="auto" if torch.cuda.is_available() else None,
-            )
-        model.eval()
-        load_time_s = time.perf_counter() - load_started
-
-        inference_started = time.perf_counter()
-        messages = _build_transformers_messages(prompt, image)
-
-        try:
-            chat_text = processor.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-            inputs = processor(
-                text=chat_text,
-                images=image,
-                return_tensors="pt",
-            )
-        except Exception:
-            inputs = processor(
-                text=prompt,
-                images=image,
-                return_tensors="pt",
-            )
-
-        target_device = getattr(model, "device", None)
-        if target_device is None:
-            target_device = next(model.parameters()).device
-
-        if hasattr(inputs, "to"):
-            inputs = inputs.to(target_device)
-        else:
-            inputs = {key: value.to(target_device) if hasattr(value, "to") else value for key, value in inputs.items()}
-
-        with torch.no_grad():
-            outputs = model.generate(**inputs, max_new_tokens=96)
-
-        inference_time_s = time.perf_counter() - inference_started
-        token_start = inputs["input_ids"].shape[-1] if isinstance(inputs, dict) and "input_ids" in inputs else 0
-        try:
-            response_text = processor.decode(outputs[0][token_start:], skip_special_tokens=True)
-        except Exception:
-            response_text = processor.decode(outputs[0], skip_special_tokens=True)
-
-        total_time_s = time.perf_counter() - load_started
-        return BenchmarkResult(
-            profile_name=profile.name,
-            profile_model=model_id,
-            backend="transformers",
-            status="ok",
-            load_time_s=round(load_time_s, 4),
-            inference_time_s=round(inference_time_s, 4),
-            total_time_s=round(total_time_s, 4),
-            response_text=response_text,
-        )
-    except Exception as exc:
-        total_time_s = time.perf_counter() - load_started
-        return BenchmarkResult(
-            profile_name=profile.name,
-            profile_model=model_id,
-            backend="transformers",
-            status="error",
-            load_time_s=round(time.perf_counter() - load_started, 4),
-            inference_time_s=None,
-            total_time_s=round(total_time_s, 4),
-            response_text="",
-            error=str(exc),
-        )
-
-
 def benchmark_model(profile: Any, image: Image.Image, prompt: str) -> BenchmarkResult:
-    if profile.name in LOCAL_TRANSFORMER_MODELS:
-        return _benchmark_local_model(profile, image, prompt, LOCAL_TRANSFORMER_MODELS[profile.name])
     return _benchmark_api_model(profile, image, prompt)
 
 
 def run_benchmark(
     image_path: Path,
     prompt: str,
-    group: Literal["all", "gemini", "llava", "others"] = "all",
+    group: Literal["all", "groq", "dashscope"] = "all",
 ) -> Dict[str, Any]:
     image = _load_image(image_path)
     profiles = _select_profiles(group=group)
@@ -318,7 +166,7 @@ def main() -> None:
     parser.add_argument(
         "--group",
         type=str,
-        choices=["all", "gemini", "llava", "others"],
+        choices=["all", "groq", "dashscope"],
         default="all",
         help="Model group to benchmark",
     )

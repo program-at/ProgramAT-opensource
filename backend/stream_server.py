@@ -34,13 +34,12 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
     load_capability_profiles,
-    normalize_routing_analysis,
     system_llm_call,
 )
 from litellm_utils import (
     extract_text,
 )
-from stage_decomposition import build_stage_decomposition_prompt
+from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
 from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
@@ -132,67 +131,6 @@ def _extract_issue_section(body: str, *section_names: str) -> str:
     return match.group(1).strip() if match else ''
 
 
-def _format_capability_profiles_for_prompt() -> tuple[str, list[str]]:
-    profiles = load_capability_profiles()
-    names = sorted(profiles.keys())
-    lines = []
-    for name in names:
-        profile = profiles[name]
-        description = profile.get('description', '')
-        include_examples = profile.get('include_examples', [])
-        exclude_examples = profile.get('exclude_examples', [])
-        notes = profile.get('notes', '')
-        lines.append(f"- {name}")
-        if description:
-            lines.append(f"  description: {description}")
-        if include_examples:
-            lines.append("  includes:")
-            lines.extend(f"    - {example}" for example in include_examples)
-        if exclude_examples:
-            lines.append("  excludes:")
-            lines.extend(f"    - {example}" for example in exclude_examples)
-        if notes:
-            lines.append(f"  notes: {notes}")
-    return "\n".join(lines), names
-
-
-def _normalize_parser_stage_plan(raw_plan: Any, supported_capabilities: List[str]) -> Dict[str, Any]:
-    """Normalize the parser's existing stage-decomposition output for issue generation."""
-    plan = raw_plan if isinstance(raw_plan, dict) else {}
-    supported = {str(name).strip().lower() for name in supported_capabilities}
-    stages: List[Dict[str, str]] = []
-
-    for index, raw_stage in enumerate(plan.get('stages') or [], start=1):
-        if not isinstance(raw_stage, dict):
-            continue
-        capability = str(raw_stage.get('capability', '')).strip().lower()
-        if capability not in supported:
-            logger.warning("Parser returned unknown capability: %s", capability)
-            continue
-        stages.append({
-            'stage_name': str(
-                raw_stage.get('stage_name') or raw_stage.get('name') or f'Stage {index}'
-            ).strip(),
-            'goal': str(raw_stage.get('goal') or raw_stage.get('purpose') or '').strip(),
-            'capability': capability,
-            'input': str(raw_stage.get('input') or '').strip(),
-            'expected_output': str(
-                raw_stage.get('expected_output') or raw_stage.get('output') or ''
-            ).strip(),
-        })
-
-    return {
-        'should_chain': len(stages) > 1,
-        'reason': str(plan.get('reason') or '').strip(),
-        'stages': stages,
-        'artifact_value_score': plan.get('artifact_value_score', 0.0),
-        'information_reduction': plan.get('information_reduction', 'none'),
-        'artifact_gain': plan.get('artifact_gain', 0.0),
-        'complexity_penalty': plan.get('complexity_penalty', 0.0),
-        'pipeline_score': plan.get('pipeline_score', 0.0),
-    }
-
-
 def _parse_llm_json_object(raw_text: str) -> Dict[str, Any]:
     """Parse the first JSON object from a structured LLM response."""
     text = str(raw_text or '').strip()
@@ -220,19 +158,11 @@ def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
 
     stages = stage_plan.get('stages') or []
     for index, stage in enumerate(stages, start=1):
-        stage_title = stage.get('stage_name') or f"Stage {index}"
         lines.extend([
-            f"### {stage_title}",
+            f"### Stage {index}",
             "",
             f"- **Goal:** {stage.get('goal') or 'Not specified'}",
             f"- **Capability:** {stage.get('capability') or 'Not specified'}",
-        ])
-        if stage.get('input'):
-            lines.append(f"- **Input dependencies:** {stage.get('input')}")
-        else:
-            lines.append("- **Input dependencies:** Original user request and current input")
-        lines.extend([
-            f"- **Expected output:** {stage.get('expected_output') or 'Not specified'}",
             "",
         ])
 
@@ -244,23 +174,8 @@ def _append_task_stages_to_issue_body(
     stage_plan: Dict[str, Any],
 ) -> str:
     stages_section = _build_task_stages_markdown(stage_plan)
-    metadata_value = {
-        'execution_mode': 'sequential_stages' if len(stage_plan.get('stages') or []) > 1 else 'single_model',
-        'recommended_stage_count': len(stage_plan.get('stages') or []),
-        'stages': stage_plan.get('stages') or [],
-    }
-    metadata = json.dumps(metadata_value, indent=2, ensure_ascii=False)
-    metadata_section = "\n".join(
-        [
-            "## Parser Stage Metadata",
-            "",
-            "```json",
-            metadata,
-            "```",
-        ]
-    )
     base = (body or '').rstrip()
-    return f"{base}\n\n{stages_section}\n\n{metadata_section}\n"
+    return f"{base}\n\n{stages_section}\n"
 
 # Configuration
 HOST = os.environ.get('HOST', '127.0.0.1')
@@ -3322,8 +3237,7 @@ def _build_issue_extraction_prompt(transcript: str, existing_data: Optional[dict
             key: value
             for key, value in existing_data.items()
             if key not in {
-                'missing_fields', 'routing_analysis', 'pipeline_analysis',
-                'original_prompts',
+                'missing_fields', 'stages', 'original_prompts',
             }
             and value
         }
@@ -3362,7 +3276,7 @@ Only block creation when the core task is genuinely unclear.
 - live_mode is optional when not explicitly stated.
 - If live_mode is "yes" and live_query is empty, include "live_query" in missing_fields.
 - If live_mode is "no", live_query is optional and must not be included in missing_fields.
-- Do not return routing_analysis, pipeline_analysis, capabilities, or stages.
+- Do not return stages; task decomposition is handled separately.
 
 Return ONLY this JSON object:
 {{
@@ -3395,8 +3309,7 @@ def _merge_issue_and_stage_outputs(
     decomposition_data: Dict[str, Any],
 ) -> Dict[str, Any]:
     merged = dict(issue_data)
-    merged['routing_analysis'] = decomposition_data.get('routing_analysis')
-    merged['pipeline_analysis'] = decomposition_data.get('pipeline_analysis')
+    merged['stages'] = decomposition_data.get('stages')
     return merged
 
 
@@ -3449,7 +3362,11 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         try:
             capability_names = sorted(load_capability_profiles())
         except Exception:
-            capability_names = ['general_reasoning', 'ocr', 'object_detection', 'map_web', 'spatial_relationship', 'navigation', 'camera_motion', 'video']
+            capability_names = [
+                'general_reasoning', 'ocr', 'object_detection_localization',
+                'structured_visual_understanding', 'spatial_reasoning',
+                'navigation', 'camera_motion', 'temporal_reasoning',
+            ]
 
         issue_prompt = _build_issue_extraction_prompt(transcript, existing_data)
         issue_response = system_llm_call(
@@ -3481,37 +3398,26 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             json.dumps(decomposition_data, ensure_ascii=False),
         )
 
-        parsed_data = _merge_issue_and_stage_outputs(issue_data, decomposition_data)
+        normalized_decomposition = normalize_stage_plan(
+            decomposition_data,
+            capability_names,
+        )
+        parsed_data = _merge_issue_and_stage_outputs(issue_data, normalized_decomposition)
         logger.info(
             "Merged parser output=%s",
             json.dumps(parsed_data, ensure_ascii=False),
         )
 
-        raw_stage_plan = parsed_data.get('pipeline_analysis')
-        raw_stages = raw_stage_plan.get('stages') if isinstance(raw_stage_plan, dict) else []
+        raw_stages = parsed_data.get('stages')
         logger.info(
-            "Parser raw stage plan present=%s stage_count=%s",
-            isinstance(raw_stage_plan, dict),
+            "Planner raw stages present=%s stage_count=%s",
+            isinstance(raw_stages, list),
             len(raw_stages) if isinstance(raw_stages, list) else 0,
         )
 
-        normalized_routing_analysis = normalize_routing_analysis(
-            parsed_data.get('routing_analysis'),
-            supported_capabilities=capability_names,
-        )
-        if normalized_routing_analysis:
-            parsed_data['routing_analysis'] = normalized_routing_analysis
-        elif 'routing_analysis' in parsed_data:
-            # Keep backward compatibility by allowing invalid field to be dropped.
-            parsed_data.pop('routing_analysis', None)
-
-        parsed_data['pipeline_analysis'] = _normalize_parser_stage_plan(
-            parsed_data.get('pipeline_analysis'),
-            capability_names,
-        )
         logger.info(
-            "Parser normalized stage_count=%s",
-            len(parsed_data['pipeline_analysis'].get('stages') or []),
+            "Planner normalized stage_count=%s",
+            len(parsed_data.get('stages') or []),
         )
 
         parsed_data = _normalize_issue_creation_requirements(parsed_data, transcript)
@@ -3521,35 +3427,9 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
 
-        routing_tasks_for_log = []
-        if parsed_data.get('routing_analysis'):
-            routing_tasks_for_log = [
-                {
-                    'name': t.get('name'),
-                    'weight': round(float(t.get('weight', 0.0)), 3),
-                }
-                for t in parsed_data['routing_analysis'].get('tasks', [])
-            ]
-        logger.info("Routing analysis tasks=%s", json.dumps(routing_tasks_for_log))
         logger.info(
-            "Routing analysis latency=%s",
-            json.dumps((parsed_data.get('routing_analysis') or {}).get('latency_sensitivity', {})),
-        )
-        logger.info(
-            "Parser stage decision=%s",
-            json.dumps({
-                'should_chain': parsed_data['pipeline_analysis'].get('should_chain'),
-                'reason': parsed_data['pipeline_analysis'].get('reason'),
-                'artifact_value_score': parsed_data['pipeline_analysis'].get('artifact_value_score'),
-                'information_reduction': parsed_data['pipeline_analysis'].get('information_reduction'),
-                'artifact_gain': parsed_data['pipeline_analysis'].get('artifact_gain'),
-                'complexity_penalty': parsed_data['pipeline_analysis'].get('complexity_penalty'),
-                'pipeline_score': parsed_data['pipeline_analysis'].get('pipeline_score'),
-            }),
-        )
-        logger.info(
-            "Parser stages for issue=%s",
-            json.dumps(parsed_data['pipeline_analysis'].get('stages', []), ensure_ascii=False),
+            "Planner stages for issue=%s",
+            json.dumps(parsed_data.get('stages', []), ensure_ascii=False),
         )
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
@@ -3927,15 +3807,13 @@ async def create_github_issue(text: str):
             # Fallback if template doesn't exist
             body = f"**Transcript:**\n{text}\n\n**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
 
-        stage_plan = parsed_data.get('pipeline_analysis') or {}
-        issue_stages = stage_plan.get('stages') or []
+        issue_stages = parsed_data.get('stages') or []
         logger.info(
-            "Issue body stage handoff: pipeline_present=%s stage_count=%s",
-            bool(stage_plan),
+            "Issue body stage handoff: stage_count=%s",
             len(issue_stages),
         )
         if issue_stages:
-            body = _append_task_stages_to_issue_body(body, stage_plan)
+            body = _append_task_stages_to_issue_body(body, {'stages': issue_stages})
             logger.info(
                 "Including Task Stages in GitHub issue: %s",
                 json.dumps(issue_stages, ensure_ascii=False),

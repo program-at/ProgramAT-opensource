@@ -1,0 +1,31 @@
+general_reasoning:
+  implementations:
+    - groq_vision
+
+ocr:
+  implementations:
+    - google_vision
+
+object_detection_localization:
+  implementations:
+    - yolo
+
+structured_visual_understanding:
+  implementations:
+    - groq_vision
+
+spatial_reasoning:
+  implementations:
+    - groq_vision
+
+navigation:
+  implementations:
+    - groq_vision
+
+camera_motion:
+  implementations:
+    - groq_vision
+
+temporal_reasoning:
+  implementations:
+    - groq_vision

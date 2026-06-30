@@ -49,12 +49,12 @@ def resolve_api_key(model_name: str = "", explicit_api_key: str = "") -> str:
         return explicit_api_key
 
     normalized = (model_name or "").lower()
-    if normalized.startswith("openrouter"):
-        return os.environ.get("OPENROUTER_API_KEY", "")
     if normalized.startswith("gemini"):
         return os.environ.get("GEMINI_API_KEY", "")
     if normalized.startswith("groq"):
         return os.environ.get("GROQ_API_KEY", "")
+    if normalized.startswith("dashscope"):
+        return os.environ.get("DASHSCOPE_API_KEY", "")
     if normalized.startswith("mistral"):
         return os.environ.get("MISTRAL_API_KEY", "")
     if normalized.startswith("anthropic") or normalized.startswith("claude"):
@@ -64,10 +64,10 @@ def resolve_api_key(model_name: str = "", explicit_api_key: str = "") -> str:
 
     return (
         os.environ.get("GEMINI_API_KEY", "")
-        or os.environ.get("OPENROUTER_API_KEY", "")
         or os.environ.get("OPENAI_API_KEY", "")
         or os.environ.get("ANTHROPIC_API_KEY", "")
         or os.environ.get("GROQ_API_KEY", "")
+        or os.environ.get("DASHSCOPE_API_KEY", "")
         or os.environ.get("MISTRAL_API_KEY", "")
     )
 

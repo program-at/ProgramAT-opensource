@@ -16,10 +16,10 @@ Uber pickup guidance
 
 ## Task Stages
 Stage 1:
-Capability: object_detection
+Capability: object_detection_localization
 
 Stage 2:
-Capability: spatial_relationship
+Capability: spatial_reasoning
 
 Stage 3:
 Capability: navigation
@@ -98,9 +98,9 @@ def main(image, input_data=None):
         )
 
         failures = validate_generated_tools.validate_files([path])
-        self.assertTrue(any("non-canonical task_category 'visual_reasoning'" in failure for failure in failures))
+        self.assertTrue(any("non-canonical capability 'visual_reasoning'" in failure for failure in failures))
 
-    def test_rejects_single_call_when_issue_has_three_stages(self):
+    def test_rejects_independent_call_when_issue_has_three_stages(self):
         path = self._write_temp_tool(
             "uber_single_call_tool.py",
             """
@@ -118,43 +118,32 @@ def main(image, input_data=None):
 
         failures = validate_generated_tools.validate_files([path], issue_text=self.UBER_STAGE_ISSUE)
 
-        self.assertTrue(any("Task Stages lists 3 model-backed stage(s), but tool has only 1" in failure for failure in failures))
-        self.assertTrue(any("Task Stage 1 requires task_category 'object_detection'" in failure for failure in failures))
+        self.assertTrue(any("ordered copilot_llm_call capabilities" in failure for failure in failures))
 
-    def test_allows_three_calls_matching_uber_stage_capabilities(self):
+    def test_allows_explicit_calls_matching_uber_stage_capabilities(self):
         path = self._write_temp_tool(
             "uber_three_stage_tool.py",
             """
 from model_router_client import copilot_llm_call
 
 def main(image, input_data=None):
-    vehicle_result = copilot_llm_call(
-        task_category="object_detection",
-        messages=[{"role": "user", "content": "Locate the right vehicle."}],
+    vehicle = copilot_llm_call(
+        capability="object_detection_localization",
+        goal="Locate the right vehicle.",
         images=[image],
-        metadata={"tool_name": "uber_three_stage_tool", "stage_name": "Stage 1"},
+        metadata={"tool_name": "uber_three_stage_tool", "target_labels": ["car"]},
     )
-    door_result = copilot_llm_call(
-        task_category="spatial_relationship",
-        messages=[{"role": "user", "content": "Locate the passenger-side door."}],
-        images=[image],
-        metadata={
-            "tool_name": "uber_three_stage_tool",
-            "stage_name": "Stage 2",
-            "previous_stage_output": vehicle_result,
-        },
+    door = copilot_llm_call(
+        capability="spatial_reasoning",
+        goal="Locate the passenger-side door.",
+        messages=[{"role": "user", "content": f"Vehicle: {vehicle['artifact']}"}],
     )
-    guidance_result = copilot_llm_call(
-        task_category="navigation",
-        messages=[{"role": "user", "content": "Guide user to the door."}],
-        images=[image],
-        metadata={
-            "tool_name": "uber_three_stage_tool",
-            "stage_name": "Stage 3",
-            "previous_stage_outputs": {"vehicle": vehicle_result, "door": door_result},
-        },
+    guidance = copilot_llm_call(
+        capability="navigation",
+        goal="Guide the user to the door.",
+        messages=[{"role": "user", "content": f"Door: {door['artifact']}"}],
     )
-    return guidance_result
+    return guidance["response"]
 """,
         )
 

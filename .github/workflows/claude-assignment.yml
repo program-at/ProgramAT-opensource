@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. If the issue enumerates multiple stages, implement those stages sequentially in the generated tool and pass intermediate outputs from earlier stages into later stages. For any issue with a Task Stages section, each model-backed stage must map to its own copilot_llm_call(...), and each call must use exactly the listed stage capability as task_category. Do not collapse multiple stage capabilities into a single model call. For any LLM or VLM operation, generated tools must call the existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`, then `copilot_llm_call(task_category=..., messages=..., images=..., metadata=...)` for the relevant stage capability. Use only these task_category values: `general_reasoning`, `ocr`, `object_detection`, `map_web`, `spatial_relationship`, `navigation`, `camera_motion`, `video`. Never use `visual_reasoning`. Do not implement detection, OCR, VLM, LLM, model loading, provider calls, new wrapper clients, or routing logic inside generated tool files. The model router only selects models for capabilities; do not ask it to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. For a Task Stages section, make one ordered `copilot_llm_call(...)` per stage and explicitly pass useful artifacts to later calls. Use only these capabilities: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, `temporal_reasoning`. Never use `visual_reasoning`. Do not implement detection, OCR, VLM, LLM, model loading, provider calls, new wrapper clients, routing logic, retries, or verification inside generated tool files. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -66,12 +66,10 @@ jobs:
             Requirements:
             - Write the code for this tool inside the tools folder.
             - Assume the tool implements one user-facing task.
-            - If the issue enumerates multiple stages, implement those stages sequentially and pass intermediate outputs from earlier stages into later stages.
-            - For any issue with a Task Stages section, each model-backed stage must map to its own copilot_llm_call(...), and each call must use exactly the listed stage capability as task_category.
-            - Do not collapse multiple stage capabilities into a single model call.
-            - For any LLM or VLM operation, call the existing Copilot-routed backend interface through the existing client with `from model_router_client import copilot_llm_call`, then `copilot_llm_call(task_category=..., messages=..., images=..., metadata=...)` for the relevant stage capability.
-            - Use only these task_category values: `general_reasoning`, `ocr`, `object_detection`, `map_web`, `spatial_relationship`, `navigation`, `camera_motion`, `video`. Never use `visual_reasoning`.
-            - Treat the model router as model selection only. Do not ask it to execute stages, manage workflows, pass outputs between stages, or orchestrate pipelines.
+            - For any Task Stages section, make one ordered copilot_llm_call(...) per stage and explicitly pass useful artifacts forward.
+            - Use copilot_llm_call(...) with the listed capability as capability.
+            - Use only these capability values: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, `temporal_reasoning`. Never use `visual_reasoning`.
+            - Do not select concrete implementations, providers, or fallback order in generated tools.
             - Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files.
             - If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool.
             - Follow the existing repository structure and style.
