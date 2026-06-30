@@ -81,6 +81,20 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.render = load_stream_server_function("_build_task_stages_markdown")
         self.append_stages = load_stream_server_function("_append_task_stages_to_issue_body")
         self.parse_json = load_stream_server_function("_parse_llm_json_object")
+        self.response_field_only = load_stream_server_function("_response_field_only")
+
+    def test_mobile_payload_uses_only_atomic_response_field(self):
+        structured = {
+            "response": "Turn right toward the exit.",
+            "artifact": {"detections": [{"label": "exit"}]},
+            "implementation": "navigator",
+            "capability": "navigation",
+        }
+
+        self.assertEqual(
+            self.response_field_only(structured),
+            "Turn right toward the exit.",
+        )
 
     def test_custom_gpt_no_does_not_require_query(self):
         normalized = self.normalize_requirements(
@@ -125,6 +139,16 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertEqual(merged["title"], "Find my Uber")
         self.assertIs(merged["stages"], decomposition_data["stages"])
         self.assertEqual(set(merged), {"title", "missing_fields", "stages"})
+
+    def test_normalizes_legacy_object_detection_stage(self):
+        result = self.normalize({
+            "stages": [{"goal": "Locate the exit", "capability": "object_detection"}],
+        })
+
+        self.assertEqual(
+            result["stages"],
+            [{"goal": "Locate the exit", "capability": "object_detection_localization"}],
+        )
 
     def test_parses_fenced_json_with_trailing_text(self):
         result = self.parse_json(

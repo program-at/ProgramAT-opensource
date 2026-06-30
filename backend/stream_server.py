@@ -542,6 +542,22 @@ pending_copilot_issues = {}
 TEMPLATE_DIR = Path(__file__).parent.parent / '.github' / 'ISSUE_TEMPLATE'
 
 
+def _response_field_only(result: Any) -> Any:
+    """Unwrap an atomic capability result before constructing the mobile payload."""
+    if isinstance(result, dict) and {'response', 'implementation', 'capability'} <= set(result):
+        return result['response']
+    if type(result).__name__ == 'ImplementationResult' and hasattr(result, 'response'):
+        return result.response
+    return result
+
+
+def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> None:
+    """Log only the exact text selected for speech by the mobile client."""
+    audio = response_data.get('audio')
+    spoken = audio.get('text') if isinstance(audio, dict) and audio.get('text') else response_data.get('result', '')
+    logger.info("[FINAL SPOKEN RESPONSE] %s", spoken)
+
+
 async def run_streaming_tools(websocket, client_id: str, image, image_base64: str): 
     """
     Run all active streaming tools for this client on the current frame.
@@ -797,6 +813,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     result = None
             
             # Combine printed output with result
+            result = _response_field_only(result)
             # Check if result is advanced format with audio config
             if isinstance(result, dict) and ('audio' in result or 'text' in result):
                 # Preserve audio configuration
@@ -818,6 +835,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     if 'audio' in response_data and 'text' in response_data['audio']:
                         response_data['audio']['text'] = printed_output.strip() + '. ' + response_data['audio']['text']
                 
+                _log_final_tool_response(tool_name, response_data)
                 await websocket.send(json.dumps(response_data))
                 logger.info(f"Sent tool_stream_result to {client_id} for {tool_name}")
             else:
@@ -831,7 +849,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 final_result = '\n'.join(output_parts) if output_parts else "Tool executed (no output)"
                 
                 # Send result back to client
-                await websocket.send(json.dumps({
+                response_data = {
                     'type': 'tool_stream_result',
                     'tool_name': tool_name,
                     'status': 'success',
@@ -843,7 +861,9 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                         'interrupt': False
                     },
                     'timestamp': now.isoformat()
-                }))
+                }
+                _log_final_tool_response(tool_name, response_data)
+                await websocket.send(json.dumps(response_data))
             
         except Exception as e:
             logger.error(f"Error in streaming tool {tool_name}: {e}")
@@ -5343,6 +5363,7 @@ async def handle_client(websocket):
                                     result = None
                             
                             # Combine printed output with result
+                            result = _response_field_only(result)
                             # Check if result is a dict with 'audio' and 'text' keys (advanced format)
                             if isinstance(result, dict) and ('audio' in result or 'text' in result):
                                 # Advanced format - preserve audio configuration
@@ -5365,9 +5386,9 @@ async def handle_client(websocket):
                                     if 'audio' in response_data and 'text' in response_data['audio']:
                                         response_data['audio']['text'] = printed_output.strip() + '. ' + response_data['audio']['text']
                                 
-                                json_str = json.dumps(response_data)
                                 logger.info(f"Sending tool_result: result length={len(response_data.get('result', ''))}, audio.text length={len(response_data.get('audio', {}).get('text', ''))}")
-                                await websocket.send(json_str)
+                                _log_final_tool_response(tool_name, response_data)
+                                await websocket.send(json.dumps(response_data))
                             else:
                                 # Simple format - just strings
                                 output_parts = []
@@ -5379,7 +5400,7 @@ async def handle_client(websocket):
                                 final_result = '\n'.join(output_parts) if output_parts else "Tool executed (no output)"
                                 
                                 # Send result back to client (with default audio config)
-                                await websocket.send(json.dumps({
+                                response_data = {
                                     'type': 'tool_result',
                                     'tool_name': tool_name,
                                     'status': 'success',
@@ -5391,7 +5412,9 @@ async def handle_client(websocket):
                                         'interrupt': False
                                     },
                                     'timestamp': datetime.now().isoformat()
-                                }))
+                                }
+                                _log_final_tool_response(tool_name, response_data)
+                                await websocket.send(json.dumps(response_data))
                             
                             logger.info(f"Tool {tool_name} executed successfully")
                             

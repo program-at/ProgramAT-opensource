@@ -26,6 +26,16 @@ CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 EXECUTION_POLICY_PATH = BACKEND_DIR / "execution_policy.yaml"
 SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "groq/llama-3.1-8b-instant")
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
+LEGACY_CAPABILITY_ALIASES = {
+    "object_detection": "object_detection_localization",
+}
+NAVIGATION_SYSTEM_PROMPT = (
+    "You provide navigation guidance for a blind or low-vision user. "
+    "Use previous-stage detection results as the primary source of truth. "
+    "Give concise spoken instructions in at most 2-3 short sentences. "
+    "Do not use a numbered list, conversational filler, 'keep an eye out', "
+    "or 'don't hesitate to ask'."
+)
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 
 
@@ -59,6 +69,12 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected mapping in {path}")
     return data
+
+
+def normalize_capability_name(capability: Any) -> str:
+    """Return the canonical capability name accepted by execution policies."""
+    name = str(capability or "").strip().lower()
+    return LEGACY_CAPABILITY_ALIASES.get(name, name)
 
 
 def load_capability_profiles(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[str, Dict[str, Any]]:
@@ -307,7 +323,10 @@ def copilot_llm_call(
     goal=None,
 ):
     """Execute exactly one capability using its first configured implementation."""
-    declared = str(capability or task_category or DEFAULT_FALLBACK_CAPABILITY).strip().lower()
+    requested = capability or task_category or DEFAULT_FALLBACK_CAPABILITY
+    declared = normalize_capability_name(requested)
+    if declared != str(requested).strip().lower():
+        logger.warning("[Execution Policy] normalized legacy capability %r to %r", requested, declared)
     policies = load_execution_policies()
     implementations = load_implementation_profiles()
     if declared not in policies:
@@ -326,6 +345,8 @@ def copilot_llm_call(
     if task and "task_text" not in call_metadata:
         call_metadata["task_text"] = task
     call_messages = list(messages or [])
+    if declared == "navigation":
+        call_messages.insert(0, {"role": "system", "content": NAVIGATION_SYSTEM_PROMPT})
     if goal:
         call_metadata["goal"] = str(goal)
         call_messages.append({"role": "user", "content": str(goal)})
@@ -344,9 +365,10 @@ def copilot_llm_call(
 
 __all__ = [
     "BACKEND_DIR", "MODEL_PROFILES_PATH", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
-    "SYSTEM_MODEL", "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
+    "SYSTEM_MODEL", "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
+    "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
-    "load_capability_descriptions", "load_capability_profiles",
+    "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
     "load_execution_policies", "load_implementation_profiles", "validate_execution_configuration",
     "system_llm_call", "copilot_llm_call",
 ]

@@ -74,7 +74,10 @@ class TestAtomicCopilotCall(unittest.TestCase):
         })
 
     def test_response_becomes_default_text_artifact(self):
-        def executor(*_args):
+        calls = []
+
+        def executor(_profile, messages, _images, _metadata):
+            calls.append(messages)
             return model_router.ImplementationResult(response("Turn left"))
 
         with patch.object(model_router, "load_execution_policies", return_value={"navigation": ["nav"]}), \
@@ -84,12 +87,30 @@ class TestAtomicCopilotCall(unittest.TestCase):
             result = model_router.copilot_llm_call(capability="navigation")
 
         self.assertEqual(result["artifact"], {"text": "Turn left"})
+        self.assertEqual(calls[0][0]["role"], "system")
+        self.assertIn("blind or low-vision", calls[0][0]["content"])
+        self.assertIn("primary source of truth", calls[0][0]["content"])
+        self.assertIn("at most 2-3 short sentences", calls[0][0]["content"])
 
     def test_unknown_capability_is_rejected(self):
         with patch.object(model_router, "load_execution_policies", return_value={"ocr": ["reader"]}), \
              patch.object(model_router, "load_implementation_profiles", return_value={}):
             with self.assertRaises(model_router.ExecutionPolicyError):
                 model_router.copilot_llm_call(capability="unknown")
+
+    def test_legacy_object_detection_name_is_normalized(self):
+        def executor(*_args):
+            return model_router.ImplementationResult(response("Exit found"), {"detections": []})
+
+        policies = {"object_detection_localization": ["detector"]}
+        profiles = {"detector": model_router.ImplementationProfile("detector", "fake")}
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            result = model_router.copilot_llm_call(capability="object_detection")
+
+        self.assertEqual(result["capability"], "object_detection_localization")
+        self.assertEqual(result["implementation"], "detector")
 
     def test_implementation_error_is_not_retried(self):
         def executor(*_args):

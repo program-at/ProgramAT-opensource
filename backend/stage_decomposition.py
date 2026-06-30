@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, Optional
 
-from model_router import load_capability_profiles
+from model_router import load_capability_profiles, normalize_capability_name
 
 
 def _format_capability_profiles(profiles: Dict[str, Dict[str, Any]]) -> str:
@@ -86,7 +86,7 @@ def normalize_stage_plan(
         if not isinstance(raw_stage, dict) or set(raw_stage) != {"goal", "capability"}:
             raise ValueError("Each planner stage must contain only goal and capability")
         goal = str(raw_stage["goal"]).strip()
-        capability = str(raw_stage["capability"]).strip().lower()
+        capability = normalize_capability_name(raw_stage["capability"])
         if not goal:
             raise ValueError("Each planner stage must provide a non-empty goal")
         if capability not in supported:
