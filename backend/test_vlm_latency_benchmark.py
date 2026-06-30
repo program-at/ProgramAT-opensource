@@ -2,7 +2,7 @@
 """Benchmark configured VLM implementation latency on a single image.
 
 This script measures end-to-end latency for model implementations listed in
-model_profiles.yaml through the same LiteLLM call path used at runtime.
+execution_policy.yaml through the same LiteLLM call path used at runtime.
 
 The script writes a JSON report with timings and a short response preview for each model.
 You can also run grouped benchmarks with --group:

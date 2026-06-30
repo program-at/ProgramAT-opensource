@@ -31,7 +31,7 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `SYSTEM_LLM_MODEL`: Fixed infrastructure model used for parsing, template filling, issue generation, and other ProgramAT internal LLM work. Defaults to `groq/llama-3.1-8b-instant`.
+- `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
 - Provider API keys: the default system model uses `GROQ_API_KEY`; execution policies use `OPENAI_API_KEY` and `GOOGLE_VISION_API_KEY`; LLaVA runs through local Ollama.
   - System calls use the fixed system model.
@@ -41,7 +41,7 @@ The server uses environment variables for configuration:
 
 ProgramAT separates fixed infrastructure LLM calls from take-photo capability execution.
 
-Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses the fixed `SYSTEM_LLM_MODEL` configuration and bypasses execution policies.
+Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
 
 Take-photo model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. The declared capability selects its configured policy:
 
@@ -58,7 +58,7 @@ ocr:
   implementation: google_vision
 ```
 
-Edit `backend/execution_policy.yaml` to reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required. `backend/model_profiles.yaml` owns concrete implementation metadata.
+Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
 
 `copilot_llm_call(...)` returns a dictionary containing `response`, `artifact`, `implementation`, and `capability`. Generated tools execute planner-produced stages as explicit ordered calls and decide which artifact fields to pass to each subsequent call. The backend does not run capability sequences.
 

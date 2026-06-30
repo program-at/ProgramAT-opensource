@@ -135,7 +135,7 @@ Billing:
 3. Click **Create API Key**, give it a name, and click **Submit**.
 4. Copy the generated key immediately — you won't be able to see it again.
 5. Paste the key into `backend/.env` as `GROQ_API_KEY`.
-6. Add the Groq-hosted model to `backend/model_profiles.yaml` with `routes` that describe when it should be selected.
+6. Add the Groq-hosted implementation to `backend/execution_policy.yaml` and reference it from the desired global or capability policy.
 
 #### Mistral API Key
 
@@ -144,7 +144,7 @@ Billing:
 3. Click **Create new key**, give it a name, and click **Create**.
 4. Copy the generated key immediately — you won't be able to see it again.
 5. Paste the key into `backend/.env` as `MISTRAL_API_KEY`.
-6. Add the Mistral model to `backend/model_profiles.yaml` with `routes` that describe when it should be selected.
+6. Add the Mistral implementation to `backend/execution_policy.yaml` and reference it from the desired global or capability policy.
 
 #### Google Application Credentials
 
@@ -458,7 +458,7 @@ For iOS:
 ### Backend
 
 - **Python 3.11** with async `websockets`
-- **LiteLLM (configurable providers)** — Model runtime used for AI parsing and model-backed capability implementations. Take-photo execution follows the ordered candidates in `backend/execution_policy.yaml`; `backend/model_profiles.yaml` contains only concrete implementation metadata.
+- **LiteLLM (configurable providers)** — Model runtime used for AI parsing and model-backed capability implementations. System/default models, concrete implementations, routing toggle, and capability cascades live in `backend/execution_policy.yaml`.
 - **Google Cloud Vision API** — OCR
 - **Ultralytics (YOLOv11 / YOLOWorld)** — Object detection
 - **OpenCV / NumPy / Pillow** — Image processing

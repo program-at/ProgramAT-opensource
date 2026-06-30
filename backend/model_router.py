@@ -21,10 +21,8 @@ from litellm_utils import call_model, extract_text
 
 logger = logging.getLogger(__name__)
 BACKEND_DIR = Path(__file__).resolve().parent
-MODEL_PROFILES_PATH = BACKEND_DIR / "model_profiles.yaml"
 CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 EXECUTION_POLICY_PATH = BACKEND_DIR / "execution_policy.yaml"
-SYSTEM_MODEL = os.environ.get("SYSTEM_LLM_MODEL", "groq/llama-3.1-8b-instant")
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 LEGACY_CAPABILITY_ALIASES = {
     "object_detection": "object_detection_localization",
@@ -144,6 +142,8 @@ def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[
 
 def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dict[str, Any]]:
     config = _load_yaml(path)
+    config.pop("global", None)
+    config.pop("implementations", None)
     cascade_profiles = config.pop("cascade_profiles", {})
     if not isinstance(cascade_profiles, dict):
         raise ExecutionPolicyError("cascade_profiles must be a mapping")
@@ -159,7 +159,12 @@ def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dic
                 f"Capability {capability!r} must define exactly one of implementation or cascade"
             )
         if implementation:
-            policy = {"candidates": [implementation], "evaluator": None, "cascade": None}
+            policy = {
+                "candidates": [implementation],
+                "evaluator": None,
+                "cascade": None,
+                "specialized": bool(raw.get("specialized", False)),
+            }
         else:
             profile = cascade_profiles.get(cascade_name)
             if not isinstance(profile, dict):
@@ -180,6 +185,7 @@ def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dic
                 "candidates": candidates,
                 "evaluator": evaluator,
                 "cascade": cascade_name,
+                "specialized": bool(raw.get("specialized", False)),
             }
         policies[str(capability).strip()] = policy
     taxonomy = set(load_capability_profiles())
@@ -194,7 +200,7 @@ def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dic
     return policies
 
 
-def load_implementation_profiles(path: Path = MODEL_PROFILES_PATH) -> Dict[str, ImplementationProfile]:
+def load_implementation_profiles(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, ImplementationProfile]:
     raw_profiles = _load_yaml(path).get("implementations", {})
     if not isinstance(raw_profiles, dict) or not raw_profiles:
         raise ExecutionPolicyError(f"No implementations configured in {path}")
@@ -211,6 +217,53 @@ def load_implementation_profiles(path: Path = MODEL_PROFILES_PATH) -> Dict[str, 
     return profiles
 
 
+def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Any]:
+    raw = _load_yaml(path).get("global", {})
+    if not isinstance(raw, dict):
+        raise ExecutionPolicyError("global execution policy must be a mapping")
+    enabled = raw.get("model_routing_enabled")
+    if not isinstance(enabled, bool):
+        raise ExecutionPolicyError("global.model_routing_enabled must be true or false")
+
+    def implementation_name(field: str) -> str:
+        value = raw.get(field)
+        if not isinstance(value, dict) or not str(value.get("implementation") or "").strip():
+            raise ExecutionPolicyError(f"global.{field}.implementation is required")
+        return str(value["implementation"]).strip()
+
+    return {
+        "model_routing_enabled": enabled,
+        "system_model": implementation_name("system_model"),
+        "default_llm_when_routing_disabled": implementation_name(
+            "default_llm_when_routing_disabled"
+        ),
+    }
+
+
+def _log_global_execution_config(
+    config: Mapping[str, Any],
+    implementations: Mapping[str, ImplementationProfile],
+) -> None:
+    system_name = config["system_model"]
+    default_name = config["default_llm_when_routing_disabled"]
+    system_profile = implementations.get(system_name)
+    default_profile = implementations.get(default_name)
+    logger.info(
+        "[Execution Policy] model_routing_enabled=%s",
+        str(config["model_routing_enabled"]).lower(),
+    )
+    logger.info(
+        "[Execution Policy] system_model=%s/%s",
+        system_name,
+        system_profile.model if system_profile else "<unknown>",
+    )
+    logger.info(
+        "[Execution Policy] default_llm_when_routing_disabled=%s/%s",
+        default_name,
+        default_profile.model if default_profile else "<unknown>",
+    )
+
+
 def validate_execution_configuration(
     policies: Optional[Mapping[str, Mapping[str, Any]]] = None,
     implementations: Optional[Mapping[str, ImplementationProfile]] = None,
@@ -218,6 +271,7 @@ def validate_execution_configuration(
     taxonomy = set(load_capability_profiles())
     policies = policies or load_execution_policies()
     implementations = implementations or load_implementation_profiles()
+    global_config = load_global_execution_config()
 
     policy_names = set(policies)
     if policy_names != taxonomy:
@@ -238,6 +292,15 @@ def validate_execution_configuration(
     unknown = configured_names - set(implementations)
     if unknown:
         raise ExecutionPolicyError(f"Unknown implementations: {', '.join(sorted(unknown))}")
+    global_names = {
+        global_config["system_model"],
+        global_config["default_llm_when_routing_disabled"],
+    }
+    unknown_global = global_names - set(implementations)
+    if unknown_global:
+        raise ExecutionPolicyError(
+            f"Unknown global implementations: {', '.join(sorted(unknown_global))}"
+        )
 
 
 def _response_text(response: Any) -> str:
@@ -366,9 +429,21 @@ IMPLEMENTATION_EXECUTORS: Dict[str, ImplementationExecutor] = {
 
 
 def system_llm_call(messages=None, images=None, metadata=None):
-    """Call the fixed infrastructure model without execution-policy routing."""
-    logger.info("[System LLM] model=%s", SYSTEM_MODEL)
-    return call_model(SYSTEM_MODEL, messages or [], images=images, metadata=metadata)
+    """Call the YAML-configured infrastructure model without capability routing."""
+    config = load_global_execution_config()
+    implementations = load_implementation_profiles()
+    _log_global_execution_config(config, implementations)
+    implementation = config["system_model"]
+    profile = implementations[implementation]
+    if profile.kind != "model" or not profile.model:
+        raise ExecutionPolicyError(
+            f"System implementation {implementation!r} must define kind=model and model"
+        )
+    logger.info(
+        "[Execution Policy] capability=system selected implementation=%s",
+        implementation,
+    )
+    return call_model(profile.model, messages or [], images=images, metadata=metadata)
 
 
 def copilot_llm_call(
@@ -387,13 +462,19 @@ def copilot_llm_call(
         logger.warning("[Execution Policy] normalized legacy capability %r to %r", requested, declared)
     policies = load_execution_policies()
     implementations = load_implementation_profiles()
+    global_config = load_global_execution_config()
+    _log_global_execution_config(global_config, implementations)
     if declared not in policies:
         raise ExecutionPolicyError(
             f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
         )
     policy = policies[declared]
-    candidates = policy["candidates"]
-    evaluator_name = policy.get("evaluator")
+    if global_config["model_routing_enabled"] or policy.get("specialized"):
+        candidates = policy["candidates"]
+        evaluator_name = policy.get("evaluator")
+    else:
+        candidates = [global_config["default_llm_when_routing_disabled"]]
+        evaluator_name = None
 
     call_metadata = dict(metadata or {})
     call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
@@ -503,7 +584,11 @@ def copilot_llm_call(
         output = candidate_output
         implementation = candidate
         selected = True
-        logger.info("[Execution Policy] capability=%s selected=%s", declared, candidate)
+        logger.info(
+            "[Execution Policy] capability=%s selected implementation=%s",
+            declared,
+            candidate,
+        )
         break
 
     if not selected:
@@ -532,12 +617,13 @@ def copilot_llm_call(
 
 
 __all__ = [
-    "BACKEND_DIR", "MODEL_PROFILES_PATH", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
-    "SYSTEM_MODEL", "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
+    "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
+    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
     "EVALUATION_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
-    "load_execution_policies", "load_implementation_profiles", "validate_execution_configuration",
+    "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
+    "validate_execution_configuration",
     "system_llm_call", "copilot_llm_call",
 ]

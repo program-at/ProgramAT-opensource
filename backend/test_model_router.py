@@ -60,7 +60,14 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
             "candidates": ["small", "large"],
             "evaluator": "judge",
             "cascade": "custom",
+            "specialized": False,
         })
+
+    def test_global_switch_and_models_load_from_execution_policy(self):
+        config = model_router.load_global_execution_config()
+        self.assertIsInstance(config["model_routing_enabled"], bool)
+        self.assertEqual(config["system_model"], "llama_planner")
+        self.assertEqual(config["default_llm_when_routing_disabled"], "gemini_flash_lite")
 
 
 class TestAtomicCopilotCall(unittest.TestCase):
@@ -253,7 +260,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn("implementation=qwen response:\nresponse from qwen", output)
         self.assertIn("implementation=gpt4o response:\nresponse from gpt4o", output)
         self.assertEqual(output.count("evaluator=gpt4o decision=NO"), 2)
-        self.assertIn("selected=gpt4o", output)
+        self.assertIn("selected implementation=gpt4o", output)
         self.assertEqual(result["response"], "response from gpt4o")
 
     def test_returns_best_response_when_later_candidate_fails(self):
@@ -327,12 +334,96 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["response"], "usable response")
         self.assertEqual(result["implementation"], "usable")
 
+    def test_routing_disabled_uses_default_for_non_specialized_capability(self):
+        calls = []
+
+        def executor(profile, _messages, _images, _metadata):
+            calls.append(profile.name)
+            return model_router.ImplementationResult(response("default response"))
+
+        policies = {"navigation": {
+            "candidates": ["llava", "gpt4o"],
+            "evaluator": "gpt4o",
+            "cascade": "reasoning",
+            "specialized": False,
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake", model=f"test/{name}")
+            for name in ("llava", "gpt4o", "default", "system")
+        }
+        global_config = {
+            "model_routing_enabled": False,
+            "system_model": "system",
+            "default_llm_when_routing_disabled": "default",
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "load_global_execution_config", return_value=global_config), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router.copilot_llm_call(capability="navigation")
+
+        self.assertEqual(calls, ["default"])
+        self.assertEqual(result["implementation"], "default")
+        output = "\n".join(logs.output)
+        self.assertIn("model_routing_enabled=false", output)
+        self.assertIn("system_model=system/test/system", output)
+        self.assertIn("default_llm_when_routing_disabled=default/test/default", output)
+        self.assertIn("capability=navigation selected implementation=default", output)
+
+    def test_routing_disabled_keeps_specialized_capability(self):
+        calls = []
+
+        def executor(profile, _messages, _images, _metadata):
+            calls.append(profile.name)
+            return model_router.ImplementationResult(response("detected"))
+
+        policies = {"object_detection_localization": {
+            "candidates": ["yolo"],
+            "evaluator": None,
+            "cascade": None,
+            "specialized": True,
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake", model=f"test/{name}")
+            for name in ("yolo", "default", "system")
+        }
+        global_config = {
+            "model_routing_enabled": False,
+            "system_model": "system",
+            "default_llm_when_routing_disabled": "default",
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "load_global_execution_config", return_value=global_config), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            result = model_router.copilot_llm_call(capability="object_detection_localization")
+
+        self.assertEqual(calls, ["yolo"])
+        self.assertEqual(result["implementation"], "yolo")
+
 
 class TestSystemCall(unittest.TestCase):
-    def test_system_llm_call_stays_fixed(self):
-        with patch.object(model_router, "call_model", return_value=response("ok")) as call_model:
+    def test_system_llm_call_uses_yaml_global_implementation(self):
+        global_config = {
+            "model_routing_enabled": False,
+            "system_model": "planner",
+            "default_llm_when_routing_disabled": "default",
+        }
+        profiles = {
+            "planner": model_router.ImplementationProfile("planner", "model", model="test/planner"),
+            "default": model_router.ImplementationProfile("default", "model", model="test/default"),
+        }
+        with patch.object(model_router, "load_global_execution_config", return_value=global_config), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "call_model", return_value=response("ok")) as call_model, \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
             model_router.system_llm_call(messages=[{"role": "user", "content": "Plan this"}])
-        self.assertEqual(call_model.call_args.args[0], model_router.SYSTEM_MODEL)
+        self.assertEqual(call_model.call_args.args[0], "test/planner")
+        self.assertIn(
+            "capability=system selected implementation=planner",
+            "\n".join(logs.output),
+        )
 
 
 if __name__ == "__main__":

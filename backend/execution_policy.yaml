@@ -1,3 +1,42 @@
+global:
+  model_routing_enabled: true
+  system_model:
+    implementation: llama_planner
+  default_llm_when_routing_disabled:
+    implementation: gemini_flash_lite
+
+implementations:
+  llama_planner:
+    kind: model
+    model: groq/llama-3.1-8b-instant
+
+  gemini_flash_lite:
+    kind: model
+    model: gemini/gemini-3.1-flash-lite-preview
+
+  llava:
+    kind: model
+    model: ollama/llava:7b
+
+  qwen:
+    kind: model
+    model: dashscope/qwen2.5-omni-7b
+
+  gpt4o:
+    kind: model
+    model: openai/gpt-4o
+
+  google_vision:
+    kind: google_vision
+
+  yolo:
+    kind: yolo
+    model_name: yolo11n.pt
+
+  gemini:
+    kind: model
+    model: gemini/gemini-3.1-flash-lite-preview
+
 cascade_profiles:
   default_reasoning:
     candidates:
@@ -11,9 +50,11 @@ general_reasoning:
 
 ocr:
   implementation: google_vision
+  specialized: true
 
 object_detection_localization:
   implementation: yolo
+  specialized: true
 
 structured_visual_understanding:
   cascade: default_reasoning
