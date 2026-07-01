@@ -130,6 +130,54 @@ def extract_copilot_llm_task_categories(tool_text: str) -> List[Optional[str]]:
     return categories
 
 
+def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> List[str]:
+    """Reject turning structured capability results into user-facing repr strings."""
+    try:
+        tree = ast.parse(tool_text)
+    except SyntaxError:
+        return []
+
+    result_names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Call):
+            continue
+        is_copilot_call = (
+            isinstance(value.func, ast.Name) and value.func.id == "copilot_llm_call"
+        ) or (
+            isinstance(value.func, ast.Attribute) and value.func.attr == "copilot_llm_call"
+        )
+        if not is_copilot_call:
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        result_names.update(target.id for target in targets if isinstance(target, ast.Name))
+
+    failures = []
+    for node in ast.walk(tree):
+        stringified_name = None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in {"str", "repr"}
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in result_names
+        ):
+            stringified_name = node.args[0].id
+        elif isinstance(node, ast.FormattedValue) and isinstance(node.value, ast.Name):
+            if node.value.id in result_names:
+                stringified_name = node.value.id
+
+        if stringified_name:
+            failures.append(
+                f"{rel_path}:{node.lineno}: capability result '{stringified_name}' must not be "
+                "stringified; return or use its ['response'] field for user-facing text."
+            )
+    return failures
+
+
 def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
     failures: List[str] = []
     stage_capabilities = extract_stage_capabilities(issue_text)
@@ -209,6 +257,7 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
                 failures.append(f"{rel_path}:{line_number}: forbidden generated-tool pattern: {label}")
 
         failures.extend(validate_canonical_task_categories(text, rel_path))
+        failures.extend(validate_no_stringified_copilot_results(text, rel_path))
         if issue_text:
             failures.extend(validate_stage_enforcement(text, issue_text, rel_path))
 

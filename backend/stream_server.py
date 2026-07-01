@@ -11,6 +11,7 @@ python stream_server.py
 """
 
 import asyncio
+import ast
 import websockets
 import json
 import base64
@@ -627,19 +628,109 @@ pending_copilot_issues = {}
 TEMPLATE_DIR = Path(__file__).parent.parent / '.github' / 'ISSUE_TEMPLATE'
 
 
-def _response_field_only(result: Any) -> Any:
-    """Unwrap an atomic capability result before constructing the mobile payload."""
-    if isinstance(result, dict) and {'response', 'implementation', 'capability'} <= set(result):
-        return result['response']
-    if type(result).__name__ == 'ImplementationResult' and hasattr(result, 'response'):
-        return result.response
-    return result
+def _response_field_only(result: Any) -> str:
+    """Extract user-facing text without stringifying internal execution objects."""
+    value = result
+    seen = set()
+    while True:
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            text = value.strip()
+            parsed = None
+            if len(text) <= 1_000_000 and text.startswith('{') and text.endswith('}'):
+                for parser in (json.loads, ast.literal_eval):
+                    try:
+                        candidate = parser(text)
+                    except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+                        continue
+                    if isinstance(candidate, dict) and 'response' in candidate:
+                        parsed = candidate
+                        break
+            if parsed is None:
+                return value
+            logger.debug("Unwrapped serialized execution result at mobile boundary")
+            value = parsed
+            continue
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+
+        identity = id(value)
+        if identity in seen:
+            logger.debug("Cycle found while extracting user-facing response: %r", result)
+            return ''
+        seen.add(identity)
+
+        if isinstance(value, dict):
+            next_value = None
+            for key in ('response', 'text', 'result', 'answer', 'description', 'message', 'content'):
+                if key in value and value[key] is not None:
+                    next_value = value[key]
+                    break
+            if next_value is None:
+                audio = value.get('audio')
+                if isinstance(audio, dict):
+                    next_value = audio.get('text')
+            if next_value is None:
+                logger.debug("No user-facing response field in execution result: %r", value)
+                return ''
+            value = next_value
+            continue
+
+        if hasattr(value, 'response'):
+            value = value.response
+            continue
+        if hasattr(value, 'text'):
+            value = value.text
+            continue
+        if hasattr(value, 'choices'):
+            try:
+                return extract_text(value)
+            except Exception:
+                logger.debug("Could not extract model response text", exc_info=True)
+                return ''
+
+        logger.debug("Unsupported execution result type at mobile boundary: %r", value)
+        return ''
+
+
+def _build_mobile_tool_response(
+    message_type: str,
+    tool_name: str,
+    result: Any,
+    timestamp: datetime,
+    printed_output: str = '',
+) -> Dict[str, Any]:
+    """Build a mobile payload containing user-facing text and no execution metadata."""
+    response_text = _response_field_only(result) or "Tool executed (no output)"
+    audio = {'type': 'speech', 'rate': 1.0, 'interrupt': False}
+    if isinstance(result, dict) and isinstance(result.get('audio'), dict):
+        audio.update({
+            key: result['audio'][key]
+            for key in ('type', 'rate', 'interrupt')
+            if key in result['audio']
+        })
+    audio['text'] = response_text
+
+    if printed_output.strip():
+        logger.debug("[%s stdout]\n%s", tool_name, printed_output.strip())
+    logger.debug("[%s internal execution result] %r", tool_name, result)
+    return {
+        'type': message_type,
+        'tool_name': tool_name,
+        'status': 'success',
+        'result': response_text,
+        'audio': audio,
+        'timestamp': timestamp.isoformat(),
+    }
 
 
 def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> None:
     """Log only the exact text selected for speech by the mobile client."""
     audio = response_data.get('audio')
-    spoken = audio.get('text') if isinstance(audio, dict) and audio.get('text') else response_data.get('result', '')
+    spoken_value = audio.get('text') if isinstance(audio, dict) and audio.get('text') else response_data.get('result', '')
+    spoken = _response_field_only(spoken_value)
+    logger.debug("[%s mobile response payload] %r", _tool_name, response_data)
     logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
@@ -976,58 +1067,12 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 else:
                     result = None
             
-            # Combine printed output with result
-            result = _response_field_only(result)
-            # Check if result is advanced format with audio config
-            if isinstance(result, dict) and ('audio' in result or 'text' in result):
-                # Preserve audio configuration
-                response_data = {
-                    'type': 'tool_stream_result',
-                    'tool_name': tool_name,
-                    'status': 'success',
-                    'result': result.get('text', ''),
-                    'timestamp': now.isoformat()
-                }
-                
-                # Add audio configuration if provided
-                if 'audio' in result:
-                    response_data['audio'] = result['audio']
-                
-                # Prepend printed output if any
-                if printed_output.strip():
-                    response_data['result'] = printed_output.strip() + '\n' + response_data['result']
-                    if 'audio' in response_data and 'text' in response_data['audio']:
-                        response_data['audio']['text'] = printed_output.strip() + '. ' + response_data['audio']['text']
-                
-                _log_final_tool_response(tool_name, response_data)
-                await websocket.send(json.dumps(response_data))
-                logger.info(f"Sent tool_stream_result to {client_id} for {tool_name}")
-            else:
-                # Simple string format - add default audio
-                output_parts = []
-                if printed_output.strip():
-                    output_parts.append(printed_output.strip())
-                if result is not None:
-                    output_parts.append(str(result))
-                
-                final_result = '\n'.join(output_parts) if output_parts else "Tool executed (no output)"
-                
-                # Send result back to client
-                response_data = {
-                    'type': 'tool_stream_result',
-                    'tool_name': tool_name,
-                    'status': 'success',
-                    'result': final_result,
-                    'audio': {
-                        'type': 'speech',
-                        'text': final_result,
-                        'rate': 1.0,
-                        'interrupt': False
-                    },
-                    'timestamp': now.isoformat()
-                }
-                _log_final_tool_response(tool_name, response_data)
-                await websocket.send(json.dumps(response_data))
+            response_data = _build_mobile_tool_response(
+                'tool_stream_result', tool_name, result, now, printed_output
+            )
+            _log_final_tool_response(tool_name, response_data)
+            await websocket.send(json.dumps(response_data))
+            logger.info(f"Sent tool_stream_result to {client_id} for {tool_name}")
             
         except Exception as e:
             logger.error(f"Error in streaming tool {tool_name}: {e}")
@@ -4208,14 +4253,7 @@ def get_latest_meta_frame_image() -> np.ndarray | None:
 
 
 def format_door_detection_result(result) -> str:
-    if isinstance(result, dict):
-        for key in ('text', 'result', 'message'):
-            value = result.get(key)
-            if value:
-                return str(value)
-        return str(result)
-
-    return str(result)
+    return _response_field_only(result)
 
 
 class AiohttpWebSocketAdapter:
@@ -5532,59 +5570,16 @@ async def handle_client(websocket):
                                 else:
                                     result = None
                             
-                            # Combine printed output with result
-                            result = _response_field_only(result)
-                            # Check if result is a dict with 'audio' and 'text' keys (advanced format)
-                            if isinstance(result, dict) and ('audio' in result or 'text' in result):
-                                # Advanced format - preserve audio configuration
-                                response_data = {
-                                    'type': 'tool_result',
-                                    'tool_name': tool_name,
-                                    'status': 'success',
-                                    'result': result.get('text', ''),
-                                    'timestamp': datetime.now().isoformat()
-                                }
-                                
-                                # Add audio configuration if provided
-                                if 'audio' in result:
-                                    response_data['audio'] = result['audio']
-                                
-                                # Prepend printed output to text if any
-                                if printed_output.strip():
-                                    response_data['result'] = printed_output.strip() + '\n' + response_data['result']
-                                    # Also update audio text to include printed output
-                                    if 'audio' in response_data and 'text' in response_data['audio']:
-                                        response_data['audio']['text'] = printed_output.strip() + '. ' + response_data['audio']['text']
-                                
-                                logger.info(f"Sending tool_result: result length={len(response_data.get('result', ''))}, audio.text length={len(response_data.get('audio', {}).get('text', ''))}")
-                                _log_final_tool_response(tool_name, response_data)
-                                await websocket.send(json.dumps(response_data))
-                            else:
-                                # Simple format - just strings
-                                output_parts = []
-                                if printed_output.strip():
-                                    output_parts.append(printed_output.strip())
-                                if result is not None:
-                                    output_parts.append(str(result))
-                                
-                                final_result = '\n'.join(output_parts) if output_parts else "Tool executed (no output)"
-                                
-                                # Send result back to client (with default audio config)
-                                response_data = {
-                                    'type': 'tool_result',
-                                    'tool_name': tool_name,
-                                    'status': 'success',
-                                    'result': final_result,
-                                    'audio': {
-                                        'type': 'speech',
-                                        'text': final_result,
-                                        'rate': 1.0,
-                                        'interrupt': False
-                                    },
-                                    'timestamp': datetime.now().isoformat()
-                                }
-                                _log_final_tool_response(tool_name, response_data)
-                                await websocket.send(json.dumps(response_data))
+                            response_data = _build_mobile_tool_response(
+                                'tool_result', tool_name, result, datetime.now(), printed_output
+                            )
+                            logger.info(
+                                "Sending tool_result: result length=%d, audio.text length=%d",
+                                len(response_data['result']),
+                                len(response_data['audio']['text']),
+                            )
+                            _log_final_tool_response(tool_name, response_data)
+                            await websocket.send(json.dumps(response_data))
                             
                             logger.info(f"Tool {tool_name} executed successfully")
                             

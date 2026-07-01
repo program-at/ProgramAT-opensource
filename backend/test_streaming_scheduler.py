@@ -1,15 +1,105 @@
 """Offline regression tests for streaming key-frame single-flight scheduling."""
 
 import asyncio
+import json
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import stream_server
+
+
+class TestMobileResponseBoundary(unittest.TestCase):
+    def test_extracts_response_from_dict_and_execution_object(self):
+        expected = "Turn slightly right and walk forward to reach the exit."
+        structured = {
+            "response": expected,
+            "artifact": {"detections": [{"label": "exit"}]},
+            "implementation": "gpt4o",
+            "capability": "navigation",
+            "metadata": {"latency_ms": 42},
+        }
+        execution_result = SimpleNamespace(response=expected, artifact=structured["artifact"])
+
+        self.assertEqual(stream_server._response_field_only(structured), expected)
+        self.assertEqual(stream_server._response_field_only(execution_result), expected)
+        self.assertEqual(stream_server._response_field_only(expected), expected)
+
+    def test_mobile_payload_contains_only_response_text(self):
+        expected = "Turn slightly right and walk forward to reach the exit."
+        structured = {
+            "response": expected,
+            "artifact": {"detections": [{"label": "exit"}]},
+            "implementation": "gpt4o",
+            "capability": "navigation",
+            "metadata": {"latency_ms": 42},
+            "audio": {
+                "type": "speech",
+                "text": "internal object leaked here",
+                "metadata": {"internal": True},
+            },
+        }
+
+        with self.assertLogs(stream_server.logger, level="DEBUG"):
+            payload = stream_server._build_mobile_tool_response(
+                "tool_result", "exit_tool", structured, datetime(2026, 7, 1), "debug print"
+            )
+
+        self.assertEqual(payload["result"], expected)
+        self.assertEqual(payload["audio"]["text"], expected)
+        self.assertNotIn("artifact", payload)
+        self.assertNotIn("implementation", payload)
+        self.assertNotIn("capability", payload)
+        self.assertNotIn("metadata", payload)
+        self.assertNotIn("metadata", payload["audio"])
+        self.assertNotIn("debug print", payload["result"])
+
+    def test_unwraps_python_repr_and_json_execution_results(self):
+        expected = "Walk straight ahead toward the wooden door. The door handle is located at 2 o'clock."
+        structured = {
+            "response": expected,
+            "artifact": {"text": expected},
+            "implementation": "gemini",
+            "capability": "navigation",
+        }
+
+        for serialized in (repr(structured), json.dumps(structured)):
+            payload = stream_server._build_mobile_tool_response(
+                "tool_result", "locate_nearest_exit", serialized, datetime(2026, 7, 1)
+            )
+            self.assertEqual(payload["result"], expected)
+            self.assertEqual(payload["audio"]["text"], expected)
+            self.assertNotIn("artifact", payload["result"])
+
+    def test_unknown_object_is_not_stringified_into_mobile_payload(self):
+        opaque = SimpleNamespace(artifact={"secret": "internal"})
+        payload = stream_server._build_mobile_tool_response(
+            "tool_stream_result", "tool", opaque, datetime(2026, 7, 1)
+        )
+
+        self.assertEqual(payload["result"], "Tool executed (no output)")
+        self.assertEqual(payload["audio"]["text"], "Tool executed (no output)")
+        self.assertNotIn("internal", payload["result"])
+
+    def test_final_spoken_log_contains_only_response_text(self):
+        expected = "The door is at 2 o'clock."
+        payload = {
+            "result": expected,
+            "audio": {"text": expected},
+            "debug": {"artifact": "internal"},
+        }
+        with self.assertLogs(stream_server.logger, level="INFO") as logs:
+            stream_server._log_final_tool_response("door_tool", payload)
+
+        info_logs = "\n".join(logs.output)
+        self.assertIn("[FINAL SPOKEN RESPONSE]\n" + expected, info_logs)
+        self.assertNotIn("artifact", info_logs)
 
 
 class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):

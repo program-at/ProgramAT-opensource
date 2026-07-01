@@ -81,6 +81,44 @@ def main(image, input_data=None):
 
         self.assertEqual(validate_generated_tools.validate_files([path]), [])
 
+    def test_rejects_stringified_capability_result(self):
+        for expression in ("str(guidance)", "repr(guidance)", 'f"{guidance}"'):
+            path = self._write_temp_tool(
+                "stringified_result_tool.py",
+                f'''
+from model_router_client import copilot_llm_call
+
+def main(image, input_data=None):
+    guidance = copilot_llm_call(
+        capability="navigation",
+        goal="Guide the user to the exit.",
+        images=[image],
+    )
+    return {expression}
+''',
+            )
+
+            failures = validate_generated_tools.validate_files([path])
+            self.assertTrue(any("must not be stringified" in failure for failure in failures))
+
+    def test_allows_returning_capability_response_field(self):
+        path = self._write_temp_tool(
+            "response_field_tool.py",
+            '''
+from model_router_client import copilot_llm_call
+
+def main(image, input_data=None):
+    guidance = copilot_llm_call(
+        capability="navigation",
+        goal="Guide the user to the exit.",
+        images=[image],
+    )
+    return guidance["response"]
+''',
+        )
+
+        self.assertEqual(validate_generated_tools.validate_files([path]), [])
+
     def test_rejects_non_canonical_task_category_visual_reasoning(self):
         path = self._write_temp_tool(
             "bad_visual_reasoning_tool.py",

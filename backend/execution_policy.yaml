@@ -23,7 +23,7 @@ implementations:
 
   llava:
     kind: model
-    model: llava-v1.5-7b-preview
+    model: groq/llava-v1.5-7b-preview
 
   qwen:
     kind: model
