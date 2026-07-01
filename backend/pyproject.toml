@@ -18,6 +18,8 @@ dependencies = [
     "scikit-learn",
     "scipy",
     "sentence-transformers",
+    "torch",
+    "transformers",
     "ultralytics>=8.0.0",
     "websockets>=12.0",
 ]

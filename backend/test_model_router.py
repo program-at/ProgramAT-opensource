@@ -68,53 +68,11 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertIsInstance(config["model_routing_enabled"], bool)
         self.assertEqual(config["system_model"], "llama_planner")
         self.assertEqual(config["default_llm_when_routing_disabled"], "gemini_flash_lite")
-        self.assertEqual(config["streaming_key_frame_selector"], "llava")
 
     def test_llava_uses_litellm_preview_model_from_yaml(self):
         profile = model_router.load_implementation_profiles()["llava"]
         self.assertEqual(profile.kind, "model")
         self.assertEqual(profile.model, "llava-v1.5-7b-preview")
-
-
-class TestStreamingKeyFrameSelection(unittest.TestCase):
-    def test_uses_yaml_model_and_compares_previous_with_current_frame(self):
-        profile = model_router.ImplementationProfile(
-            "selector", "model", "configured-preview-model"
-        )
-        with patch.object(
-            model_router,
-            "load_global_execution_config",
-            return_value={"streaming_key_frame_selector": "selector"},
-        ), patch.object(
-            model_router,
-            "load_implementation_profiles",
-            return_value={"selector": profile},
-        ), patch.object(model_router, "call_model", return_value=response("YES")) as call:
-            accepted = model_router.streaming_key_frame_decision("current", "previous")
-
-        self.assertTrue(accepted)
-        self.assertEqual(call.call_args.args[0], "configured-preview-model")
-        self.assertEqual(call.call_args.kwargs["images"], ["previous", "current"])
-        self.assertEqual(call.call_args.kwargs["metadata"], {
-            "temperature": 0,
-            "max_tokens": 3,
-        })
-        self.assertIn("Answer only YES or NO", call.call_args.args[1][0]["content"])
-
-    def test_no_discards_frame_and_invalid_answer_is_rejected(self):
-        profile = model_router.ImplementationProfile("selector", "model", "configured")
-        config = {"streaming_key_frame_selector": "selector"}
-        with patch.object(model_router, "load_global_execution_config", return_value=config), \
-             patch.object(model_router, "load_implementation_profiles", return_value={"selector": profile}), \
-             patch.object(model_router, "call_model", return_value=response("NO")):
-            self.assertFalse(model_router.streaming_key_frame_decision("current"))
-
-        with patch.object(model_router, "load_global_execution_config", return_value=config), \
-             patch.object(model_router, "load_implementation_profiles", return_value={"selector": profile}), \
-             patch.object(model_router, "call_model", return_value=response("maybe")), \
-             self.assertRaises(ValueError):
-            model_router.streaming_key_frame_decision("current")
-
 
 class TestAtomicCopilotCall(unittest.TestCase):
     def test_uses_only_first_implementation_and_returns_structured_result(self):
@@ -245,7 +203,14 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["response"], "Turn right toward the exit.")
         self.assertEqual(result["implementation"], "llava")
         self.assertIn("Previous-stage artifact", calls[0][1][-2]["content"])
-        self.assertIn("Answer only YES or NO", calls[1][1][0]["content"])
+        evaluator_prompt = calls[1][1][0]["content"]
+        self.assertIn("Assume its observations are correct", evaluator_prompt)
+        self.assertIn("Accept concise answers", evaluator_prompt)
+        self.assertIn("do not demand more detail or polish", evaluator_prompt)
+        self.assertIn("blind or low-vision", evaluator_prompt)
+        self.assertIn('"look at"', evaluator_prompt)
+        self.assertIn("spatial or movement guidance", evaluator_prompt)
+        self.assertIn("Return only YES or NO", evaluator_prompt)
         self.assertEqual(calls[1][2], [])
 
     def test_reasoning_escalates_to_gpt4o_when_evaluator_says_no(self):
@@ -281,7 +246,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         decisions = iter(["NO", "NO"])
 
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Answer only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
             if profile.name == "gpt4o" and is_evaluation:
                 return model_router.ImplementationResult(response(next(decisions)))
             return model_router.ImplementationResult(response(f"response from {profile.name}"))
@@ -311,7 +276,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_returns_best_response_when_later_candidate_fails(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Answer only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 return model_router.ImplementationResult(response("NO"))
             if profile.name == "llava":
@@ -339,7 +304,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_evaluator_failure_continues_to_next_candidate(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Answer only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 raise TimeoutError("evaluation timed out")
             return model_router.ImplementationResult(response(f"response from {profile.name}"))

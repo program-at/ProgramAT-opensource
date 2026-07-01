@@ -13,5 +13,7 @@ pytesseract>=0.3.0
 scipy
 scikit-learn
 sentence-transformers
+torch
+transformers
 ultralytics>=8.0.0
 google-cloud-secret-manager

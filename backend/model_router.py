@@ -38,29 +38,17 @@ NAVIGATION_SYSTEM_PROMPT = (
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
 )
-EVALUATION_PROMPT = """Evaluate the previous response for the requested capability.
+EVALUATION_PROMPT = """Is this response already sufficient to complete the stage for a blind or low-vision user?
+Assume its observations are correct. Accept concise answers; do not demand more detail or polish.
+Answer YES if it fulfills the stage goal usefully (for example: actionable navigation, a spatial relation, an answer, or requested text).
+Answer NO if it does not complete the goal or relies on visual references such as "look at", "you can see", "when you see", or colors instead of spatial or movement guidance.
 
-Consider:
-- Did it answer the requested capability?
-- Is it actionable?
-- Is it specific enough for a blind or low-vision user?
-- Is important information missing?
-- Does it contradict previous-stage artifacts?
-
-Answer only YES or NO.
-
-Capability: {capability}
+Stage: {capability}
 Goal: {goal}
-Previous-stage artifact: {artifact}
-Previous response: {response}
+Prior artifact: {artifact}
+Response: {response}
 
-Is the previous response sufficient to accomplish the requested capability for a blind or low-vision user?"""
-KEY_FRAME_PROMPT = """Decide whether the CURRENT streaming frame contains meaningful new visual information that warrants running the full vision tool pipeline.
-
-Meaningful changes include a target object appearing or disappearing, a new obstacle, a significant scene change, or enough viewpoint change that new reasoning may be useful.
-The first image, when present, is the previous accepted key frame. The final image is the CURRENT frame.
-
-Answer only YES or NO."""
+Return only YES or NO."""
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 
 
@@ -150,6 +138,7 @@ def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dic
     config = _load_yaml(path)
     config.pop("global", None)
     config.pop("implementations", None)
+    config.pop("streaming", None)
     cascade_profiles = config.pop("cascade_profiles", {})
     if not isinstance(cascade_profiles, dict):
         raise ExecutionPolicyError("cascade_profiles must be a mapping")
@@ -243,9 +232,6 @@ def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str
         "default_llm_when_routing_disabled": implementation_name(
             "default_llm_when_routing_disabled"
         ),
-        "streaming_key_frame_selector": implementation_name(
-            "streaming_key_frame_selector"
-        ),
     }
 
 
@@ -304,7 +290,6 @@ def validate_execution_configuration(
     global_names = {
         global_config["system_model"],
         global_config["default_llm_when_routing_disabled"],
-        global_config["streaming_key_frame_selector"],
     }
     unknown_global = global_names - set(implementations)
     if unknown_global:
@@ -454,36 +439,6 @@ def system_llm_call(messages=None, images=None, metadata=None):
         implementation,
     )
     return call_model(profile.model, messages or [], images=images, metadata=metadata)
-
-
-def streaming_key_frame_decision(current_image, previous_key_frame=None) -> bool:
-    """Return whether a streaming frame should enter the normal tool pipeline."""
-    config = load_global_execution_config()
-    implementations = load_implementation_profiles()
-    implementation = config["streaming_key_frame_selector"]
-    profile = implementations[implementation]
-    if profile.kind != "model" or not profile.model:
-        raise ExecutionPolicyError(
-            f"Streaming key-frame implementation {implementation!r} must define kind=model and model"
-        )
-    images = [current_image]
-    if previous_key_frame is not None:
-        images.insert(0, previous_key_frame)
-    response = call_model(
-        profile.model,
-        [{"role": "user", "content": KEY_FRAME_PROMPT}],
-        images=images,
-        metadata={"temperature": 0, "max_tokens": 3},
-    )
-    decision = extract_text(response).strip().upper()
-    if decision not in {"YES", "NO"}:
-        raise ValueError("streaming key-frame selector did not return YES or NO")
-    logger.info(
-        "[Streaming Key Frame] implementation=%s decision=%s",
-        implementation,
-        decision,
-    )
-    return decision == "YES"
 
 
 def copilot_llm_call(
@@ -659,11 +614,11 @@ def copilot_llm_call(
 __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
     "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
-    "EVALUATION_PROMPT", "KEY_FRAME_PROMPT",
+    "EVALUATION_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
     "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
     "validate_execution_configuration",
-    "system_llm_call", "streaming_key_frame_decision", "copilot_llm_call",
+    "system_llm_call", "copilot_llm_call",
 ]

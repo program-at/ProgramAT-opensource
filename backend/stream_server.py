@@ -17,6 +17,7 @@ import base64
 import io
 import logging
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,7 @@ from aiohttp import web, WSMsgType
 from google.cloud import secretmanager
 from github import Github
 import os
+import yaml
 from dotenv import load_dotenv
 
 # Load .env before importing modules that read routing/provider settings at import time.
@@ -34,7 +36,6 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
     load_capability_profiles,
-    streaming_key_frame_decision,
     system_llm_call,
 )
 from litellm_utils import (
@@ -523,6 +524,89 @@ LATEST_META_FRAME_FILENAME = 'latest_meta_frame.jpg'
 # Format: {client_id: {'tool': {...}, 'last_run': timestamp, 'throttle_ms': 1000}}
 active_streaming_tools = {}
 
+EXECUTION_POLICY_PATH = Path(__file__).resolve().parent / 'execution_policy.yaml'
+_clip_encoders = {}
+_clip_encoder_load_lock = threading.Lock()
+
+
+def load_streaming_frame_selector_config(path=EXECUTION_POLICY_PATH) -> Dict[str, Any]:
+    """Load and validate streaming-only frame selector configuration."""
+    with Path(path).open('r', encoding='utf-8') as handle:
+        root = yaml.safe_load(handle) or {}
+    selector = (root.get('streaming') or {}).get('frame_selector') or {}
+    if selector.get('implementation') != 'clip':
+        raise ValueError("streaming.frame_selector.implementation must be 'clip'")
+    model = str(selector.get('model') or '').strip()
+    threshold = float(selector.get('similarity_threshold'))
+    max_skip_frames = int(selector.get('max_skip_frames'))
+    if not model:
+        raise ValueError('streaming.frame_selector.model is required')
+    if not -1.0 <= threshold <= 1.0:
+        raise ValueError('streaming.frame_selector.similarity_threshold must be between -1 and 1')
+    if max_skip_frames < 0:
+        raise ValueError('streaming.frame_selector.max_skip_frames must be non-negative')
+    return {
+        'implementation': 'clip',
+        'model': model,
+        'similarity_threshold': threshold,
+        'max_skip_frames': max_skip_frames,
+    }
+
+
+class ClipFrameEncoder:
+    """Lazy HuggingFace CLIP image encoder shared across streaming sessions."""
+
+    def __init__(self, model_name: str):
+        self.model_name = model_name
+        self._model = None
+        self._processor = None
+
+    def _load(self):
+        if self._model is not None:
+            return
+        with _clip_encoder_load_lock:
+            if self._model is not None:
+                return
+            from transformers import CLIPModel, CLIPProcessor
+            self._processor = CLIPProcessor.from_pretrained(self.model_name)
+            self._model = CLIPModel.from_pretrained(self.model_name)
+            self._model.eval()
+
+    @staticmethod
+    def _image(frame):
+        if isinstance(frame, str):
+            encoded = frame.split(',', 1)[1] if frame.startswith('data:') else frame
+            return Image.open(io.BytesIO(base64.b64decode(encoded))).convert('RGB')
+        if isinstance(frame, Image.Image):
+            return frame.convert('RGB')
+        if isinstance(frame, np.ndarray):
+            if frame.ndim == 3 and frame.shape[2] == 3:
+                return Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            return Image.fromarray(frame).convert('RGB')
+        raise TypeError(f'Unsupported frame type: {type(frame).__name__}')
+
+    def encode(self, frame) -> np.ndarray:
+        self._load()
+        import torch
+        inputs = self._processor(images=self._image(frame), return_tensors='pt')
+        with torch.inference_mode():
+            embedding = self._model.get_image_features(**inputs)
+        vector = embedding[0].detach().cpu().numpy().astype(np.float32)
+        norm = float(np.linalg.norm(vector))
+        if norm == 0:
+            raise ValueError('CLIP returned a zero-length embedding')
+        return vector / norm
+
+
+def encode_streaming_frame(frame, selector_config: Dict[str, Any]) -> np.ndarray:
+    model_name = selector_config['model']
+    with _clip_encoder_load_lock:
+        encoder = _clip_encoders.get(model_name)
+        if encoder is None:
+            encoder = ClipFrameEncoder(model_name)
+            _clip_encoders[model_name] = encoder
+    return encoder.encode(frame)
+
 # Conversation images - stores images for chat follow-up questions
 # Format: {conversation_id: PIL.Image}
 conversation_images = {}
@@ -585,38 +669,59 @@ async def _run_streaming_cascade_worker(
 
 
 async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
-    """Select key frames and feed accepted frames to a latest-frame-wins worker."""
+    """Select frames by CLIP similarity and feed them to a latest-frame-wins worker."""
     tool_config = active_streaming_tools.get(client_id)
     if not tool_config or tool_config.get('gemini_live'):
         return
 
     sequence = tool_config.get('frame_sequence', 0) + 1
     tool_config['frame_sequence'] = sequence
-    previous_key_frame = tool_config.get('last_key_frame')
+    selector_config = tool_config.get('frame_selector_config')
+    if selector_config is None:
+        selector_config = load_streaming_frame_selector_config()
+        tool_config['frame_selector_config'] = selector_config
     try:
-        accepted = await asyncio.to_thread(
-            streaming_key_frame_decision,
-            image_base64,
-            previous_key_frame,
+        embedding = await asyncio.to_thread(
+            encode_streaming_frame, image_base64, selector_config
         )
     except Exception as exc:
-        # Preserve streaming availability if the lightweight selector is unavailable.
-        logger.warning("Key-frame selection failed for %s; accepting frame: %s", client_id, exc)
-        accepted = True
+        logger.warning("[Streaming] frame embedding failed -> process: %s", exc)
+        embedding = None
 
-    if not accepted or active_streaming_tools.get(client_id) is not tool_config:
+    if active_streaming_tools.get(client_id) is not tool_config:
         return
 
-    if sequence <= tool_config.get('latest_accepted_sequence', 0):
+    if sequence <= tool_config.get('latest_selector_sequence', 0):
         return
-    tool_config['latest_accepted_sequence'] = sequence
-    tool_config['last_key_frame'] = image_base64
+    tool_config['latest_selector_sequence'] = sequence
+
+    last_embedding = tool_config.get('last_processed_embedding')
+    similarity = None
+    if embedding is not None and last_embedding is not None:
+        similarity = float(np.dot(embedding, last_embedding))
+        skipped = tool_config.get('consecutive_skipped_frames', 0)
+        threshold = selector_config['similarity_threshold']
+        max_skips = selector_config['max_skip_frames']
+        if similarity >= threshold and skipped < max_skips:
+            tool_config['consecutive_skipped_frames'] = skipped + 1
+            logger.info("[Streaming] similarity=%.3f skip", similarity)
+            return
+
+    if embedding is not None:
+        tool_config['last_processed_embedding'] = embedding
+    tool_config['consecutive_skipped_frames'] = 0
+    if similarity is None:
+        logger.info("[Streaming] similarity=n/a process")
+    else:
+        logger.info("[Streaming] similarity=%.3f process", similarity)
+
     frame = (sequence, image, image_base64)
     cascade_task = tool_config.get('cascade_task')
     if cascade_task is not None and not cascade_task.done():
         pending = tool_config.get('pending_key_frame')
         if pending is None or sequence > pending[0]:
             tool_config['pending_key_frame'] = frame
+            logger.info("[Streaming] cascade running -> pending frame updated")
         return
 
     task = asyncio.create_task(
@@ -4485,6 +4590,7 @@ async def handle_client(websocket):
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
                         'predecessor_cascade_task': previous_task,
+                        'frame_selector_config': load_streaming_frame_selector_config(),
                     }
                     
                     # Custom GPT mode: use Gemini Live instead of code execution

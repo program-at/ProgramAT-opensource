@@ -4,8 +4,13 @@ global:
     implementation: llama_planner
   default_llm_when_routing_disabled:
     implementation: gemini_flash_lite
-  streaming_key_frame_selector:
-    implementation: llava
+
+streaming:
+  frame_selector:
+    implementation: clip
+    model: openai/clip-vit-base-patch32
+    similarity_threshold: 0.985
+    max_skip_frames: 20
 
 implementations:
   llama_planner:
