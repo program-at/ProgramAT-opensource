@@ -1,5 +1,6 @@
 global:
-  model_routing_enabled: true
+  planner_enabled: true
+  routing_enabled: true
   system_model:
     implementation: llama_planner
   default_llm_when_routing_disabled:

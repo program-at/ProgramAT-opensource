@@ -263,10 +263,10 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         )
         parser_source = ast.get_source_segment(source, parser)
 
-        self.assertIn("if not routing_enabled:", parser_source)
+        self.assertIn("if not planner_enabled:", parser_source)
         self.assertIn("parsed_data['stages'] = []", parser_source)
         self.assertLess(
-            parser_source.index("if not routing_enabled:"),
+            parser_source.index("if not planner_enabled:"),
             parser_source.index("build_stage_decomposition_prompt"),
         )
 

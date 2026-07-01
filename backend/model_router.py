@@ -222,9 +222,18 @@ def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str
     raw = _load_yaml(path).get("global", {})
     if not isinstance(raw, dict):
         raise ExecutionPolicyError("global execution policy must be a mapping")
-    enabled = raw.get("model_routing_enabled")
-    if not isinstance(enabled, bool):
-        raise ExecutionPolicyError("global.model_routing_enabled must be true or false")
+    planner_enabled = raw.get("planner_enabled")
+    routing_enabled = raw.get("routing_enabled")
+    if not isinstance(planner_enabled, bool):
+        raise ExecutionPolicyError("global.planner_enabled must be true or false")
+    if not isinstance(routing_enabled, bool):
+        raise ExecutionPolicyError("global.routing_enabled must be true or false")
+    if not planner_enabled and routing_enabled:
+        logger.warning(
+            "[Execution Policy] planner_enabled=false with routing_enabled=true is invalid; "
+            "forcing routing_enabled=false"
+        )
+        routing_enabled = False
 
     def implementation_name(field: str) -> str:
         value = raw.get(field)
@@ -233,7 +242,8 @@ def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str
         return str(value["implementation"]).strip()
 
     return {
-        "model_routing_enabled": enabled,
+        "planner_enabled": planner_enabled,
+        "routing_enabled": routing_enabled,
         "system_model": implementation_name("system_model"),
         "default_llm_when_routing_disabled": implementation_name(
             "default_llm_when_routing_disabled"
@@ -250,8 +260,9 @@ def _log_global_execution_config(
     system_profile = implementations.get(system_name)
     default_profile = implementations.get(default_name)
     logger.info(
-        "[Execution Policy] model_routing_enabled=%s",
-        str(config["model_routing_enabled"]).lower(),
+        "[Execution Policy] planner_enabled=%s routing_enabled=%s",
+        str(config["planner_enabled"]).lower(),
+        str(config["routing_enabled"]).lower(),
     )
     logger.info(
         "[Execution Policy] system_model=%s/%s",
@@ -514,7 +525,7 @@ def copilot_llm_call(
             f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
         )
     policy = policies[declared]
-    if global_config["model_routing_enabled"]:
+    if global_config["routing_enabled"] or policy.get("specialized"):
         candidates = policy["candidates"]
         evaluator_name = policy.get("evaluator")
     else:

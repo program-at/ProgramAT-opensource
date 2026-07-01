@@ -3601,8 +3601,8 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             json.dumps(issue_data, ensure_ascii=False),
         )
 
-        routing_enabled = load_global_execution_config()['model_routing_enabled']
-        if not routing_enabled:
+        planner_enabled = load_global_execution_config()['planner_enabled']
+        if not planner_enabled:
             parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
             parsed_data['stages'] = []
             existing_prompts = existing_data.get('original_prompts', []) if existing_data else []

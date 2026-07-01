@@ -65,14 +65,32 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
 
     def test_global_switch_and_models_load_from_execution_policy(self):
         config = model_router.load_global_execution_config()
-        self.assertIsInstance(config["model_routing_enabled"], bool)
+        self.assertTrue(config["planner_enabled"])
+        self.assertTrue(config["routing_enabled"])
         self.assertEqual(config["system_model"], "llama_planner")
         self.assertEqual(config["default_llm_when_routing_disabled"], "gemini_flash_lite")
+
+    def test_planner_disabled_forces_routing_disabled_with_warning(self):
+        config = {
+            "global": {
+                "planner_enabled": False,
+                "routing_enabled": True,
+                "system_model": {"implementation": "planner"},
+                "default_llm_when_routing_disabled": {"implementation": "default"},
+            },
+        }
+        with patch.object(model_router, "_load_yaml", return_value=config), \
+             self.assertLogs(model_router.logger, level="WARNING") as logs:
+            loaded = model_router.load_global_execution_config(Path("unused.yaml"))
+
+        self.assertFalse(loaded["planner_enabled"])
+        self.assertFalse(loaded["routing_enabled"])
+        self.assertIn("forcing routing_enabled=false", "\n".join(logs.output))
 
     def test_llava_uses_litellm_preview_model_from_yaml(self):
         profile = model_router.load_implementation_profiles()["llava"]
         self.assertEqual(profile.kind, "model")
-        self.assertEqual(profile.model, "llava-v1.5-7b-preview")
+        self.assertEqual(profile.model, "groq/llava-v1.5-7b-preview")
 
 class TestAtomicCopilotCall(unittest.TestCase):
     def test_uses_only_first_implementation_and_returns_structured_result(self):
@@ -423,7 +441,8 @@ class TestAtomicCopilotCall(unittest.TestCase):
             for name in ("llava", "gpt4o", "default", "system")
         }
         global_config = {
-            "model_routing_enabled": False,
+            "planner_enabled": True,
+            "routing_enabled": False,
             "system_model": "system",
             "default_llm_when_routing_disabled": "default",
         }
@@ -437,12 +456,12 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(calls, ["default"])
         self.assertEqual(result["implementation"], "default")
         output = "\n".join(logs.output)
-        self.assertIn("model_routing_enabled=false", output)
+        self.assertIn("planner_enabled=true routing_enabled=false", output)
         self.assertIn("system_model=system/test/system", output)
         self.assertIn("default_llm_when_routing_disabled=default/test/default", output)
         self.assertIn("capability=navigation selected implementation=default", output)
 
-    def test_routing_disabled_uses_default_for_specialized_capability(self):
+    def test_routing_disabled_keeps_specialized_capability(self):
         calls = []
 
         def executor(profile, _messages, _images, _metadata):
@@ -460,7 +479,8 @@ class TestAtomicCopilotCall(unittest.TestCase):
             for name in ("yolo", "default", "system")
         }
         global_config = {
-            "model_routing_enabled": False,
+            "planner_enabled": True,
+            "routing_enabled": False,
             "system_model": "system",
             "default_llm_when_routing_disabled": "default",
         }
@@ -470,14 +490,15 @@ class TestAtomicCopilotCall(unittest.TestCase):
              patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
             result = model_router.copilot_llm_call(capability="object_detection_localization")
 
-        self.assertEqual(calls, ["default"])
-        self.assertEqual(result["implementation"], "default")
+        self.assertEqual(calls, ["yolo"])
+        self.assertEqual(result["implementation"], "yolo")
 
 
 class TestSystemCall(unittest.TestCase):
     def test_system_llm_call_uses_yaml_global_implementation(self):
         global_config = {
-            "model_routing_enabled": False,
+            "planner_enabled": False,
+            "routing_enabled": False,
             "system_model": "planner",
             "default_llm_when_routing_disabled": "default",
         }
