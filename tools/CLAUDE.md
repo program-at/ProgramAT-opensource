@@ -56,6 +56,9 @@ def main(image, input_data=None):
   `metadata={"tool_name": "...", "route_text": "..."}` for routing logs.
   For `object_detection_localization`, also provide
   `metadata={"target_labels": ["requested label"]}`. Do not
+  drop those labels in later navigation calls. Pass the same `target_labels`
+  with the target-filtered detection artifact. For exit-finding tools, use
+  `["exit", "door", "doorway", "exit sign"]`.
   hardcode provider/model names, detector names, provider-specific
   `DEFAULT_MODEL` constants, `COCO_CLASSES`, direct `litellm.completion()`
   calls, `YOLO(...)` calls, detector library imports, provider SDK imports,

@@ -37,6 +37,7 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
     load_capability_profiles,
+    load_global_execution_config,
     system_llm_call,
 )
 from litellm_utils import (
@@ -3588,15 +3589,6 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         Dictionary with parsed fields including 'missing_fields' list
     """
     try:
-        try:
-            capability_names = sorted(load_capability_profiles())
-        except Exception:
-            capability_names = [
-                'general_reasoning', 'ocr', 'object_detection_localization',
-                'structured_visual_understanding', 'spatial_reasoning',
-                'navigation', 'camera_motion', 'temporal_reasoning',
-            ]
-
         issue_prompt = _build_issue_extraction_prompt(transcript, existing_data)
         issue_response = system_llm_call(
             messages=[{'role': 'user', 'content': issue_prompt}],
@@ -3608,6 +3600,25 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             "Issue extraction output=%s",
             json.dumps(issue_data, ensure_ascii=False),
         )
+
+        routing_enabled = load_global_execution_config()['model_routing_enabled']
+        if not routing_enabled:
+            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
+            parsed_data['stages'] = []
+            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
+            logger.info("Model routing disabled; skipping stage decomposition")
+            return parsed_data
+
+        try:
+            capability_names = sorted(load_capability_profiles())
+        except Exception:
+            capability_names = [
+                'general_reasoning', 'ocr', 'object_detection_localization',
+                'structured_visual_understanding', 'spatial_reasoning',
+                'navigation', 'camera_motion', 'temporal_reasoning',
+            ]
 
         decomposition_input = _stage_decomposition_input(transcript, existing_data)
         decomposition_prompt = build_stage_decomposition_prompt(decomposition_input)
@@ -3772,6 +3783,9 @@ def merge_parsed_data(existing_data: dict, new_data: dict) -> dict:
             continue  # Don't merge missing_fields, we'll recalculate
         if key == 'original_prompts':
             continue  # Already handled above
+        if key == 'stages':
+            merged[key] = value
+            continue
         
         # Update if new value is non-empty
         if value:

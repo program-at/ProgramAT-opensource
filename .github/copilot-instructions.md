@@ -128,6 +128,7 @@ Do not invent or substitute task categories. In particular, never use `visual_re
 When creating a new tool, explicitly choose the nearest task category before writing a model-backed call. Let the backend choose the actual model/backend and emit routing logs. Do not pass `model`, `requested_model`, provider-specific names, detector names, OCR engine names, or routing registries in generated tools. Do not import `litellm`, provider SDKs, detector libraries, OCR SDKs, `ultralytics`, or `YOLO` directly. Do not call `litellm.completion()` or `YOLO(...)`. Do not create a `ModelRouter` class, model registry, model cache, provider fallback logic, `COCO_CLASSES`, hardcoded model names, `.pt` model loading/discovery logic, wrapper functions, new client modules, or alternative model-routing helpers. If the approved API cannot support the needed capability, add support to the centralized backend router instead of implementing it inside the tool.
 
 For multi-stage issues, write the ordered `copilot_llm_call()` calls explicitly. Extract the useful artifact fields between calls and return the final call's `response` as spoken output.
+Preserve the stage target across calls: pass the same `target_labels` to detection and downstream navigation, and pass only the detector's target-filtered artifact. For exit-finding tools, use `target_labels = ["exit", "door", "doorway", "exit sign"]`.
 
 Example (Uber pickup guidance):
 

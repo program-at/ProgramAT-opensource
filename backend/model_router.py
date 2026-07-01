@@ -38,17 +38,23 @@ NAVIGATION_SYSTEM_PROMPT = (
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
 )
-EVALUATION_PROMPT = """Is this response already sufficient to complete the stage for a blind or low-vision user?
-Assume its observations are correct. Accept concise answers; do not demand more detail or polish.
-Answer YES if it fulfills the stage goal usefully (for example: actionable navigation, a spatial relation, an answer, or requested text).
-Answer NO if it does not complete the goal or relies on visual references such as "look at", "you can see", "when you see", or colors instead of spatial or movement guidance.
+EVALUATION_PROMPT = """Does the candidate complete this stage for a blind or low-vision user?
+Answer YES only if it is about the requested target, gives useful spatial or movement guidance, and does not guide toward an unrelated object. Answer NO otherwise.
 
-Stage: {capability}
-Goal: {goal}
-Prior artifact: {artifact}
-Response: {response}
+Capability: {capability}
+Stage goal: {goal}
+Target labels: {target_labels}
+Previous-stage artifact: {artifact}
+Candidate response: {response}
 
 Return only YES or NO."""
+TARGET_LABEL_ALIASES = {
+    "exit": {"exit", "door", "doorway", "exit sign"},
+    "door": {"exit", "door", "doorway", "exit sign"},
+    "doorway": {"exit", "door", "doorway", "exit sign"},
+    "exit sign": {"exit", "door", "doorway", "exit sign"},
+}
+EXIT_TARGET_LABELS = ["exit", "door", "doorway", "exit sign"]
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 
 
@@ -374,6 +380,38 @@ def _location(bbox: Sequence[float], width: int, height: int) -> str:
     return horizontal if vertical == "middle" else f"{vertical} {horizontal}"
 
 
+def _target_labels(metadata: Mapping[str, Any]) -> List[str]:
+    labels = metadata.get("target_labels") or metadata.get("targets") or []
+    if isinstance(labels, str):
+        labels = [labels]
+    return [str(label).strip().lower() for label in labels if str(label).strip()]
+
+
+def _mentions_exit(value: Any) -> bool:
+    text = str(value or "").lower()
+    return any(label in text for label in EXIT_TARGET_LABELS)
+
+
+def _label_matches_targets(label: Any, target_labels: Sequence[str]) -> bool:
+    normalized = str(label or "").strip().lower()
+    return any(normalized in TARGET_LABEL_ALIASES.get(target, {target}) for target in target_labels)
+
+
+def _filter_target_artifact(artifact: Any, target_labels: Sequence[str]) -> Dict[str, Any]:
+    source = artifact if isinstance(artifact, dict) else {}
+    detections = source.get("detections") if isinstance(source.get("detections"), list) else []
+    matching = [
+        item for item in detections
+        if isinstance(item, dict) and _label_matches_targets(item.get("label"), target_labels)
+    ]
+    return {
+        **{key: value for key, value in source.items() if key != "detections"},
+        "detections": matching,
+        "target_labels": list(target_labels),
+        "matching_detection": bool(matching),
+    }
+
+
 def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     image_items = list(images or [])
     if not image_items:
@@ -385,13 +423,25 @@ def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     model_name = profile.model_name or "yolo11n.pt"
     model = cache.get(model_name) or YOLO(model_name)
     cache[model_name] = model
+    target_labels = _target_labels(metadata)
+    logger.info("[Target Grounding] object_detection_localization target_labels=%s", target_labels)
     detections = []
     for result in model(image, verbose=False):
         for box in result.boxes:
             bbox = [float(value) for value in box.xyxy[0].tolist()]
             detections.append({"label": str(result.names[int(box.cls[0])]), "bbox": bbox, "location": _location(bbox, image.width, image.height)})
-    text = "; ".join(f"{item['label']} at {item['location']}" for item in detections) or "No requested object was detected."
-    return ImplementationResult(_simple_response(text), {"detections": detections})
+    raw_labels = [item["label"] for item in detections]
+    matching = [
+        item for item in detections
+        if not target_labels or _label_matches_targets(item["label"], target_labels)
+    ]
+    logger.info("[Target Grounding] YOLO raw_labels=%s kept_labels=%s", raw_labels, [item["label"] for item in matching])
+    text = "; ".join(f"{item['label']} at {item['location']}" for item in matching) or "No requested object was detected."
+    return ImplementationResult(_simple_response(text), {
+        "detections": matching,
+        "target_labels": target_labels,
+        "matching_detection": bool(matching),
+    })
 
 
 def _groundingdino_executor(profile, messages, images, metadata) -> ImplementationResult:
@@ -464,7 +514,7 @@ def copilot_llm_call(
             f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
         )
     policy = policies[declared]
-    if global_config["model_routing_enabled"] or policy.get("specialized"):
+    if global_config["model_routing_enabled"]:
         candidates = policy["candidates"]
         evaluator_name = policy.get("evaluator")
     else:
@@ -477,9 +527,62 @@ def copilot_llm_call(
     if task and "task_text" not in call_metadata:
         call_metadata["task_text"] = task
     call_messages = list(messages or [])
-    if declared == "navigation":
-        call_messages.insert(0, {"role": "system", "content": NAVIGATION_SYSTEM_PROMPT})
+    target_labels = _target_labels(call_metadata)
+    grounding_context = [goal, task, call_metadata.get("goal"), call_metadata.get("task_text")]
+    grounding_context.extend(message.get("content") for message in call_messages if isinstance(message, dict))
+    if not target_labels and any(_mentions_exit(value) for value in grounding_context):
+        target_labels = list(EXIT_TARGET_LABELS)
+        call_metadata["target_labels"] = target_labels
+    if declared == "object_detection_localization":
+        logger.info("[Target Grounding] object_detection_localization target_labels=%s", target_labels)
     previous_artifact = call_metadata.get("previous_stage_artifact")
+    if declared == "navigation":
+        if not target_labels and isinstance(previous_artifact, dict):
+            target_labels = _target_labels(previous_artifact)
+            call_metadata["target_labels"] = target_labels
+        if target_labels and previous_artifact is not None:
+            previous_artifact = _filter_target_artifact(previous_artifact, target_labels)
+            call_metadata["previous_stage_artifact"] = previous_artifact
+            logger.info("[Target Grounding] navigation target_artifact=%s", previous_artifact)
+            if not previous_artifact["matching_detection"]:
+                fallback_text = (
+                    "I couldn't locate the exit in this frame."
+                    if _label_matches_targets("exit", target_labels)
+                    else "I couldn't locate the requested target in this frame."
+                )
+                return {
+                    "response": fallback_text,
+                    "artifact": {"text": fallback_text, **previous_artifact},
+                    "implementation": "target_not_found",
+                    "capability": declared,
+                }
+        legacy_output = call_metadata.get("previous_stage_output")
+        if target_labels and previous_artifact is None and legacy_output is not None:
+            logger.info("[Target Grounding] navigation target_artifact=%s", legacy_output)
+            matching_alias = any(
+                alias in str(legacy_output).lower()
+                for target in target_labels
+                for alias in TARGET_LABEL_ALIASES.get(target, {target})
+            )
+            if not matching_alias:
+                fallback_text = (
+                    "I couldn't locate the exit in this frame."
+                    if _label_matches_targets("exit", target_labels)
+                    else "I couldn't locate the requested target in this frame."
+                )
+                return {
+                    "response": fallback_text,
+                    "artifact": {"text": fallback_text, "target_labels": target_labels, "matching_detection": False},
+                    "implementation": "target_not_found",
+                    "capability": declared,
+                }
+        target_text = ", ".join(target_labels) or "the requested destination"
+        call_messages.insert(0, {
+            "role": "system",
+            "content": NAVIGATION_SYSTEM_PROMPT +
+            f" The navigation target is: {target_text}. "
+            "Never substitute another detected object for this target.",
+        })
     if previous_artifact is not None:
         call_messages.append({
             "role": "user",
@@ -547,6 +650,7 @@ def copilot_llm_call(
                         "content": EVALUATION_PROMPT.format(
                             capability=declared,
                             goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
+                            target_labels=json.dumps(target_labels, ensure_ascii=False),
                             artifact=json.dumps(previous_artifact, ensure_ascii=False, default=str),
                             response=response_text,
                         ),

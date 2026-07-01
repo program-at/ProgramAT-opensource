@@ -254,6 +254,22 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("Issue creation stopped because stage decomposition failed", source)
         self.assertIn("Always return at least one stage", build_stage_decomposition_prompt("test"))
 
+    def test_routing_disabled_parser_skips_stage_decomposition(self):
+        source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        parser = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "parse_transcript_with_ai"
+        )
+        parser_source = ast.get_source_segment(source, parser)
+
+        self.assertIn("if not routing_enabled:", parser_source)
+        self.assertIn("parsed_data['stages'] = []", parser_source)
+        self.assertLess(
+            parser_source.index("if not routing_enabled:"),
+            parser_source.index("build_stage_decomposition_prompt"),
+        )
+
     def test_uber_stage_plan_reaches_issue_markdown(self):
         plan = self.normalize(
             {
