@@ -4,6 +4,8 @@ global:
     implementation: llama_planner
   default_llm_when_routing_disabled:
     implementation: gemini_flash_lite
+  streaming_key_frame_selector:
+    implementation: llava
 
 implementations:
   llama_planner:
@@ -16,7 +18,7 @@ implementations:
 
   llava:
     kind: model
-    model: ollama/llava:7b
+    model: llava-v1.5-7b-preview
 
   qwen:
     kind: model

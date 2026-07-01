@@ -68,6 +68,52 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertIsInstance(config["model_routing_enabled"], bool)
         self.assertEqual(config["system_model"], "llama_planner")
         self.assertEqual(config["default_llm_when_routing_disabled"], "gemini_flash_lite")
+        self.assertEqual(config["streaming_key_frame_selector"], "llava")
+
+    def test_llava_uses_litellm_preview_model_from_yaml(self):
+        profile = model_router.load_implementation_profiles()["llava"]
+        self.assertEqual(profile.kind, "model")
+        self.assertEqual(profile.model, "llava-v1.5-7b-preview")
+
+
+class TestStreamingKeyFrameSelection(unittest.TestCase):
+    def test_uses_yaml_model_and_compares_previous_with_current_frame(self):
+        profile = model_router.ImplementationProfile(
+            "selector", "model", "configured-preview-model"
+        )
+        with patch.object(
+            model_router,
+            "load_global_execution_config",
+            return_value={"streaming_key_frame_selector": "selector"},
+        ), patch.object(
+            model_router,
+            "load_implementation_profiles",
+            return_value={"selector": profile},
+        ), patch.object(model_router, "call_model", return_value=response("YES")) as call:
+            accepted = model_router.streaming_key_frame_decision("current", "previous")
+
+        self.assertTrue(accepted)
+        self.assertEqual(call.call_args.args[0], "configured-preview-model")
+        self.assertEqual(call.call_args.kwargs["images"], ["previous", "current"])
+        self.assertEqual(call.call_args.kwargs["metadata"], {
+            "temperature": 0,
+            "max_tokens": 3,
+        })
+        self.assertIn("Answer only YES or NO", call.call_args.args[1][0]["content"])
+
+    def test_no_discards_frame_and_invalid_answer_is_rejected(self):
+        profile = model_router.ImplementationProfile("selector", "model", "configured")
+        config = {"streaming_key_frame_selector": "selector"}
+        with patch.object(model_router, "load_global_execution_config", return_value=config), \
+             patch.object(model_router, "load_implementation_profiles", return_value={"selector": profile}), \
+             patch.object(model_router, "call_model", return_value=response("NO")):
+            self.assertFalse(model_router.streaming_key_frame_decision("current"))
+
+        with patch.object(model_router, "load_global_execution_config", return_value=config), \
+             patch.object(model_router, "load_implementation_profiles", return_value={"selector": profile}), \
+             patch.object(model_router, "call_model", return_value=response("maybe")), \
+             self.assertRaises(ValueError):
+            model_router.streaming_key_frame_decision("current")
 
 
 class TestAtomicCopilotCall(unittest.TestCase):

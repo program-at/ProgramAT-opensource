@@ -34,6 +34,7 @@ load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
     load_capability_profiles,
+    streaming_key_frame_decision,
     system_llm_call,
 )
 from litellm_utils import (
@@ -558,10 +559,76 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
     logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
+async def _run_streaming_cascade_worker(
+    websocket, client_id: str, tool_config: Dict[str, Any], frame
+) -> None:
+    """Run one cascade at a time and replace pending work with the latest frame."""
+    current = frame
+    try:
+        predecessor = tool_config.pop('predecessor_cascade_task', None)
+        if predecessor is not None and not predecessor.done():
+            try:
+                await asyncio.shield(predecessor)
+            except Exception as exc:
+                logger.warning("Previous streaming cascade ended with an error: %s", exc)
+        while current is not None:
+            if active_streaming_tools.get(client_id) is not tool_config:
+                return
+            _, image, image_base64 = current
+            await run_streaming_tools(websocket, client_id, image, image_base64)
+            if active_streaming_tools.get(client_id) is not tool_config:
+                return
+            current = tool_config.pop('pending_key_frame', None)
+    finally:
+        if active_streaming_tools.get(client_id) is tool_config:
+            tool_config['cascade_task'] = None
+
+
+async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
+    """Select key frames and feed accepted frames to a latest-frame-wins worker."""
+    tool_config = active_streaming_tools.get(client_id)
+    if not tool_config or tool_config.get('gemini_live'):
+        return
+
+    sequence = tool_config.get('frame_sequence', 0) + 1
+    tool_config['frame_sequence'] = sequence
+    previous_key_frame = tool_config.get('last_key_frame')
+    try:
+        accepted = await asyncio.to_thread(
+            streaming_key_frame_decision,
+            image_base64,
+            previous_key_frame,
+        )
+    except Exception as exc:
+        # Preserve streaming availability if the lightweight selector is unavailable.
+        logger.warning("Key-frame selection failed for %s; accepting frame: %s", client_id, exc)
+        accepted = True
+
+    if not accepted or active_streaming_tools.get(client_id) is not tool_config:
+        return
+
+    if sequence <= tool_config.get('latest_accepted_sequence', 0):
+        return
+    tool_config['latest_accepted_sequence'] = sequence
+    tool_config['last_key_frame'] = image_base64
+    frame = (sequence, image, image_base64)
+    cascade_task = tool_config.get('cascade_task')
+    if cascade_task is not None and not cascade_task.done():
+        pending = tool_config.get('pending_key_frame')
+        if pending is None or sequence > pending[0]:
+            tool_config['pending_key_frame'] = frame
+        return
+
+    task = asyncio.create_task(
+        _run_streaming_cascade_worker(websocket, client_id, tool_config, frame)
+    )
+    tool_config['cascade_task'] = task
+
+
 async def run_streaming_tools(websocket, client_id: str, image, image_base64: str): 
     """
     Run all active streaming tools for this client on the current frame.
-    Respects throttle settings to avoid overwhelming the client.
+    Called only by the key-frame scheduler's single-flight worker.
     """
     global active_streaming_tools
     
@@ -582,17 +649,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
     if tool_config.get('installing_module'):
         return  # Skip this frame, module installation in progress
     
-    # Check if enough time has passed since last run (throttling)
-    last_run = tool_config.get('last_run')
-    throttle_ms = tool_config.get('throttle_ms', 500)  # Reduce to 500ms for better responsiveness
-    
-    if last_run:
-        elapsed_ms = (now - last_run).total_seconds() * 1000
-        if elapsed_ms < throttle_ms:
-            logger.debug(f"Throttling {tool_name} for {client_id} - only {elapsed_ms:.0f}ms since last run")
-            return  # Skip this frame, too soon
-    
-    # Update last run time
+    # Record execution time for observability; admission is owned by the key-frame selector.
     tool_config['last_run'] = now
     
     # Get tool info
@@ -755,7 +812,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     logger.info(f"Calling main() function for {tool_name} on {client_id}")
                     sig = inspect.signature(exec_locals['main'])
                     if len(sig.parameters) == 2:  # Should take (image, input_data)
-                        result = exec_locals['main'](image, parsed_input)
+                        result = await asyncio.to_thread(exec_locals['main'], image, parsed_input)
                         logger.info(f"main() returned result for {tool_name}: {type(result)}")
                     else:
                         logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
@@ -767,7 +824,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 try:
                     sig = inspect.signature(exec_locals['run'])
                     if len(sig.parameters) == 2:
-                        result = exec_locals['run'](image, parsed_input)
+                        result = await asyncio.to_thread(exec_locals['run'], image, parsed_input)
                     else:
                         logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
                 except Exception as e:
@@ -779,7 +836,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                     sig = inspect.signature(exec_locals['process_image'])
                     # Only call if it takes 2 params (entry point), not 1 (helper function)
                     if len(sig.parameters) == 2:
-                        result = exec_locals['process_image'](image, parsed_input)
+                        result = await asyncio.to_thread(exec_locals['process_image'], image, parsed_input)
                     else:
                         logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
                 except Exception as e:
@@ -793,7 +850,9 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                         verbalizer = exec_locals['get_verbalizer']()
                         if not verbalizer and GEMINI_API_KEY:
                             exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                    result = exec_locals['process_frame_for_text'](image_base64)
+                    result = await asyncio.to_thread(
+                        exec_locals['process_frame_for_text'], image_base64
+                    )
                 except Exception as e:
                     logger.error(f"Error calling process_frame_for_text(): {e}")
             
@@ -4413,6 +4472,8 @@ async def handle_client(websocket):
                         client_tool_code=data.get('tool_code', ''),
                     )
                     
+                    previous_config = active_streaming_tools.get(client_id)
+                    previous_task = previous_config.get('cascade_task') if previous_config else None
                     active_streaming_tools[client_id] = {
                         'tool': {
                             'name': tool_name,
@@ -4423,6 +4484,7 @@ async def handle_client(websocket):
                         },
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
+                        'predecessor_cascade_task': previous_task,
                     }
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
@@ -5001,7 +5063,9 @@ async def handle_client(websocket):
                     if last_frame['image'] is not None and client_id in active_streaming_tools:
                         logger.info(f"About to run streaming tools for {client_id}")
                         # Run tool execution in background task to avoid blocking frame processing
-                        task = asyncio.create_task(run_streaming_tools(websocket, client_id, last_frame['image'], last_frame['base64']))
+                        task = asyncio.create_task(schedule_streaming_frame(
+                            websocket, client_id, last_frame['image'], last_frame['base64']
+                        ))
                         # Add error handling to the task
                         task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if t.exception() else None)
                     elif last_frame['image'] is None:
