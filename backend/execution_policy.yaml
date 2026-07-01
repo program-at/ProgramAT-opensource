@@ -33,6 +33,10 @@ implementations:
     kind: model
     model: openai/gpt-4o
 
+  gpt4o-mini:
+    kind: model
+    model: openai/gpt-4o-mini
+
   google_vision:
     kind: google_vision
 
@@ -50,7 +54,7 @@ cascade_profiles:
       - llava
       - gemini
       - gpt4o
-    evaluator: gpt4o
+    evaluator: gpt4o-mini
 
 general_reasoning:
   cascade: default_reasoning
