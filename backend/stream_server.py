@@ -774,7 +774,7 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
 async def _run_streaming_cascade_worker(
     websocket, client_id: str, tool_config: Dict[str, Any], frame
 ) -> None:
-    """Run one cascade at a time, honoring the interval with latest-frame-wins."""
+    """Run one cascade at a time while retaining only the newest changed frame."""
     current = frame
     try:
         predecessor = tool_config.pop('predecessor_cascade_task', None)
@@ -795,7 +795,7 @@ async def _run_streaming_cascade_worker(
                 remaining = interval - (asyncio.get_running_loop().time() - completed_at)
                 if remaining > 0:
                     logger.info(
-                        "[Streaming] minimum interval active; waiting %.3fs for newest frame",
+                        "[Streaming] minimum interval active (%.1f s remaining)",
                         remaining,
                     )
                     await asyncio.sleep(remaining)
@@ -805,26 +805,67 @@ async def _run_streaming_cascade_worker(
                     if newest is not None and newest[0] > current[0]:
                         current = newest
 
-            should_process = await _streaming_frame_is_key(tool_config, current)
-            if active_streaming_tools.get(client_id) is not tool_config:
-                return
-            if not should_process:
-                current = tool_config.pop('pending_key_frame', None)
-                continue
+            # A pending frame may have been compared before the running frame
+            # completed. Recheck it against the newly processed reference.
+            if current[4] != tool_config.get('last_processed_sequence'):
+                if not _streaming_embedding_is_changed(tool_config, current[3]):
+                    current = tool_config.pop('pending_key_frame', None)
+                    continue
 
-            _, image, image_base64 = current
-            await run_streaming_tools(websocket, client_id, image, image_base64)
+            _, image, image_base64, embedding, _ = current
+            logger.info("[Streaming] starting cascade")
+            processed = await run_streaming_tools(
+                websocket, client_id, image, image_base64
+            )
             if active_streaming_tools.get(client_id) is not tool_config:
                 return
+            if processed and embedding is not None:
+                tool_config['last_processed_embedding'] = embedding
+                tool_config['last_processed_sequence'] = current[0]
+                tool_config['consecutive_skipped_frames'] = 0
+            elif not processed:
+                logger.warning(
+                    "[Streaming] cascade produced no response; similarity reference unchanged"
+                )
+
             current = tool_config.pop('pending_key_frame', None)
     finally:
         if active_streaming_tools.get(client_id) is tool_config:
             tool_config['cascade_task'] = None
 
 
-async def _streaming_frame_is_key(tool_config: Dict[str, Any], frame) -> bool:
-    """Return whether a queued frame passes the independent CLIP selector."""
-    sequence, _image, image_base64 = frame
+def _streaming_embedding_is_changed(
+    tool_config: Dict[str, Any], embedding: Optional[np.ndarray]
+) -> bool:
+    """Compare a frame only with the last successfully processed frame."""
+    last_embedding = tool_config.get('last_processed_embedding')
+    if embedding is None or last_embedding is None:
+        logger.info("[Streaming] similarity(last_processed)=n/a -> changed")
+        return True
+
+    similarity = float(np.dot(
+        _normalize_streaming_embedding(embedding),
+        _normalize_streaming_embedding(last_embedding),
+    ))
+    threshold = tool_config['frame_selector_config']['similarity_threshold']
+    if similarity >= threshold:
+        tool_config['consecutive_skipped_frames'] = (
+            tool_config.get('consecutive_skipped_frames', 0) + 1
+        )
+        logger.info(
+            "[Streaming] similarity(last_processed)=%.3f -> skip", similarity
+        )
+        return False
+
+    logger.info(
+        "[Streaming] similarity(last_processed)=%.3f -> changed", similarity
+    )
+    return True
+
+
+async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
+    """Compute CLIP immediately and return a changed-frame candidate."""
+    sequence, image, image_base64 = frame
     selector_config = tool_config.get('frame_selector_config')
     if selector_config is None:
         selector_config = load_streaming_frame_selector_config()
@@ -833,54 +874,49 @@ async def _streaming_frame_is_key(tool_config: Dict[str, Any], frame) -> bool:
         embedding = await asyncio.to_thread(
             encode_streaming_frame, image_base64, selector_config
         )
+        embedding = _normalize_streaming_embedding(embedding)
     except Exception as exc:
         logger.warning("[Streaming] frame embedding failed -> process: %s", exc)
         embedding = None
 
     if sequence <= tool_config.get('latest_selector_sequence', 0):
-        return False
+        return None
     tool_config['latest_selector_sequence'] = sequence
-
-    if embedding is not None:
-        embedding = _normalize_streaming_embedding(embedding)
-    last_embedding = tool_config.get('last_processed_embedding')
-    similarity = None
-    if embedding is not None and last_embedding is not None:
-        last_embedding = _normalize_streaming_embedding(last_embedding)
-        similarity = float(np.dot(embedding, last_embedding))
-        skipped = tool_config.get('consecutive_skipped_frames', 0)
-        threshold = selector_config['similarity_threshold']
-        max_skips = selector_config['max_skip_frames']
-        if similarity >= threshold and skipped < max_skips:
-            tool_config['consecutive_skipped_frames'] = skipped + 1
-            logger.info("[Streaming] similarity=%.3f skip", similarity)
-            return False
-
-    if embedding is not None:
-        tool_config['last_processed_embedding'] = embedding
-    tool_config['consecutive_skipped_frames'] = 0
-    if similarity is None:
-        logger.info("[Streaming] similarity=n/a process")
-    else:
-        logger.info("[Streaming] similarity=%.3f process", similarity)
-    return True
+    if not _streaming_embedding_is_changed(tool_config, embedding):
+        pending = tool_config.get('pending_key_frame')
+        if pending is not None and pending[0] < sequence:
+            tool_config.pop('pending_key_frame', None)
+            logger.info("[Streaming] pending frame cleared by newer similar frame")
+        return None
+    return (
+        sequence,
+        image,
+        image_base64,
+        embedding,
+        tool_config.get('last_processed_sequence'),
+    )
 
 
 async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
-    """Queue frames for a completion-interval and CLIP-gated single-flight worker."""
+    """Run CLIP immediately, then rate-limit only expensive cascade execution."""
     tool_config = active_streaming_tools.get(client_id)
     if not tool_config or tool_config.get('gemini_live'):
         return
 
     sequence = tool_config.get('frame_sequence', 0) + 1
     tool_config['frame_sequence'] = sequence
-    frame = (sequence, image, image_base64)
+    frame = await _encode_streaming_candidate(
+        tool_config, (sequence, image, image_base64)
+    )
+    if active_streaming_tools.get(client_id) is not tool_config or frame is None:
+        return
+
     cascade_task = tool_config.get('cascade_task')
     if cascade_task is not None and not cascade_task.done():
         pending = tool_config.get('pending_key_frame')
         if pending is None or sequence > pending[0]:
             tool_config['pending_key_frame'] = frame
-            logger.info("[Streaming] skipped frame (already running); pending frame replaced")
+            logger.info("[Streaming] pending frame updated")
         return
 
     task = asyncio.create_task(
@@ -894,11 +930,11 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
     tool_config = active_streaming_tools.get(client_id)
     if not tool_config:
         logger.warning("[Streaming] no active tool for client=%s", client_id)
-        return
+        return False
     execution_lock = tool_config.setdefault('execution_lock', asyncio.Lock())
     if execution_lock.locked():
         logger.info("[Streaming] skipped frame (already running) client=%s", client_id)
-        return
+        return False
 
     execution_id = tool_config.get('execution_sequence', 0) + 1
     tool_config['execution_sequence'] = execution_id
@@ -913,9 +949,9 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
                 execution_id,
             )
             tool_config['current_execution_id'] = execution_id
-            await _execute_streaming_tools_unlocked(
+            return bool(await _execute_streaming_tools_unlocked(
                 websocket, client_id, image, image_base64
-            )
+            ))
         finally:
             STREAMING_EXECUTION_CONTEXT.reset(context_token)
             tool_config.pop('current_execution_id', None)
@@ -934,18 +970,18 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
     
     if client_id not in active_streaming_tools:
         logger.warning(f"Client {client_id} not in active_streaming_tools")
-        return
+        return False
     
     tool_config = active_streaming_tools[client_id]
     now = datetime.now()
     
     # Gemini Live tools handle their own query loop — don't exec code here
     if tool_config.get('gemini_live'):
-        return
+        return False
     
     # Check if tool is installing modules (skip execution during installation)
     if tool_config.get('installing_module'):
-        return  # Skip this frame, module installation in progress
+        return False  # Skip this frame, module installation in progress
     
     # Record execution time for observability; admission is owned by the key-frame selector.
     tool_config['last_run'] = now
@@ -1194,11 +1230,15 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
                 execution_id,
                 tool_name,
             )
+            return True
             
         except Exception as e:
             logger.error(f"Error in streaming tool {tool_name}: {e}")
             # Don't send errors for streaming (would be too noisy)
             # Just log them for debugging
+            return False
+
+    return False
 
 
 # =============================================================================

@@ -147,7 +147,10 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0)
 
         run.assert_not_called()
-        self.assertIn("[Streaming] similarity=1.000 skip", "\n".join(logs.output))
+        self.assertIn(
+            "[Streaming] similarity(last_processed)=1.000 -> skip",
+            "\n".join(logs.output),
+        )
         self.assertIs(
             stream_server.active_streaming_tools["client"]["last_processed_embedding"],
             previous,
@@ -169,6 +172,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             calls.append(image)
             if image == "frame-1":
                 await asyncio.sleep(0.1)
+            return True
 
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
              patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]), \
@@ -182,6 +186,25 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, ["frame-1", "frame-3"])
         self.assertNotIn("pending_key_frame", stream_server.active_streaming_tools["client"])
+
+    async def test_newer_similar_frame_clears_stale_changed_pending_frame(self):
+        previous = np.array([1.0, 0.0], dtype=np.float32)
+        tool_config = {
+            "tool": {"name": "tool"},
+            "frame_selector_config": dict(self.selector_config),
+            "last_processed_embedding": previous,
+            "frame_sequence": 1,
+            "pending_key_frame": (1, "old", "old-b64", np.array([0.0, 1.0]), 0),
+        }
+        stream_server.active_streaming_tools["client"] = tool_config
+
+        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
+             patch.object(stream_server, "encode_streaming_frame", return_value=previous):
+            await stream_server.schedule_streaming_frame(
+                None, "client", "new-similar", "new-b64"
+            )
+
+        self.assertNotIn("pending_key_frame", tool_config)
 
     async def test_execution_lock_prevents_overlapping_direct_runs(self):
         stream_server.active_streaming_tools["client"] = {
@@ -259,9 +282,10 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.01)
                 first_finished.set()
             tool_config["last_execution_completed_at"] = asyncio.get_running_loop().time()
+            return True
 
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
-             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]), \
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]) as encode, \
              patch.object(stream_server, "run_streaming_tools", side_effect=run), \
              self.assertLogs(stream_server.logger, level="INFO") as logs:
             await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
@@ -273,11 +297,12 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             await asyncio.wait_for(tool_config["cascade_task"], 1)
 
         self.assertEqual(calls, ["frame-1", "frame-4"])
+        self.assertEqual(encode.call_count, 4)
         output = "\n".join(logs.output)
         self.assertIn("minimum interval active", output)
-        self.assertIn("pending frame replaced", output)
+        self.assertIn("pending frame updated", output)
 
-    async def test_max_skip_frames_forces_periodic_processing(self):
+    async def test_skipped_frames_never_replace_last_processed_reference(self):
         config = {**self.selector_config, "max_skip_frames": 2}
         stream_server.active_streaming_tools["client"] = {
             "tool": {"name": "tool"},
@@ -287,6 +312,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
 
         async def run(_websocket, _client_id, image, _image_base64):
             calls.append(image)
+            return True
 
         embedding = np.array([1.0, 0.0], dtype=np.float32)
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
@@ -300,7 +326,11 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
                 if task is not None:
                     await task
 
-        self.assertEqual(calls, ["frame-1", "frame-4"])
+        self.assertEqual(calls, ["frame-1"])
+        np.testing.assert_array_equal(
+            stream_server.active_streaming_tools["client"]["last_processed_embedding"],
+            embedding,
+        )
 
     def test_selector_config_loads_from_execution_policy(self):
         config = stream_server.load_streaming_frame_selector_config()
