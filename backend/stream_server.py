@@ -35,6 +35,10 @@ from dotenv import load_dotenv
 # Load .env before importing modules that read routing/provider settings at import time.
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
+MIN_STREAMING_EXECUTION_INTERVAL = float(
+    os.getenv('MIN_STREAMING_EXECUTION_INTERVAL', '2.0')
+)
+
 from model_router import (
     STREAMING_EXECUTION_CONTEXT,
     load_capability_profiles,
@@ -593,11 +597,28 @@ class ClipFrameEncoder:
         import torch
         inputs = self._processor(images=self._image(frame), return_tensors='pt')
         with torch.inference_mode():
-            embedding = self._model.get_image_features(**inputs)
+            output = self._model.get_image_features(**inputs)
+        embedding = _clip_embedding_tensor(output)
         vector = _normalize_streaming_embedding(
             embedding.detach().cpu().numpy().astype(np.float32)
         )
         return vector
+
+
+def _clip_embedding_tensor(output):
+    """Extract a tensor from old and new Transformers CLIP output shapes."""
+    if hasattr(output, 'detach'):
+        return output
+    for attribute in ('image_embeds', 'pooler_output'):
+        embedding = getattr(output, attribute, None)
+        if embedding is not None and hasattr(embedding, 'detach'):
+            return embedding
+    hidden_state = getattr(output, 'last_hidden_state', None)
+    if hidden_state is not None and hasattr(hidden_state, 'detach'):
+        return hidden_state[:, 0, :]
+    raise TypeError(
+        f'CLIP image features returned unsupported output type {type(output).__name__}'
+    )
 
 
 def _normalize_streaming_embedding(embedding) -> np.ndarray:
@@ -753,7 +774,7 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
 async def _run_streaming_cascade_worker(
     websocket, client_id: str, tool_config: Dict[str, Any], frame
 ) -> None:
-    """Run one cascade at a time and replace pending work with the latest frame."""
+    """Run one cascade at a time, honoring the interval with latest-frame-wins."""
     current = frame
     try:
         predecessor = tool_config.pop('predecessor_cascade_task', None)
@@ -765,6 +786,32 @@ async def _run_streaming_cascade_worker(
         while current is not None:
             if active_streaming_tools.get(client_id) is not tool_config:
                 return
+
+            completed_at = tool_config.get('last_execution_completed_at')
+            if completed_at is not None:
+                interval = float(tool_config.get(
+                    'min_execution_interval', MIN_STREAMING_EXECUTION_INTERVAL
+                ))
+                remaining = interval - (asyncio.get_running_loop().time() - completed_at)
+                if remaining > 0:
+                    logger.info(
+                        "[Streaming] minimum interval active; waiting %.3fs for newest frame",
+                        remaining,
+                    )
+                    await asyncio.sleep(remaining)
+                    if active_streaming_tools.get(client_id) is not tool_config:
+                        return
+                    newest = tool_config.pop('pending_key_frame', None)
+                    if newest is not None and newest[0] > current[0]:
+                        current = newest
+
+            should_process = await _streaming_frame_is_key(tool_config, current)
+            if active_streaming_tools.get(client_id) is not tool_config:
+                return
+            if not should_process:
+                current = tool_config.pop('pending_key_frame', None)
+                continue
+
             _, image, image_base64 = current
             await run_streaming_tools(websocket, client_id, image, image_base64)
             if active_streaming_tools.get(client_id) is not tool_config:
@@ -775,14 +822,9 @@ async def _run_streaming_cascade_worker(
             tool_config['cascade_task'] = None
 
 
-async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
-    """Select frames by CLIP similarity and feed them to a latest-frame-wins worker."""
-    tool_config = active_streaming_tools.get(client_id)
-    if not tool_config or tool_config.get('gemini_live'):
-        return
-
-    sequence = tool_config.get('frame_sequence', 0) + 1
-    tool_config['frame_sequence'] = sequence
+async def _streaming_frame_is_key(tool_config: Dict[str, Any], frame) -> bool:
+    """Return whether a queued frame passes the independent CLIP selector."""
+    sequence, _image, image_base64 = frame
     selector_config = tool_config.get('frame_selector_config')
     if selector_config is None:
         selector_config = load_streaming_frame_selector_config()
@@ -795,11 +837,8 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         logger.warning("[Streaming] frame embedding failed -> process: %s", exc)
         embedding = None
 
-    if active_streaming_tools.get(client_id) is not tool_config:
-        return
-
     if sequence <= tool_config.get('latest_selector_sequence', 0):
-        return
+        return False
     tool_config['latest_selector_sequence'] = sequence
 
     if embedding is not None:
@@ -815,7 +854,7 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         if similarity >= threshold and skipped < max_skips:
             tool_config['consecutive_skipped_frames'] = skipped + 1
             logger.info("[Streaming] similarity=%.3f skip", similarity)
-            return
+            return False
 
     if embedding is not None:
         tool_config['last_processed_embedding'] = embedding
@@ -824,7 +863,17 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         logger.info("[Streaming] similarity=n/a process")
     else:
         logger.info("[Streaming] similarity=%.3f process", similarity)
+    return True
 
+
+async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
+    """Queue frames for a completion-interval and CLIP-gated single-flight worker."""
+    tool_config = active_streaming_tools.get(client_id)
+    if not tool_config or tool_config.get('gemini_live'):
+        return
+
+    sequence = tool_config.get('frame_sequence', 0) + 1
+    tool_config['frame_sequence'] = sequence
     frame = (sequence, image, image_base64)
     cascade_task = tool_config.get('cascade_task')
     if cascade_task is not None and not cascade_task.done():
@@ -870,6 +919,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
         finally:
             STREAMING_EXECUTION_CONTEXT.reset(context_token)
             tool_config.pop('current_execution_id', None)
+            tool_config['last_execution_completed_at'] = asyncio.get_running_loop().time()
             logger.info("[Streaming] execution finished client=%s execution=%s", client_id, execution_id)
 
 
@@ -4713,6 +4763,7 @@ async def handle_client(websocket):
                         'throttle_ms': data.get('throttle_ms', 1000),
                         'predecessor_cascade_task': previous_task,
                         'frame_selector_config': load_streaming_frame_selector_config(),
+                        'min_execution_interval': MIN_STREAMING_EXECUTION_INTERVAL,
                         'execution_lock': asyncio.Lock(),
                     }
                     

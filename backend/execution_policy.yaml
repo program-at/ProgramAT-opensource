@@ -41,14 +41,10 @@ implementations:
     kind: yolo
     model_name: yolo11n.pt
 
-  gemini:
-    kind: model
-    model: gemini/gemini-3.1-flash-lite-preview
-
 cascade_profiles:
   default_reasoning:
     candidates:
-      - gemini
+      - gemini_flash_lite
       - gpt4o
     evaluator: gpt4o-mini
 

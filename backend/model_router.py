@@ -39,16 +39,27 @@ NAVIGATION_SYSTEM_PROMPT = (
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
 )
-EVALUATION_PROMPT = """Does the candidate complete this stage for a blind or low-vision user?
-Answer YES only if it is about the requested target, gives useful spatial or movement guidance, and does not guide toward an unrelated object. Answer NO otherwise.
+EVALUATION_PROMPT = """Decide whether the current response already provides enough useful information that running a more expensive model is unlikely to significantly improve the user experience.
+
+Use the capability as context for what "enough" means:
+- OCR requires complete text extraction for the request.
+- Object localization requires enough spatial detail to locate the requested object.
+- Navigation requires actionable guidance toward the requested destination.
+- General and visual reasoning require enough useful information to satisfy the request, not the longest possible explanation.
+
+Answer YES if the response fully answers the request, contains sufficient useful information, is specific enough to help, and is unlikely to benefit substantially from another model.
+
+Answer NO only if important requested information is missing, the response is too vague or generic, or another model is likely to provide significantly more useful information.
+
+Do not answer NO merely because you prefer different wording or style, the response could include minor additional details, or another model might phrase an already adequate answer differently.
 
 Capability: {capability}
-Stage goal: {goal}
-Target labels: {target_labels}
-Previous-stage artifact: {artifact}
-Candidate response: {response}
+User or stage request: {goal}
+Target labels, when relevant: {target_labels}
+Previous-stage artifact, when relevant: {artifact}
+Current response: {response}
 
-Return only YES or NO."""
+Output only YES or NO."""
 TARGET_LABEL_ALIASES = {
     "exit": {"exit", "door", "doorway", "exit sign"},
     "door": {"exit", "door", "doorway", "exit sign"},

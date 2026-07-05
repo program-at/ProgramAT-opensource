@@ -114,6 +114,12 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
     async def _to_thread_inline(function, *args, **kwargs):
         return function(*args, **kwargs)
 
+    async def asyncSetUp(self):
+        self.interval_patcher = patch.object(
+            stream_server, "MIN_STREAMING_EXECUTION_INTERVAL", 0.0
+        )
+        self.interval_patcher.start()
+
     async def asyncTearDown(self):
         tasks = [
             config.get("cascade_task")
@@ -123,6 +129,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         stream_server.active_streaming_tools.clear()
+        self.interval_patcher.stop()
 
     async def test_similar_frame_is_skipped_without_updating_embedding(self):
         previous = np.array([1.0, 0.0], dtype=np.float32)
@@ -134,11 +141,13 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         }
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
              patch.object(stream_server, "encode_streaming_frame", return_value=current), \
-             patch.object(stream_server, "run_streaming_tools") as run:
+             patch.object(stream_server, "run_streaming_tools") as run, \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
             await stream_server.schedule_streaming_frame(None, "client", "image", "base64")
             await asyncio.sleep(0)
 
         run.assert_not_called()
+        self.assertIn("[Streaming] similarity=1.000 skip", "\n".join(logs.output))
         self.assertIs(
             stream_server.active_streaming_tools["client"]["last_processed_embedding"],
             previous,
@@ -213,6 +222,60 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(vector.shape, (768,))
         self.assertAlmostEqual(float(np.linalg.norm(vector)), 1.0, places=6)
         self.assertGreater(vector[0], vector[1])
+
+    def test_structured_clip_output_uses_pooled_embedding(self):
+        import torch
+
+        pooled = torch.tensor([[3.0, 4.0]], dtype=torch.float32)
+        output = SimpleNamespace(pooler_output=pooled)
+        encoder = stream_server.ClipFrameEncoder("test-clip")
+        encoder._processor = lambda **_kwargs: {}
+        encoder._model = SimpleNamespace(
+            get_image_features=lambda **_kwargs: output
+        )
+
+        with patch.object(encoder, "_load"), patch.object(encoder, "_image", return_value=object()):
+            vector = encoder.encode("frame")
+
+        np.testing.assert_allclose(vector, [0.6, 0.8], atol=1e-6)
+
+    async def test_minimum_interval_runs_newest_pending_frame(self):
+        tool_config = {
+            "tool": {"name": "tool"},
+            "frame_selector_config": dict(self.selector_config),
+            "min_execution_interval": 0.05,
+        }
+        stream_server.active_streaming_tools["client"] = tool_config
+        calls = []
+        first_finished = asyncio.Event()
+        embeddings = {
+            f"b64-{index}": np.array([float(index), 1.0], dtype=np.float32)
+            for index in range(1, 5)
+        }
+
+        async def run(_websocket, _client_id, image, _image_base64):
+            calls.append(image)
+            if image == "frame-1":
+                await asyncio.sleep(0.01)
+                first_finished.set()
+            tool_config["last_execution_completed_at"] = asyncio.get_running_loop().time()
+
+        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]), \
+             patch.object(stream_server, "run_streaming_tools", side_effect=run), \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
+            await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
+            await asyncio.sleep(0)
+            await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
+            await stream_server.schedule_streaming_frame(None, "client", "frame-3", "b64-3")
+            await first_finished.wait()
+            await stream_server.schedule_streaming_frame(None, "client", "frame-4", "b64-4")
+            await asyncio.wait_for(tool_config["cascade_task"], 1)
+
+        self.assertEqual(calls, ["frame-1", "frame-4"])
+        output = "\n".join(logs.output)
+        self.assertIn("minimum interval active", output)
+        self.assertIn("pending frame replaced", output)
 
     async def test_max_skip_frames_forces_periodic_processing(self):
         config = {**self.selector_config, "max_skip_frames": 2}

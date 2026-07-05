@@ -87,11 +87,19 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertFalse(loaded["routing_enabled"])
         self.assertIn("forcing routing_enabled=false", "\n".join(logs.output))
 
-    def test_unavailable_llava_is_not_configured_or_selected(self):
+    def test_deprecated_llava_is_not_configured_or_selected(self):
         self.assertNotIn("llava", model_router.load_implementation_profiles())
         policies = model_router.load_execution_policies()
         for policy in policies.values():
             self.assertNotIn("llava", policy["candidates"])
+
+    def test_reasoning_cascade_uses_gemini_then_gpt4o(self):
+        policy = model_router.load_execution_policies()["general_reasoning"]
+        self.assertEqual(
+            policy["candidates"],
+            ["gemini_flash_lite", "gpt4o"],
+        )
+        self.assertEqual(policy["evaluator"], "gpt4o-mini")
 
 class TestAtomicCopilotCall(unittest.TestCase):
     def test_uses_only_first_implementation_and_returns_structured_result(self):
@@ -223,11 +231,11 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["implementation"], "llava")
         self.assertIn("Previous-stage artifact", calls[0][1][-2]["content"])
         evaluator_prompt = calls[1][1][0]["content"]
-        self.assertIn('Target labels: ["exit", "door", "doorway", "exit sign"]', evaluator_prompt)
-        self.assertIn("requested target", evaluator_prompt)
-        self.assertIn("unrelated object", evaluator_prompt)
-        self.assertIn("blind or low-vision", evaluator_prompt)
-        self.assertIn("Return only YES or NO", evaluator_prompt)
+        self.assertIn('Target labels, when relevant: ["exit", "door", "doorway", "exit sign"]', evaluator_prompt)
+        self.assertIn("enough useful information", evaluator_prompt)
+        self.assertIn("Navigation requires actionable guidance", evaluator_prompt)
+        self.assertIn("Do not answer NO merely", evaluator_prompt)
+        self.assertIn("Output only YES or NO", evaluator_prompt)
         self.assertEqual(calls[1][2], [])
 
     def test_exit_target_is_inferred_and_evaluator_receives_grounding_context(self):
@@ -255,7 +263,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(nav_metadata["target_labels"], model_router.EXIT_TARGET_LABELS)
         self.assertEqual([item["label"] for item in nav_metadata["previous_stage_artifact"]["detections"]], ["door"])
         prompt = calls[1][1][0]["content"]
-        self.assertIn('Target labels: ["exit", "door", "doorway", "exit sign"]', prompt)
+        self.assertIn('Target labels, when relevant: ["exit", "door", "doorway", "exit sign"]', prompt)
         self.assertIn('"label": "door"', prompt)
         self.assertNotIn('"label": "toilet"', prompt)
 
@@ -325,7 +333,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         decisions = iter(["NO", "NO"])
 
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
             if profile.name == "gpt4o" and is_evaluation:
                 return model_router.ImplementationResult(response(next(decisions)))
             return model_router.ImplementationResult(response(f"response from {profile.name}"))
@@ -355,7 +363,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_returns_best_response_when_later_candidate_fails(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 return model_router.ImplementationResult(response("NO"))
             if profile.name == "llava":
@@ -383,7 +391,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_evaluator_failure_continues_to_next_candidate(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Return only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 raise TimeoutError("evaluation timed out")
             return model_router.ImplementationResult(response(f"response from {profile.name}"))

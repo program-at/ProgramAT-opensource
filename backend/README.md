@@ -33,9 +33,9 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider API keys: the default system model uses `GROQ_API_KEY`; execution policies use `OPENAI_API_KEY` and `GOOGLE_VISION_API_KEY`; LLaVA runs through local Ollama.
+- Provider API keys: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_VISION_API_KEY`.
   - System calls use the fixed system model.
-  - Detection and OCR use one implementation. Reasoning capabilities use LLaVA, then GPT-4o evaluation and escalation when necessary.
+  - Detection and OCR use one implementation. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
 
 ### LLM Interfaces
 
@@ -48,8 +48,8 @@ Take-photo model-backed work should call `copilot_llm_call(...)` through `model_
 ```yaml
 cascade_profiles:
   default_reasoning:
-    candidates: [llava, qwen, gpt4o]
-    evaluator: gpt4o
+    candidates: [gemini_flash_lite, gpt4o]
+    evaluator: gpt4o-mini
 
 navigation:
   cascade: default_reasoning
@@ -64,6 +64,7 @@ Edit `backend/execution_policy.yaml` to toggle routing, change system/default mo
 
 ### Optional
 
+- `MIN_STREAMING_EXECUTION_INTERVAL`: Minimum seconds between the completion of one streaming execution and the start of the next (default: `2.0`). Frames received while waiting replace the pending frame, so the newest scene is analyzed when the interval expires.
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8081`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
