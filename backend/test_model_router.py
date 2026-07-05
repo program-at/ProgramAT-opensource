@@ -87,10 +87,11 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertFalse(loaded["routing_enabled"])
         self.assertIn("forcing routing_enabled=false", "\n".join(logs.output))
 
-    def test_llava_uses_litellm_preview_model_from_yaml(self):
-        profile = model_router.load_implementation_profiles()["llava"]
-        self.assertEqual(profile.kind, "model")
-        self.assertEqual(profile.model, "groq/llava-v1.5-7b-preview")
+    def test_unavailable_llava_is_not_configured_or_selected(self):
+        self.assertNotIn("llava", model_router.load_implementation_profiles())
+        policies = model_router.load_execution_policies()
+        for policy in policies.values():
+            self.assertNotIn("llava", policy["candidates"])
 
 class TestAtomicCopilotCall(unittest.TestCase):
     def test_uses_only_first_implementation_and_returns_structured_result(self):

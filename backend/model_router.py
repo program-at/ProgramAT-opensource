@@ -9,6 +9,7 @@ import logging
 import os
 import urllib.parse
 import urllib.request
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,9 @@ TARGET_LABEL_ALIASES = {
 }
 EXIT_TARGET_LABELS = ["exit", "door", "doorway", "exit sign"]
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
+STREAMING_EXECUTION_CONTEXT: ContextVar[bool] = ContextVar(
+    "streaming_execution", default=False
+)
 
 
 class ExecutionPolicyError(ValueError):
@@ -535,6 +539,9 @@ def copilot_llm_call(
     call_metadata = dict(metadata or {})
     call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
     call_metadata["capability"] = declared
+    streaming_log = bool(
+        call_metadata.get("streaming") or STREAMING_EXECUTION_CONTEXT.get()
+    )
     if task and "task_text" not in call_metadata:
         call_metadata["task_text"] = task
     call_messages = list(messages or [])
@@ -610,6 +617,12 @@ def copilot_llm_call(
     best_implementation = ""
     selected = False
     for index, candidate in enumerate(candidates):
+        if streaming_log:
+            logger.info(
+                "[Streaming] implementation candidate=%s capability=%s",
+                candidate,
+                declared,
+            )
         logger.info("[Execution Policy] capability=%s trying=%s", declared, candidate)
         try:
             profile = implementations[candidate]
@@ -688,6 +701,13 @@ def copilot_llm_call(
                 evaluator_name,
                 decision,
             )
+            if streaming_log:
+                logger.info(
+                    "[Streaming] evaluator=%s capability=%s decision=%s",
+                    evaluator_name,
+                    declared,
+                    decision,
+                )
             if decision == "NO":
                 continue
 

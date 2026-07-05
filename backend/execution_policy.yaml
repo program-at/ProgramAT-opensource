@@ -22,10 +22,6 @@ implementations:
     kind: model
     model: gemini/gemini-3.1-flash-lite-preview
 
-  llava:
-    kind: model
-    model: groq/llava-v1.5-7b-preview
-
   qwen:
     kind: model
     model: dashscope/qwen2.5-omni-7b
@@ -52,7 +48,6 @@ implementations:
 cascade_profiles:
   default_reasoning:
     candidates:
-      - llava
       - gemini
       - gpt4o
     evaluator: gpt4o-mini

@@ -30,6 +30,8 @@ export interface ServerMessage {
   [key: string]: any;
 }
 
+type WebSocketMessageEvent = { data: string };
+
 class WebSocketService {
   private ws: WebSocket | null = null;
   private serverUrl: string = Config.WEBSOCKET_SERVER_URL;
@@ -51,7 +53,7 @@ class WebSocketService {
 
   // Raw message listeners — attached to whichever socket is active.
   // Saved so they auto-attach to reviewWs when connectReview() opens it.
-  private rawMessageListeners: Set<(event: MessageEvent) => void> = new Set();
+  private rawMessageListeners: Set<(event: WebSocketMessageEvent) => void> = new Set();
   
   // Heartbeat mechanism
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -954,19 +956,21 @@ class WebSocketService {
    * auto-attached to the review socket when connectReview() succeeds.
    * Use this instead of (WebSocketService as any).ws.addEventListener().
    */
-  addMessageListener(fn: (event: MessageEvent) => void): void {
+  addMessageListener(fn: (event: WebSocketMessageEvent) => void): void {
     this.rawMessageListeners.add(fn);
-    if (this.ws) this.ws.addEventListener('message', fn);
-    if (this.reviewWs) this.reviewWs.addEventListener('message', fn);
+    console.log('[WebSocketService] raw listener registered; count:', this.rawMessageListeners.size);
+    if (this.ws) (this.ws as any).addEventListener('message', fn);
+    if (this.reviewWs) (this.reviewWs as any).addEventListener('message', fn);
   }
 
   /**
    * Remove a raw WebSocket message event listener from all sockets.
    */
-  removeMessageListener(fn: (event: MessageEvent) => void): void {
+  removeMessageListener(fn: (event: WebSocketMessageEvent) => void): void {
     this.rawMessageListeners.delete(fn);
-    if (this.ws) this.ws.removeEventListener('message', fn);
-    if (this.reviewWs) this.reviewWs.removeEventListener('message', fn);
+    console.log('[WebSocketService] raw listener removed; count:', this.rawMessageListeners.size);
+    if (this.ws) (this.ws as any).removeEventListener('message', fn);
+    if (this.reviewWs) (this.reviewWs as any).removeEventListener('message', fn);
   }
 
   // ─── Review Server (general server) methods ────────────────────────────────
@@ -1004,7 +1008,7 @@ class WebSocketService {
           this.reviewFrameNumber = 0;
           hasResolved = true;
           // Auto-attach any raw message listeners that were registered before review mode
-          this.rawMessageListeners.forEach(fn => this.reviewWs!.addEventListener('message', fn));
+          this.rawMessageListeners.forEach(fn => (this.reviewWs as any).addEventListener('message', fn));
           if (this.onReviewConnectionChangeCallback) this.onReviewConnectionChangeCallback(true);
           resolve();
         };
@@ -1047,7 +1051,7 @@ class WebSocketService {
     if (this.reviewWs) {
       console.log('[WebSocketService] Disconnecting from review server');
       // Detach raw message listeners before closing
-      this.rawMessageListeners.forEach(fn => this.reviewWs!.removeEventListener('message', fn));
+      this.rawMessageListeners.forEach(fn => (this.reviewWs as any).removeEventListener('message', fn));
       try {
         if (this.reviewWs.readyState === WebSocket.OPEN || this.reviewWs.readyState === WebSocket.CONNECTING) {
           this.reviewWs.close();

@@ -174,6 +174,46 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls, ["frame-1", "frame-3"])
         self.assertNotIn("pending_key_frame", stream_server.active_streaming_tools["client"])
 
+    async def test_execution_lock_prevents_overlapping_direct_runs(self):
+        stream_server.active_streaming_tools["client"] = {
+            "tool": {"name": "tool"},
+            "execution_lock": asyncio.Lock(),
+        }
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def execute(*_args):
+            calls.append("run")
+            started.set()
+            await release.wait()
+
+        with patch.object(stream_server, "_execute_streaming_tools_unlocked", side_effect=execute), \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
+            first = asyncio.create_task(
+                stream_server.run_streaming_tools(None, "client", "frame-1", "b64-1")
+            )
+            await started.wait()
+            await stream_server.run_streaming_tools(None, "client", "frame-2", "b64-2")
+            release.set()
+            await first
+
+        self.assertEqual(calls, ["run"])
+        output = "\n".join(logs.output)
+        self.assertIn("[Streaming] skipped frame (already running)", output)
+        self.assertIn("[Streaming] execution finished", output)
+
+    def test_token_embeddings_are_mean_pooled_and_normalized(self):
+        embedding = np.zeros((1, 50, 768), dtype=np.float32)
+        embedding[:, :, 0] = 2.0
+        embedding[:, :, 1] = 1.0
+
+        vector = stream_server._normalize_streaming_embedding(embedding)
+
+        self.assertEqual(vector.shape, (768,))
+        self.assertAlmostEqual(float(np.linalg.norm(vector)), 1.0, places=6)
+        self.assertGreater(vector[0], vector[1])
+
     async def test_max_skip_frames_forces_periodic_processing(self):
         config = {**self.selector_config, "max_skip_frames": 2}
         stream_server.active_streaming_tools["client"] = {

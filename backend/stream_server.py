@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
 
 from model_router import (
+    STREAMING_EXECUTION_CONTEXT,
     load_capability_profiles,
     load_global_execution_config,
     system_llm_call,
@@ -593,11 +594,25 @@ class ClipFrameEncoder:
         inputs = self._processor(images=self._image(frame), return_tensors='pt')
         with torch.inference_mode():
             embedding = self._model.get_image_features(**inputs)
-        vector = embedding[0].detach().cpu().numpy().astype(np.float32)
-        norm = float(np.linalg.norm(vector))
-        if norm == 0:
-            raise ValueError('CLIP returned a zero-length embedding')
-        return vector / norm
+        vector = _normalize_streaming_embedding(
+            embedding.detach().cpu().numpy().astype(np.float32)
+        )
+        return vector
+
+
+def _normalize_streaming_embedding(embedding) -> np.ndarray:
+    """Pool token embeddings into one normalized vector for cosine similarity."""
+    vector = np.asarray(embedding, dtype=np.float32)
+    if vector.ndim == 0:
+        raise ValueError('CLIP returned a scalar embedding')
+    if vector.ndim > 1:
+        feature_axis = vector.ndim - 1
+        vector = vector.mean(axis=tuple(range(feature_axis)))
+    vector = vector.reshape(-1)
+    norm = float(np.linalg.norm(vector))
+    if norm == 0:
+        raise ValueError('CLIP returned a zero-length embedding')
+    return vector / norm
 
 
 def encode_streaming_frame(frame, selector_config: Dict[str, Any]) -> np.ndarray:
@@ -787,9 +802,12 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         return
     tool_config['latest_selector_sequence'] = sequence
 
+    if embedding is not None:
+        embedding = _normalize_streaming_embedding(embedding)
     last_embedding = tool_config.get('last_processed_embedding')
     similarity = None
     if embedding is not None and last_embedding is not None:
+        last_embedding = _normalize_streaming_embedding(last_embedding)
         similarity = float(np.dot(embedding, last_embedding))
         skipped = tool_config.get('consecutive_skipped_frames', 0)
         threshold = selector_config['similarity_threshold']
@@ -813,7 +831,7 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         pending = tool_config.get('pending_key_frame')
         if pending is None or sequence > pending[0]:
             tool_config['pending_key_frame'] = frame
-            logger.info("[Streaming] cascade running -> pending frame updated")
+            logger.info("[Streaming] skipped frame (already running); pending frame replaced")
         return
 
     task = asyncio.create_task(
@@ -822,7 +840,40 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
     tool_config['cascade_task'] = task
 
 
-async def run_streaming_tools(websocket, client_id: str, image, image_base64: str): 
+async def run_streaming_tools(websocket, client_id: str, image, image_base64: str):
+    """Execute at most one streaming tool body per client at a time."""
+    tool_config = active_streaming_tools.get(client_id)
+    if not tool_config:
+        logger.warning("[Streaming] no active tool for client=%s", client_id)
+        return
+    execution_lock = tool_config.setdefault('execution_lock', asyncio.Lock())
+    if execution_lock.locked():
+        logger.info("[Streaming] skipped frame (already running) client=%s", client_id)
+        return
+
+    execution_id = tool_config.get('execution_sequence', 0) + 1
+    tool_config['execution_sequence'] = execution_id
+    async with execution_lock:
+        logger.info("[Streaming] execution started client=%s execution=%s", client_id, execution_id)
+        context_token = STREAMING_EXECUTION_CONTEXT.set(True)
+        try:
+            logger.info("[Streaming] routing started client=%s execution=%s", client_id, execution_id)
+            logger.info(
+                "[Streaming] planner selected pre-generated tool stages client=%s execution=%s",
+                client_id,
+                execution_id,
+            )
+            tool_config['current_execution_id'] = execution_id
+            await _execute_streaming_tools_unlocked(
+                websocket, client_id, image, image_base64
+            )
+        finally:
+            STREAMING_EXECUTION_CONTEXT.reset(context_token)
+            tool_config.pop('current_execution_id', None)
+            logger.info("[Streaming] execution finished client=%s execution=%s", client_id, execution_id)
+
+
+async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, image_base64: str):
     """
     Run all active streaming tools for this client on the current frame.
     Called only by the key-frame scheduler's single-flight worker.
@@ -880,6 +931,12 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
         import io
         stdout_capture = io.StringIO()
         
+        def streaming_copilot_llm_call(*args, **kwargs):
+            metadata = dict(kwargs.get('metadata') or {})
+            metadata['streaming'] = True
+            kwargs['metadata'] = metadata
+            return tool_copilot_llm_call(*args, **kwargs)
+
         tool_config['exec_env'] = {
             'parsed_input': parsed_input,
             'common_modules': common_modules,
@@ -887,7 +944,7 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
             'exec_globals_base': {
                 '__builtins__': __builtins__,
                 '__file__': str(Path(__file__).parent.parent / 'tools' / 'dynamic_tool.py'),
-                'copilot_llm_call': tool_copilot_llm_call,
+                'copilot_llm_call': streaming_copilot_llm_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -1071,9 +1128,22 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
             response_data = _build_mobile_tool_response(
                 'tool_stream_result', tool_name, result, now, printed_output
             )
+            execution_id = tool_config.get('current_execution_id')
+            response_data['execution_id'] = execution_id
             _log_final_tool_response(tool_name, response_data)
+            logger.info(
+                "[Streaming] final response generated client=%s execution=%s text=%r",
+                client_id,
+                execution_id,
+                response_data['result'],
+            )
             await websocket.send(json.dumps(response_data))
-            logger.info(f"Sent tool_stream_result to {client_id} for {tool_name}")
+            logger.info(
+                "[Streaming] websocket result sent client=%s execution=%s type=tool_stream_result tool=%s",
+                client_id,
+                execution_id,
+                tool_name,
+            )
             
         except Exception as e:
             logger.error(f"Error in streaming tool {tool_name}: {e}")
@@ -4643,6 +4713,7 @@ async def handle_client(websocket):
                         'throttle_ms': data.get('throttle_ms', 1000),
                         'predecessor_cascade_task': previous_task,
                         'frame_selector_config': load_streaming_frame_selector_config(),
+                        'execution_lock': asyncio.Lock(),
                     }
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
@@ -5219,7 +5290,7 @@ async def handle_client(websocket):
                     
                     # Run active streaming tools asynchronously
                     if last_frame['image'] is not None and client_id in active_streaming_tools:
-                        logger.info(f"About to run streaming tools for {client_id}")
+                        logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
                         # Run tool execution in background task to avoid blocking frame processing
                         task = asyncio.create_task(schedule_streaming_frame(
                             websocket, client_id, last_frame['image'], last_frame['base64']
