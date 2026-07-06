@@ -20,8 +20,6 @@ NGROK_AUTHTOKEN=PASTE_NGROK_TOKEN_HERE
 
 GOOGLE_APPLICATION_CREDENTIALS=backend/credentials.json
 
-LLM_MODEL=gemini-3-flash-preview
-
 =====================================================
 
 Additional notes:

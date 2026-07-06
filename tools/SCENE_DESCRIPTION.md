@@ -41,7 +41,6 @@ Configure the tool by sending `input_data` parameters:
 | `focus` | `general`, `people`, `objects`, `text`, `navigation` | `general` | What to emphasize |
 | `style` | `narrative`, `concise` | `narrative` | Audio presentation style |
 | `api_key` | string | from env | Optional: Override API key |
-| `model` | string | `gemini-3-flash-preview` | Optional: Gemini model to use |
 
 ### Detail Levels
 
@@ -83,7 +82,7 @@ Configure the tool by sending `input_data` parameters:
 
 The tool exports several functions that can be used by other tools:
 
-### `analyze_scene(image, api_key, detail_level, focus, model_name)`
+### `analyze_scene(image, api_key, detail_level, focus)`
 
 Core function that performs AI-powered scene analysis.
 
