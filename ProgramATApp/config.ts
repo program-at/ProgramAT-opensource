@@ -39,7 +39,7 @@ export const Config = {
 
   // General/review server URL — used in review mode for tool execution and PR fetching.
   // This is the shared server that hosts the tools being reviewed.
-  REVIEW_SERVER_URL: 'ws://34.162.96.157:8081',
+  REVIEW_SERVER_URL: 'ws://34.162.201.227:8081',
 
   // GitHub repo for the general/review server (owner/repo format).
   // Used in review mode so the user's server can post approve/reject to the correct repo.

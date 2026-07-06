@@ -18,10 +18,13 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   KeyboardAvoidingView,
+  ActivityIndicator,
 } from 'react-native';
+import { launchImageLibrary } from 'react-native-image-picker';
 import { useTheme } from './ThemeContext';
 import WebSocketService from './WebSocketService';
 import TextToSpeechService from './TextToSpeechService';
+import VideoRecorderModal from './VideoRecorderModal';
 
 interface TextInputProps {
   serverFeedback?: string;
@@ -47,16 +50,250 @@ export default function TextInputComponent({
   const [error, setError] = useState('');
   const inputRef = useRef<RNTextInput>(null);
 
+  // Video attachment state
+  const [videoUri, setVideoUri] = useState<string | null>(null);
+  const [isVideoRecorderOpen, setIsVideoRecorderOpen] = useState(false);
+  const [isPickingFromLibrary, setIsPickingFromLibrary] = useState(false);
+  const [isSending, setIsSending] = useState(false);
+
+  // Ideation round-trip state: set when server returns {status:'ideation'} from HTTP path.
+  // Cleared once the user submits their answer and the issue is created.
+  const [pendingIdeation, setPendingIdeation] = useState<{token: string} | null>(null);
+
   const isCreateMode = !selectedIssue;
+
+  /** Convert the WebSocket URL to an HTTP base URL for REST endpoints. */
+  const getHttpBaseUrl = (): string => {
+    const wsUrl = WebSocketService.getServerUrl(); // e.g. 'ws://1.2.3.4:8081'
+    return wsUrl.replace(/^wss?/, 'http');
+  };
+
+  /**
+   * Build the multipart 'video' part from a file:// URI, using the real file
+   * extension for the name and MIME type. Hardcoding .mp4 for a .mov file makes
+   * iOS reject the upload with "Network request failed", so derive both.
+   */
+  const buildVideoPart = (uri: string) => {
+    const ext = (uri.split('.').pop() || 'mp4').toLowerCase().split('?')[0];
+    const mimeByExt: Record<string, string> = {
+      mp4: 'video/mp4',
+      m4v: 'video/mp4',
+      mov: 'video/quicktime',
+      qt: 'video/quicktime',
+      webm: 'video/webm',
+    };
+    const type = mimeByExt[ext] || 'video/mp4';
+    return { uri, type, name: `recording.${ext}` } as any;
+  };
+
+  const handlePickFromLibrary = async () => {
+    setIsPickingFromLibrary(true);
+    try {
+      const result = await launchImageLibrary({
+        mediaType: 'video',
+        videoQuality: 'high',
+      });
+      if (result.didCancel || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (asset.uri) {
+        setVideoUri(asset.uri);
+      }
+    } finally {
+      setIsPickingFromLibrary(false);
+    }
+  };
+
+  const handleSubmitWithVideo = async () => {
+    const baseUrl = getHttpBaseUrl();
+    console.log('[TextInput] submit-creation baseUrl=', JSON.stringify(baseUrl), 'videoUri=', JSON.stringify(videoUri));
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    let shouldFallbackToWebSocket = false;
+    let serverError = '';
+
+    try {
+      const formData = new FormData();
+
+      if (pendingIdeation) {
+        // Shape B: user answered the ideation question — send answer + token, no video.
+        formData.append('metadata', JSON.stringify({
+          text: inputText.trim(),
+          ideation_answer: inputText.trim(),
+          token: pendingIdeation.token,
+        }));
+      } else {
+        // Shape A: first submission — include text and optional video.
+        formData.append('metadata', JSON.stringify({ text: inputText.trim() }));
+        if (videoUri) {
+          formData.append('video', buildVideoPart(videoUri));
+        }
+      }
+
+      // Video summarization + two Gemini calls can take 20s+, well past the
+      // platform default network timeout. Allow up to 120s before aborting.
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/submit-creation`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const result = await response.json();
+      console.log('[TextInput] submit-creation response status=', response.status, 'body=', JSON.stringify(result));
+
+      if (result.status === 'created') {
+        const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
+        TextToSpeechService.speak(`Issue ${result.issue_number} created.${videoNote}`);
+        setInputText('');
+        setVideoUri(null);
+        setPendingIdeation(null);
+        Keyboard.dismiss();
+        return;
+      }
+
+      if (result.status === 'ideation') {
+        // Server wants one more turn — speak the question, clear input, store token.
+        if (result.question) {
+          TextToSpeechService.speak(result.question);
+        }
+        setPendingIdeation({ token: result.token });
+        setInputText('');
+        Keyboard.dismiss();
+        return;
+      }
+
+      // Server returned an error — capture its message, then fall back to
+      // WebSocket so AI parsing still applies.
+      if (typeof result.error === 'string') {
+        serverError = result.error;
+      }
+      shouldFallbackToWebSocket = true;
+    } catch (e) {
+      // Network error — fall back to WebSocket so AI parsing still applies
+      console.log('[TextInput] submit-creation fetch threw:', String(e));
+      shouldFallbackToWebSocket = true;
+    } finally {
+      setIsSending(false);
+    }
+
+    if (shouldFallbackToWebSocket) {
+      const msg = 'Video submission failed. Please try again.';
+      TextToSpeechService.speak(msg);
+      setError(serverError || msg);
+    }
+  };
+
+  const handleUpdateWithVideo = async () => {
+    const baseUrl = getHttpBaseUrl();
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+    if (!selectedIssue) {
+      setError('No issue selected');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    try {
+      const formData = new FormData();
+      formData.append('metadata', JSON.stringify({
+        text: inputText.trim(),
+        issue_number: selectedIssue.number,
+      }));
+      if (videoUri) {
+        formData.append('video', buildVideoPart(videoUri));
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/submit-update`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const result = await response.json();
+
+      if (result.status === 'updated') {
+        const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
+        TextToSpeechService.speak(`Update sent to issue.${videoNote}`);
+        setInputText('');
+        setVideoUri(null);
+        Keyboard.dismiss();
+      } else {
+        // Fall back to WebSocket with text only
+        TextToSpeechService.speak('Video failed. Sending text update.');
+        setVideoUri(null);
+        if (WebSocketService.isConnected()) {
+          WebSocketService.sendText(inputText.trim());
+          setInputText('');
+          Keyboard.dismiss();
+        } else {
+          setError(result.error ?? 'Submission failed. Please try again.');
+        }
+      }
+    } catch {
+      // Network error — fall back to WebSocket text-only
+      TextToSpeechService.speak('Video failed. Sending text update.');
+      setVideoUri(null);
+      if (WebSocketService.isConnected()) {
+        WebSocketService.sendText(inputText.trim());
+        setInputText('');
+        Keyboard.dismiss();
+      } else {
+        setError('Could not reach the server. Check your connection.');
+      }
+    } finally {
+      setIsSending(false);
+    }
+  };
 
   const handleTextChange = (text: string) => {
     setInputText(text);
     setError('');
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!inputText.trim()) {
       setError('Please enter some text');
+      return;
+    }
+
+    // Answering an ideation question (HTTP round-trip, video path) → second POST
+    if (pendingIdeation) {
+      await handleSubmitWithVideo();
+      return;
+    }
+
+    // Create mode + video attached → submit via HTTP multipart (with AI parsing)
+    if (isCreateMode && videoUri) {
+      await handleSubmitWithVideo();
+      return;
+    }
+
+    // Update mode + video attached → submit via HTTP multipart (appends summary)
+    if (!isCreateMode && videoUri) {
+      await handleUpdateWithVideo();
       return;
     }
 
@@ -66,19 +303,19 @@ export default function TextInputComponent({
     }
 
     setError('');
-    
+
     // If switching to create mode or already in create mode, send mode first
     if (isCreateMode) {
       WebSocketService.sendIssueSelection('create');
     }
-    
+
     // Send the text (without the prefix, backend now knows the mode)
     console.log('[TextInput] Sending text in', isCreateMode ? 'CREATE' : 'UPDATE', 'mode:', inputText);
     WebSocketService.sendText(inputText.trim());
 
     // Clear input after sending
     setInputText('');
-    
+
     // Dismiss keyboard
     Keyboard.dismiss();
   };
@@ -103,8 +340,7 @@ export default function TextInputComponent({
   const handleClear = () => {
     setInputText('');
     setError('');
-    
-    // Dismiss keyboard
+    setPendingIdeation(null);
     Keyboard.dismiss();
   };
 
@@ -216,6 +452,64 @@ export default function TextInputComponent({
             </View>
           )}
 
+          {/* Video attachment row — available in both create and update modes */}
+          <View style={styles.videoRow}>
+              {isPickingFromLibrary ? (
+                <View style={styles.pickingRow}>
+                  <ActivityIndicator size="small" color={theme.primary} />
+                  <Text style={[styles.pickingText, { color: theme.textSecondary }]}>
+                    Attaching video from library…
+                  </Text>
+                </View>
+              ) : videoUri ? (
+                <>
+                  <View style={[styles.videoAttachedBadge, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}>
+                    <Text style={[styles.videoAttachedText, { color: theme.text }]}>📹 Video attached</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setIsVideoRecorderOpen(true)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Re-record video">
+                    <Text style={[styles.videoActionText, { color: theme.primary }]}>Re-record</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handlePickFromLibrary}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Pick different video from library">
+                    <Text style={[styles.videoActionText, { color: theme.primary }]}>Library</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setVideoUri(null)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove video attachment">
+                    <Text style={[styles.videoActionText, { color: theme.error }]}>Remove</Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <View style={styles.videoSourceRow}>
+                  <TouchableOpacity
+                    style={[styles.videoSourceButton, { backgroundColor: theme.primary }]}
+                    onPress={() => setIsVideoRecorderOpen(true)}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Record a new video">
+                    <Text style={styles.videoSourceButtonText}>📹  Record Video</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.videoSourceButton, { backgroundColor: theme.backgroundSecondary, borderWidth: 1, borderColor: theme.border }]}
+                    onPress={handlePickFromLibrary}
+                    accessible={true}
+                    accessibilityRole="button"
+                    accessibilityLabel="Choose a video from your photo library">
+                    <Text style={[styles.videoSourceButtonText, { color: theme.text }]}>📁 Attach from Library</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+
           <View style={styles.buttonContainer}>
             <TouchableOpacity
               style={[styles.button, styles.clearButton, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}
@@ -233,19 +527,34 @@ export default function TextInputComponent({
                 styles.button, 
                 styles.sendButton, 
                 { backgroundColor: theme.primary }, 
-                !inputText.trim() && styles.buttonDisabled
+                (!inputText.trim() || isSending) && styles.buttonDisabled
               ]}
               onPress={handleSend}
-              disabled={!inputText.trim()}
+              disabled={!inputText.trim() || isSending}
               accessible={true}
-              accessibilityLabel="Send text"
+              accessibilityLabel={isSending ? 'Submitting…' : (isCreateMode && videoUri ? 'Submit with video' : 'Send text')}
               accessibilityHint="Sends the text to the server"
               accessibilityRole="button"
-              accessibilityState={{ disabled: !inputText.trim() }}>
-              <Text style={[styles.buttonText, styles.sendButtonText]}>Send</Text>
+              accessibilityState={{ disabled: !inputText.trim() || isSending }}>
+              {isSending
+                ? <ActivityIndicator size="small" color="#fff" />
+                : <Text style={[styles.buttonText, styles.sendButtonText]}>
+                    {isCreateMode && videoUri ? 'Submit' : 'Send'}
+                  </Text>
+              }
             </TouchableOpacity>
           </View>
         </ScrollView>
+
+        {/* Video recorder overlay — create mode only */}
+        <VideoRecorderModal
+          visible={isVideoRecorderOpen}
+          onVideoRecorded={(path) => {
+            setVideoUri(path);
+            setIsVideoRecorderOpen(false);
+          }}
+          onCancel={() => setIsVideoRecorderOpen(false)}
+        />
     </KeyboardAvoidingView>
   );
 }
@@ -428,5 +737,67 @@ const styles = StyleSheet.create({
   },
   sendButtonText: {
     color: '#fff',
+  },
+  // Video attachment row
+  videoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  addVideoButton: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addVideoText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  videoAttachedBadge: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  videoAttachedText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  videoActionText: {
+    fontSize: 14,
+    fontWeight: '600',
+    paddingVertical: 4,
+  },
+  pickingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 6,
+    flex: 1,
+  },
+  pickingText: {
+    fontSize: 15,
+    fontStyle: 'italic',
+  },
+  videoSourceRow: {
+    gap: 10,
+    flex: 1,
+  },
+  videoSourceButton: {
+    paddingVertical: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  videoSourceButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

@@ -105,6 +105,7 @@ def detect_text_google_vision(
             - error: Error message
     """
     if not VISION_API_AVAILABLE:
+        print(f"VisionAPI unavailable. Using Tesseract.")
         # Fallback to Tesseract OCR if available
         return _detect_text_tesseract(image)
     
@@ -112,16 +113,21 @@ def detect_text_google_vision(
     if api_key is None:
         # First, check for GOOGLE_APPLICATION_CREDENTIALS (standard Google Cloud variable)
         api_key = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', '')
+        print(f"finding credentials google application credentials")
         if not api_key:
             # Fall back to GOOGLE_CLOUD_VISION_API_KEY
             api_key = os.environ.get('GOOGLE_CLOUD_VISION_API_KEY', '')
+            print(f"finding credentials google application api key")
         if not api_key:
             # Fall back to GOOGLE_API_KEY
             api_key = os.environ.get('GOOGLE_API_KEY', '')
-    
+            print(f"finding credentials google application api key")
+
     if not api_key:
         # No API key configured - try Tesseract fallback
+        print(f"unable to find api key")
         return _detect_text_tesseract(image)
+    
     
     try:
         # Cache Vision API client to avoid recreating it on every call (expensive operation)
