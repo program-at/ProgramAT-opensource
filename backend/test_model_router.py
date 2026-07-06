@@ -1,6 +1,8 @@
 """Offline regression tests for atomic capability execution."""
 
 from pathlib import Path
+import io
+import json
 import sys
 import unittest
 from types import SimpleNamespace
@@ -13,6 +15,94 @@ import model_router
 
 def response(text):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+class TestGoogleVisionExecutor(unittest.TestCase):
+    def test_uses_adc_oauth_token_for_rest_request(self):
+        class Credentials:
+            valid = False
+            token = None
+            project_id = "credential-project"
+
+            def refresh(self, request):
+                self.refresh_request = request
+                self.valid = True
+                self.token = "oauth-access-token"
+
+        class HttpResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return json.dumps({
+                    "responses": [{"textAnnotations": [{"description": "Hello document"}]}]
+                }).encode("utf-8")
+
+        credentials = Credentials()
+        captured = {}
+
+        def urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return HttpResponse()
+
+        profile = model_router.ImplementationProfile("google_vision", "google_vision")
+        with patch("google.auth.default", return_value=(credentials, "detected-project")) as default, \
+             patch.object(model_router.urllib.request, "urlopen", side_effect=urlopen), \
+             patch.dict(model_router.os.environ, {
+                 "GOOGLE_APPLICATION_CREDENTIALS": "/tmp/service-account.json",
+                 "GEMINI_API_KEY": "must-not-be-used-for-vision",
+             }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router._google_vision_executor(
+                profile, [], [b"image-bytes"], {"timeout": 12}
+            )
+
+        default.assert_called_once_with(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        self.assertTrue(credentials.valid)
+        self.assertEqual(captured["request"].full_url, "https://vision.googleapis.com/v1/images:annotate")
+        self.assertEqual(captured["request"].headers["Authorization"], "Bearer oauth-access-token")
+        self.assertNotIn("must-not-be-used-for-vision", captured["request"].full_url)
+        self.assertEqual(captured["timeout"], 12)
+        self.assertEqual(model_router._response_text(result.response), "Hello document")
+        self.assertEqual(result.artifact, {"text": "Hello document", "accepted": True})
+        output = "\n".join(logs.output)
+        self.assertIn("method=application_default_credentials_oauth_rest", output)
+        self.assertIn("default_credentials_loaded=true", output)
+        self.assertIn("project_id=detected-project", output)
+        self.assertIn("vision_client_created=false reason=direct_rest_provider", output)
+        self.assertEqual(captured["request"].headers["X-goog-user-project"], "detected-project")
+
+    def test_logs_google_error_response_body(self):
+        class Credentials:
+            valid = True
+            token = "oauth-access-token"
+            project_id = "programat"
+            service_account_email = "programat@programat.iam.gserviceaccount.com"
+
+        error_body = b'{"error":{"code":403,"message":"SERVICE_DISABLED"}}'
+        http_error = model_router.urllib.error.HTTPError(
+            "https://vision.googleapis.com/v1/images:annotate",
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(error_body),
+        )
+        profile = model_router.ImplementationProfile("google_vision", "google_vision")
+        with patch("google.auth.default", return_value=(Credentials(), "programat")), \
+             patch.object(model_router.urllib.request, "urlopen", side_effect=http_error), \
+             self.assertLogs(model_router.logger, level="INFO") as logs, \
+             self.assertRaisesRegex(RuntimeError, "SERVICE_DISABLED"):
+            model_router._google_vision_executor(profile, [], [b"image"], {})
+
+        output = "\n".join(logs.output)
+        self.assertIn("endpoint=https://vision.googleapis.com/v1/images:annotate", output)
+        self.assertIn("status=403", output)
+        self.assertIn('response_body={"error":{"code":403,"message":"SERVICE_DISABLED"}}', output)
 
 
 class TestExecutionPolicyConfiguration(unittest.TestCase):
@@ -102,6 +192,55 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
 
 class TestAtomicCopilotCall(unittest.TestCase):
+    def test_planner_disabled_bypasses_policies_and_calls_default_once(self):
+        profiles = {
+            "default": model_router.ImplementationProfile("default", "model", model="test/default"),
+            "system": model_router.ImplementationProfile("system", "model", model="test/system"),
+        }
+        config = {
+            "planner_enabled": False,
+            "routing_enabled": False,
+            "system_model": "system",
+            "default_llm_when_routing_disabled": "default",
+        }
+        with patch.object(model_router, "load_global_execution_config", return_value=config), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "load_execution_policies") as policies, \
+             patch.object(model_router, "call_model", return_value=response("Direct answer")) as call_model, \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router.copilot_llm_call(
+                capability="ocr", goal="Read this document", images=[b"original-image"]
+            )
+
+        policies.assert_not_called()
+        call_model.assert_called_once()
+        self.assertEqual(call_model.call_args.args[0], "test/default")
+        self.assertEqual(call_model.call_args.kwargs["images"], [b"original-image"])
+        self.assertEqual(result["response"], "Direct answer")
+        self.assertIn("planner disabled -> single-stage execution", "\n".join(logs.output))
+
+    def test_tool_execution_image_is_used_when_stage_omits_images(self):
+        seen_images = []
+
+        def executor(_profile, _messages, images, _metadata):
+            seen_images.extend(images)
+            return model_router.ImplementationResult(response("Independent inspection"))
+
+        policies = {"general_reasoning": {
+            "candidates": ["vision"], "evaluator": None, "cascade": None,
+        }}
+        profiles = {"vision": model_router.ImplementationProfile("vision", "fake")}
+        token = model_router.TOOL_EXECUTION_IMAGES.set([b"current-original-image"])
+        try:
+            with patch.object(model_router, "load_execution_policies", return_value=policies), \
+                 patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+                 patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+                model_router.copilot_llm_call(capability="general_reasoning")
+        finally:
+            model_router.TOOL_EXECUTION_IMAGES.reset(token)
+
+        self.assertEqual(seen_images, [b"current-original-image"])
+
     def test_uses_only_first_implementation_and_returns_structured_result(self):
         calls = []
 
@@ -200,7 +339,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
              }), patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
             result = model_router.copilot_llm_call(capability="ocr")
 
-        self.assertEqual(result["response"], "Sorry, I couldn't generate guidance from this image.")
+        self.assertEqual(result["response"], "The previous stage could not produce a reliable result.")
         self.assertEqual(result["implementation"], "fallback")
 
     def test_reasoning_returns_llava_response_when_evaluator_says_yes(self):
@@ -289,8 +428,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["response"], "The exit is visible on the left.")
         self.assertEqual(calls[0][1], [b"original-image"])
         prompt_text = "\n".join(message["content"] for message in calls[0][0])
-        self.assertIn("previous stage could not confidently localize", prompt_text)
-        self.assertIn("not as evidence that the target is absent", prompt_text)
+        self.assertNotIn("previous-stage artifact", prompt_text)
         self.assertNotIn("toilet", prompt_text)
 
     def test_legacy_unrelated_detection_text_is_uncertainty_not_absence(self):
@@ -312,10 +450,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
         self.assertEqual(result["response"], "I can see an exit ahead.")
         self.assertEqual(calls[0][1], [b"image"])
-        self.assertIn(
-            "Inspect the original image independently",
-            "\n".join(message["content"] for message in calls[0][0]),
-        )
+        self.assertNotIn("toilet", "\n".join(message["content"] for message in calls[0][0]))
 
     def test_empty_and_explicitly_low_confidence_artifacts_are_not_useful(self):
         self.assertFalse(model_router._artifact_is_useful({"detections": []}))

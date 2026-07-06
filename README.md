@@ -97,8 +97,7 @@ Use the table below as a quick reference for what each value does.
 | `GROQ_API_KEY`                     | Required by the default system model | Provider key for parsing, issue generation, and other infrastructure calls. |
 | `OPENAI_API_KEY`                   | For reasoning evaluation and escalation | Provider key used by the GPT-4o implementation. |
 | `OLLAMA_API_BASE`                  | Optional local Ollama endpoint | Used by the local LLaVA implementation when Ollama is not on its default endpoint. |
-| `GOOGLE_VISION_API_KEY`            | For OCR                        | API key used by the OCR implementation. |
-| `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR tools                  | Google Cloud Vision API credentials used by Live OCR                                                                                              |
+| `GOOGLE_APPLICATION_CREDENTIALS`   | For OCR                        | Service-account JSON path loaded as Google Application Default Credentials for Vision OCR.                                                        |
 | `GITHUB_TOKEN`                     | For GitHub features            | GitHub personal access token with `repo` scope                                                                                                    |
 | `GITHUB_REPO`                      | Yes (to access your own tools) | Target repo in `owner/repo` format                                                                                                                |
 | `HOST` / `PORT`                    | Optional                       | Server bind address (default `0.0.0.0:8081`)                                                                                                      |
@@ -194,7 +193,7 @@ We provide instructions here for hosting from your personal machine. If you woul
 4. **Fill in the values in `backend/.env`**
 
    - Provider API keys: `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`
-   - Take-photo execution keys: `GROQ_API_KEY`, `DASHSCOPE_API_KEY`, `GOOGLE_VISION_API_KEY`
+   - Take-photo execution credentials: `GROQ_API_KEY`, `DASHSCOPE_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_APPLICATION_CREDENTIALS`
    - `GITHUB_TOKEN`
    - `GITHUB_REPO`
    - `GOOGLE_APPLICATION_CREDENTIALS`

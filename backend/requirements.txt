@@ -17,3 +17,4 @@ torch
 transformers
 ultralytics>=8.0.0
 google-cloud-secret-manager
+google-auth>=2.0.0

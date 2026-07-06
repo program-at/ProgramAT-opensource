@@ -946,6 +946,7 @@ export default function ToolRunner({
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
+      task: selectedTool.description || selectedTool.name,
       frame: {
         base64: frameData.base64,
         width: frameData.width,
@@ -997,6 +998,7 @@ export default function ToolRunner({
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
+      task: selectedTool.description || selectedTool.name,
       throttle_ms: 1000, // Process 1 frame per second
     };
 

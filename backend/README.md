@@ -33,7 +33,7 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider API keys: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and `GOOGLE_VISION_API_KEY`.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for Vision OCR.
   - System calls use the fixed system model.
   - Detection and OCR use one implementation. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
 
@@ -59,6 +59,12 @@ ocr:
 ```
 
 Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
+
+Execution modes are distinct:
+
+- `planner_enabled: false`, `routing_enabled: false`: bypass generated tool stages and call `default_llm_when_routing_disabled` once with the original image.
+- `planner_enabled: true`, `routing_enabled: false`: execute planned stages; fixed detector/OCR stages remain specialized, while every model stage uses `default_llm_when_routing_disabled` without a cascade.
+- `planner_enabled: true`, `routing_enabled: true`: execute planned stages using their configured fixed implementations or cascades.
 
 `copilot_llm_call(...)` returns a dictionary containing `response`, `artifact`, `implementation`, and `capability`. Generated tools execute planner-produced stages as explicit ordered calls and decide which artifact fields to pass to each subsequent call. The backend does not run capability sequences.
 

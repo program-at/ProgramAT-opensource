@@ -7,8 +7,8 @@ import io
 import json
 import logging
 import os
-import urllib.parse
 import urllib.request
+import urllib.error
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -72,6 +72,9 @@ EXIT_TARGET_LABELS = ["exit", "door", "doorway", "exit sign"]
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 STREAMING_EXECUTION_CONTEXT: ContextVar[bool] = ContextVar(
     "streaming_execution", default=False
+)
+TOOL_EXECUTION_IMAGES: ContextVar[Optional[List[Any]]] = ContextVar(
+    "tool_execution_images", default=None
 )
 
 
@@ -384,20 +387,88 @@ def _google_vision_executor(profile, messages, images, metadata) -> Implementati
     image_items = list(images or [])
     if not image_items:
         return ImplementationResult(_simple_response("No image was provided."), {"text": ""})
-    api_key = str(metadata.get("api_key") or os.environ.get("GOOGLE_VISION_API_KEY") or os.environ.get("GEMINI_API_KEY") or "")
-    if not api_key:
-        raise RuntimeError("Google Vision API key is not configured")
+    logger.info("[Google Vision Auth] method=application_default_credentials_oauth_rest")
+    logger.info(
+        "[Google Vision Auth] GOOGLE_APPLICATION_CREDENTIALS configured=%s",
+        bool(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")),
+    )
+    import google.auth
+    from google.auth.transport.requests import Request as GoogleAuthRequest
+    scope = "https://www.googleapis.com/auth/cloud-platform"
+    logger.info("[Google Vision Auth] oauth_scope=%s", scope)
+    try:
+        credentials, project_id = google.auth.default(
+            scopes=[scope]
+        )
+        project_id = project_id or getattr(credentials, "project_id", None)
+        logger.info("[Google Vision Auth] default_credentials_loaded=true")
+        logger.info(
+            "[Google Vision Auth] project_id=%s",
+            project_id or "<unknown>",
+        )
+        logger.info(
+            "[Google Vision Auth] principal=%s",
+            getattr(credentials, "service_account_email", None) or "<unknown>",
+        )
+    except Exception:
+        logger.exception("[Google Vision Auth] default_credentials_loaded=false")
+        raise
+    try:
+        if not credentials.valid or not credentials.token:
+            credentials.refresh(GoogleAuthRequest())
+        if not credentials.token:
+            raise RuntimeError("Application Default Credentials did not produce an access token")
+        logger.info("[Google Vision Auth] oauth_token_created=true")
+    except Exception:
+        logger.exception("[Google Vision Auth] oauth_token_created=false")
+        raise
+
+    # This provider intentionally uses the Vision REST endpoint, not google.cloud.vision.
+    logger.info(
+        "[Google Vision Auth] vision_client_created=false reason=direct_rest_provider "
+        "rest_request_ready=true"
+    )
     body = json.dumps({"requests": [{"image": {"content": base64.b64encode(_image_bytes(image_items[0])).decode("ascii")}, "features": [{"type": "TEXT_DETECTION"}]}]}).encode("utf-8")
-    url = "https://vision.googleapis.com/v1/images:annotate?" + urllib.parse.urlencode({"key": api_key})
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(request, timeout=metadata.get("timeout", 30)) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    url = "https://vision.googleapis.com/v1/images:annotate"
+    logger.info("[Google Vision HTTP] endpoint=%s", url)
+    headers = {
+        "Authorization": f"Bearer {credentials.token}",
+        "Content-Type": "application/json",
+    }
+    if project_id:
+        headers["x-goog-user-project"] = project_id
+        logger.info("[Google Vision Auth] quota_project_id=%s", project_id)
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers=headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=metadata.get("timeout", 30)) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace")
+        logger.error(
+            "[Google Vision HTTP] status=%s reason=%s response_body=%s",
+            exc.code,
+            exc.reason,
+            response_body,
+        )
+        raise RuntimeError(
+            f"Google Vision HTTP {exc.code} {exc.reason}: {response_body}"
+        ) from exc
     first = (payload.get("responses") or [{}])[0]
     if first.get("error"):
         raise RuntimeError(first["error"].get("message", "Google Vision OCR failed"))
     annotations = first.get("textAnnotations") or []
     text = str(annotations[0].get("description", "")).strip() if annotations else ""
-    return ImplementationResult(_simple_response(text), {"text": text})
+    if not text:
+        uncertainty = "The OCR stage could not confidently extract readable text."
+        return ImplementationResult(
+            _simple_response(uncertainty),
+            {"text": "", "accepted": False, "error": "no_text_extracted"},
+        )
+    return ImplementationResult(_simple_response(text), {"text": text, "accepted": True})
 
 
 def _location(bbox: Sequence[float], width: int, height: int) -> str:
@@ -493,11 +564,14 @@ def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
         if not target_labels or _label_matches_targets(item["label"], target_labels)
     ]
     logger.info("[Target Grounding] YOLO raw_labels=%s kept_labels=%s", raw_labels, [item["label"] for item in matching])
-    text = "; ".join(f"{item['label']} at {item['location']}" for item in matching) or "No requested object was detected."
+    text = "; ".join(f"{item['label']} at {item['location']}" for item in matching)
+    if not text:
+        text = "The detector could not confidently localize the requested object."
     return ImplementationResult(_simple_response(text), {
         "detections": matching,
         "target_labels": target_labels,
         "matching_detection": bool(matching),
+        "accepted": bool(matching),
     })
 
 
@@ -548,6 +622,36 @@ def system_llm_call(messages=None, images=None, metadata=None):
     return call_model(profile.model, messages or [], images=images, metadata=metadata)
 
 
+def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
+    """Bypass planning and routing and call the configured default model once."""
+    config = load_global_execution_config()
+    implementations = load_implementation_profiles()
+    _log_global_execution_config(config, implementations)
+    implementation = config["default_llm_when_routing_disabled"]
+    profile = implementations[implementation]
+    if profile.kind != "model" or not profile.model:
+        raise ExecutionPolicyError(
+            f"Default implementation {implementation!r} must define kind=model and model"
+        )
+    call_messages = list(messages or [])
+    if task:
+        call_messages.append({"role": "user", "content": str(task)})
+    logger.info("[Execution Policy] planner disabled -> single-stage execution")
+    logger.info(
+        "[Execution Policy] single-stage implementation=%s model=%s",
+        implementation,
+        profile.model,
+    )
+    response = call_model(profile.model, call_messages, images=images, metadata=metadata)
+    text = _response_text(response)
+    return {
+        "response": text,
+        "artifact": {"text": text},
+        "implementation": implementation,
+        "capability": DEFAULT_FALLBACK_CAPABILITY,
+    }
+
+
 def copilot_llm_call(
     capability=None,
     messages=None,
@@ -562,19 +666,36 @@ def copilot_llm_call(
     declared = normalize_capability_name(requested)
     if declared != str(requested).strip().lower():
         logger.warning("[Execution Policy] normalized legacy capability %r to %r", requested, declared)
-    policies = load_execution_policies()
     implementations = load_implementation_profiles()
     global_config = load_global_execution_config()
     _log_global_execution_config(global_config, implementations)
+    if not global_config["planner_enabled"]:
+        return single_stage_llm_call(
+            task=goal or task,
+            messages=messages,
+            images=images,
+            metadata=metadata,
+        )
+    policies = load_execution_policies()
     if declared not in policies:
         raise ExecutionPolicyError(
             f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
         )
     policy = policies[declared]
-    if global_config["routing_enabled"] or policy.get("specialized"):
+    logger.info("[Execution Policy] planner enabled -> executing staged pipeline")
+    if global_config["routing_enabled"]:
+        logger.info("[Execution Policy] routing enabled -> selecting implementations")
         candidates = policy["candidates"]
         evaluator_name = policy.get("evaluator")
+    elif policy.get("specialized"):
+        logger.info(
+            "[Execution Policy] routing disabled -> preserving specialized implementation=%s",
+            policy["candidates"][0],
+        )
+        candidates = policy["candidates"]
+        evaluator_name = None
     else:
+        logger.info("[Execution Policy] routing disabled -> using default model for all LLM stages")
         candidates = [global_config["default_llm_when_routing_disabled"]]
         evaluator_name = None
 
@@ -628,18 +749,13 @@ def copilot_llm_call(
             + json.dumps(previous_artifact, ensure_ascii=False, default=str),
         })
     elif previous_artifact is not None or call_metadata.get("previous_stage_output") is not None:
-        call_messages.append({
-            "role": "user",
-            "content": (
-                "The previous stage could not confidently localize or extract the target. "
-                "Treat that result as uncertainty, not as evidence that the target is absent. "
-                "Inspect the original image independently."
-            ),
-        })
+        logger.info(
+            "[Stage Handoff] previous artifact unusable -> dropping artifact and using original image"
+        )
     if goal:
         call_metadata["goal"] = str(goal)
         call_messages.append({"role": "user", "content": str(goal)})
-    call_images = list(images or [])
+    call_images = list(images or TOOL_EXECUTION_IMAGES.get() or [])
     output = None
     implementation = ""
     best_output = None
@@ -760,7 +876,7 @@ def copilot_llm_call(
                 best_implementation,
             )
         else:
-            fallback_text = "Sorry, I couldn't generate guidance from this image."
+            fallback_text = "The previous stage could not produce a reliable result."
             output = ImplementationResult(
                 _simple_response(fallback_text),
                 {"text": fallback_text, "accepted": False, "error": "stage_failed"},
@@ -780,12 +896,12 @@ def copilot_llm_call(
 
 __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
-    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT",
+    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "TOOL_EXECUTION_IMAGES",
     "EVALUATION_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
     "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
     "validate_execution_configuration",
-    "system_llm_call", "copilot_llm_call",
+    "system_llm_call", "single_stage_llm_call", "copilot_llm_call",
 ]

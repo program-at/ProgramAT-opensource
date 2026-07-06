@@ -41,8 +41,10 @@ MIN_STREAMING_EXECUTION_INTERVAL = float(
 
 from model_router import (
     STREAMING_EXECUTION_CONTEXT,
+    TOOL_EXECUTION_IMAGES,
     load_capability_profiles,
     load_global_execution_config,
+    single_stage_llm_call,
     system_llm_call,
 )
 from litellm_utils import (
@@ -771,6 +773,20 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
     logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
+def _single_stage_tool_result(tool_name: str, task: str, image, streaming: bool = False):
+    """Return a direct default-model result when planning is disabled."""
+    config = load_global_execution_config()
+    if config['planner_enabled']:
+        return None
+    request_text = str(task or '').strip() or str(tool_name).replace('_', ' ')
+    logger.info("[Execution Policy] planner disabled -> single-stage execution")
+    return single_stage_llm_call(
+        task=request_text,
+        images=[image],
+        metadata={'streaming': streaming, 'tool_name': tool_name},
+    )
+
+
 async def _run_streaming_cascade_worker(
     websocket, client_id: str, tool_config: Dict[str, Any], frame
 ) -> None:
@@ -1017,12 +1033,6 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         import io
         stdout_capture = io.StringIO()
         
-        def streaming_copilot_llm_call(*args, **kwargs):
-            metadata = dict(kwargs.get('metadata') or {})
-            metadata['streaming'] = True
-            kwargs['metadata'] = metadata
-            return tool_copilot_llm_call(*args, **kwargs)
-
         tool_config['exec_env'] = {
             'parsed_input': parsed_input,
             'common_modules': common_modules,
@@ -1030,7 +1040,6 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             'exec_globals_base': {
                 '__builtins__': __builtins__,
                 '__file__': str(Path(__file__).parent.parent / 'tools' / 'dynamic_tool.py'),
-                'copilot_llm_call': streaming_copilot_llm_call,
                 'yolo_model_cache': yolo_model_cache,
                 **common_modules
             }
@@ -1039,10 +1048,38 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
     # Get cached environment
     exec_env = tool_config['exec_env']
     parsed_input = exec_env['parsed_input']  # Make it available as local variable
+
+    def streaming_copilot_llm_call(*args, **kwargs):
+        metadata = dict(kwargs.get('metadata') or {})
+        metadata['streaming'] = True
+        kwargs['metadata'] = metadata
+        if not kwargs.get('images'):
+            kwargs['images'] = [image]
+        return tool_copilot_llm_call(*args, **kwargs)
+
+    exec_env['exec_globals_base']['copilot_llm_call'] = streaming_copilot_llm_call
+
+    single_stage_result = await asyncio.to_thread(
+        _single_stage_tool_result,
+        tool_name,
+        tool.get('task', ''),
+        image,
+        True,
+    )
+    if single_stage_result is not None:
+        response_data = _build_mobile_tool_response(
+            'tool_stream_result', tool_name, single_stage_result, now
+        )
+        execution_id = tool_config.get('current_execution_id')
+        response_data['execution_id'] = execution_id
+        _log_final_tool_response(tool_name, response_data)
+        await websocket.send(json.dumps(response_data))
+        return True
     
     # Execute the tool (Python only for now)
     if tool_language == 'python' and tool_code:
         logger.info(f"Starting execution of streaming tool {tool_name} for {client_id}")
+        image_context_token = None
         try:
             # Use cached environment with frame-specific data
             exec_globals = {
@@ -1065,6 +1102,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             # Retry loop for automatic module installation
             retry_count = 0
             max_retries = 3
+            image_context_token = TOOL_EXECUTION_IMAGES.set([image])
             
             while retry_count < max_retries:
                 try:
@@ -1210,6 +1248,8 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
                     result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
                 else:
                     result = None
+            TOOL_EXECUTION_IMAGES.reset(image_context_token)
+            image_context_token = None
             
             response_data = _build_mobile_tool_response(
                 'tool_stream_result', tool_name, result, now, printed_output
@@ -1233,6 +1273,8 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             return True
             
         except Exception as e:
+            if image_context_token is not None:
+                TOOL_EXECUTION_IMAGES.reset(image_context_token)
             logger.error(f"Error in streaming tool {tool_name}: {e}")
             # Don't send errors for streaming (would be too noisy)
             # Just log them for debugging
@@ -4798,6 +4840,7 @@ async def handle_client(websocket):
                             'code': tool_code,
                             'language': data.get('tool_language', 'python'),
                             'input': data.get('input', ''),
+                            'task': data.get('task', ''),
                         },
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
@@ -5537,6 +5580,7 @@ async def handle_client(websocket):
                     
                     # Execute the tool (Python tools only for now)
                     if tool_language == 'python' and tool_code:
+                        image_context_token = None
                         try:
                             # Use frame from message if provided, otherwise use last streaming frame
                             frame_image = None
@@ -5609,16 +5653,36 @@ async def handle_client(websocket):
                                 
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
+
+                            single_stage_result = await asyncio.to_thread(
+                                _single_stage_tool_result,
+                                tool_name,
+                                data.get('task', ''),
+                                frame_image,
+                                False,
+                            )
+                            if single_stage_result is not None:
+                                response_data = _build_mobile_tool_response(
+                                    'tool_result', tool_name, single_stage_result, datetime.now()
+                                )
+                                _log_final_tool_response(tool_name, response_data)
+                                await websocket.send(json.dumps(response_data))
+                                continue
                             
                             # Get module manager and load common modules dynamically
                             module_mgr = get_module_manager()
                             common_modules = module_mgr.get_common_modules()
                             
                             # Create a sandboxed execution environment with image data
+                            def frame_copilot_llm_call(*args, **kwargs):
+                                if not kwargs.get('images'):
+                                    kwargs['images'] = [frame_image]
+                                return tool_copilot_llm_call(*args, **kwargs)
+
                             exec_globals = {
                                 '__builtins__': __builtins__,
                                 '__file__': str(TOOLS_DIR / f'{Path(tool_name).name}.py'),
-                                'copilot_llm_call': tool_copilot_llm_call,
+                                'copilot_llm_call': frame_copilot_llm_call,
                                 'input_data': parsed_input,  # Use parsed input (dict or string)
                                 'image': frame_image,  # OpenCV image (numpy array)
                                 'image_base64': frame_base64,  # Base64 string
@@ -5641,6 +5705,7 @@ async def handle_client(websocket):
                             # Execute the tool code with retry on module errors
                             max_retries = 3
                             retry_count = 0
+                            image_context_token = TOOL_EXECUTION_IMAGES.set([frame_image])
                             
                             while retry_count < max_retries:
                                 try:
@@ -5745,6 +5810,8 @@ async def handle_client(websocket):
                                     result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
                                 else:
                                     result = None
+                            TOOL_EXECUTION_IMAGES.reset(image_context_token)
+                            image_context_token = None
                             
                             response_data = _build_mobile_tool_response(
                                 'tool_result', tool_name, result, datetime.now(), printed_output
@@ -5760,6 +5827,8 @@ async def handle_client(websocket):
                             logger.info(f"Tool {tool_name} executed successfully")
                             
                         except Exception as e:
+                            if image_context_token is not None:
+                                TOOL_EXECUTION_IMAGES.reset(image_context_token)
                             logger.error(f"Error executing tool {tool_name}: {e}")
                             await websocket.send(json.dumps({
                                 'type': 'tool_result',
