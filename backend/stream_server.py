@@ -4156,13 +4156,7 @@ def _log_to_all_sessions(level: str, message: str):
 
 
 async def _broadcast_ws(data: dict) -> None:
-    """Broadcast a JSON payload to every connected AiohttpWebSocketAdapter client.
-
-    Clients in `connected_clients` are AiohttpWebSocketAdapter instances whose
-    only send interface is `.send(str)` — NOT `.send_str()`.  Using the wrong
-    method raises AttributeError which was silently swallowed, so nothing was
-    ever delivered.  This matches the pattern already used by broadcast_stats().
-    """
+    """Broadcast a JSON payload to every connected AiohttpWebSocketAdapter client."""
     if not connected_clients:
         return
     msg = json.dumps(data)
@@ -4172,23 +4166,7 @@ async def _broadcast_ws(data: dict) -> None:
         if callable(send):
             coros.append(send(msg))
     if coros:
-        await asyncio.gather(*coros, return_exceptions=True)
-
-
-async def broadcast_to_connected_clients(payload: dict):
-    """Broadcast JSON to aiohttp/websockets-compatible client adapters."""
-    if not connected_clients:
-        return
-
-    message = json.dumps(payload)
-    send_tasks = []
-    for client in list(connected_clients):
-        send = getattr(client, 'send', None)
-        if callable(send):
-            send_tasks.append(send(message))
-
-    if send_tasks:
-        results = await asyncio.gather(*send_tasks, return_exceptions=True)
+        results = await asyncio.gather(*coros, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Failed to broadcast to client: {result}")
@@ -4256,7 +4234,7 @@ async def create_github_issue(text: str):
                     'message': issue_list_msg,
                     'issues': available_issues[:10]
                 }
-                await broadcast_to_connected_clients(list_data)
+                await _broadcast_ws(list_data)
             return
         
         # Handle update mode selection
@@ -4277,7 +4255,7 @@ async def create_github_issue(text: str):
                     'duplicate_match': selection.get('match_reason') == 'duplicate_similarity',
                     'confidence': selection.get('confidence'),
                 }
-                await broadcast_to_connected_clients(confirm_data)
+                await _broadcast_ws(confirm_data)
             
             logger.info(f"Switched to update mode for issue #{selected_issue['number']}")
             return
@@ -4320,7 +4298,7 @@ async def create_github_issue(text: str):
                 f"Issue creation stopped because stage decomposition failed: {error_message}",
             )
             if connected_clients:
-                await broadcast_to_connected_clients({
+                await _broadcast_ws({
                     'type': 'issue_creation_error',
                     'message': 'I could not decompose the task, so no incomplete issue was created. Please try again.',
                 })
@@ -4345,7 +4323,7 @@ async def create_github_issue(text: str):
                     'message': feedback_msg,
                     'missing_fields': missing_fields
                 }
-                await broadcast_to_connected_clients(feedback_data)
+                await _broadcast_ws(feedback_data)
             
             # Don't create issue yet, wait for more info
             logger.info("Issue incomplete, waiting for user to provide more details")
@@ -4470,7 +4448,7 @@ async def create_github_issue(text: str):
                 'issue_number': issue.number,
                 'issue_url': issue.html_url
             }
-            await broadcast_to_connected_clients(success_data)
+            await _broadcast_ws(success_data)
             
             # Start polling for Copilot session for each connected client
             for ws in connected_clients:
@@ -6216,64 +6194,28 @@ async def handle_client(websocket):
                             logger.info(f"EXEC_GLOBALS: image_base64 length: {len(frame_base64) if frame_base64 else 0}")
                             
                             exec_locals = {}
-                            
-                            # Run exec + function call in a thread so blocking LLM/CV
-                            # calls inside the tool don't stall the event loop.
-                            import sys
-                            stdout_capture = io.StringIO()
-                            old_stdout = sys.stdout
-                            
-                            # Execute the tool code with retry on module errors
-                            max_retries = 3
-                            retry_count = 0
                             image_context_token = TOOL_EXECUTION_IMAGES.set([frame_image])
-                            
-                            while retry_count < max_retries:
-                                try:
-                                    # Redirect stdout to capture print statements
-                                    sys.stdout = stdout_capture
-                                    try:
-                                        exec(tool_code, exec_globals, exec_locals)
-                                    finally:
-                                        sys.stdout = old_stdout
-                                    break  # Success, exit retry loop
-                                except (ImportError, ModuleNotFoundError) as e:
-                                    error_msg = str(e)
-                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
-                                    
-                                    # Try to install the missing module
-                                    installed_module = module_mgr.install_from_error(error_msg)
-                                    
-                                    if installed_module:
-                                        logger.info(f"Installed {installed_module}, retrying execution...")
-                                        # Reload common modules to include newly installed one
-                                        common_modules = module_mgr.get_common_modules()
-                                        exec_globals.update(common_modules)
-                                        retry_count += 1
-                                    else:
-                                        # Could not identify/install module, raise error
-                                        raise
-                                except Exception:
-                                    # Non-module errors should be raised immediately
-                                    sys.stdout = old_stdout  # Restore stdout before raising
-                                    raise
-                            
-                            # Get captured print output
-                            printed_output = stdout_capture.getvalue()
-                            
-                            # IMPORTANT: Merge exec_locals into exec_globals so functions can see each other
-                            # This allows main() to call helper functions defined in the same file
-                            exec_globals.update(exec_locals)
-                            
-                            # Try to find a main function or use the result
-                            # Check function signatures to avoid calling helper functions
+
+                            import sys
                             import inspect
-                            
-                            result = None
-                            
-                            # Try main() - highest priority
-                            if 'main' in exec_locals and callable(exec_locals['main']):
+                            import io as _io
+
+                            _fi = frame_image
+                            _fb = frame_base64
+
+                            def _run_one_shot_in_thread():
+                                _capture = _io.StringIO()
+                                _old = sys.stdout
+                                sys.stdout = _capture
                                 try:
+                                    exec(tool_code, exec_globals, exec_locals)
+                                finally:
+                                    sys.stdout = _old
+
+                                exec_globals.update(exec_locals)
+
+                                _result = None
+                                if 'main' in exec_locals and callable(exec_locals['main']):
                                     sig = inspect.signature(exec_locals['main'])
                                     if len(sig.parameters) == 2:
                                         _result = exec_locals['main'](_fi, parsed_input)
