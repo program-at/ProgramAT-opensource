@@ -192,6 +192,63 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
 
 class TestAtomicCopilotCall(unittest.TestCase):
+    def test_generation_prompt_requires_single_line_plain_audio_text(self):
+        calls = []
+
+        def executor(_profile, messages, _images, _metadata):
+            calls.append(messages)
+            return model_router.ImplementationResult(response(
+                "From left to right:\n1. **Jack of Spades**\n2. `Ten of Spades`"
+            ))
+
+        policies = {"general_reasoning": {
+            "candidates": ["vlm"], "evaluator": None, "cascade": None,
+        }}
+        profiles = {"vlm": model_router.ImplementationProfile("vlm", "fake")}
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            result = model_router.copilot_llm_call(
+                capability="general_reasoning", goal="Identify the cards"
+            )
+
+        prompt = calls[0][0]["content"]
+        self.assertIn("audio-friendly plain text in one line", prompt)
+        self.assertIn("Do not use Markdown", prompt)
+        self.assertIn("commas or semicolons", prompt)
+        self.assertEqual(
+            result["response"],
+            "From left to right: Jack of Spades; Ten of Spades",
+        )
+        self.assertNotIn("\n", result["response"])
+        self.assertNotIn("**", result["response"])
+
+    def test_evaluator_prompt_does_not_receive_generation_format_prompt(self):
+        calls = []
+
+        def executor(profile, messages, images, metadata):
+            calls.append((profile.name, messages, images, metadata))
+            text = "YES" if profile.name == "judge" else "Useful answer."
+            return model_router.ImplementationResult(response(text))
+
+        policies = {"general_reasoning": {
+            "candidates": ["candidate", "fallback"],
+            "evaluator": "judge",
+            "cascade": "test",
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake")
+            for name in ("candidate", "fallback", "judge")
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            model_router.copilot_llm_call(capability="general_reasoning", goal="Describe it")
+
+        evaluator_prompt = calls[1][1][0]["content"]
+        self.assertNotIn(model_router.AUDIO_RESPONSE_PROMPT, evaluator_prompt)
+        self.assertIn("Output exactly one token: YES or NO", evaluator_prompt)
+
     def test_streaming_single_stage_uses_concise_audio_prompt(self):
         profiles = {
             "default": model_router.ImplementationProfile(

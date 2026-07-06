@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import urllib.request
 import urllib.error
 from contextvars import ContextVar
@@ -40,6 +41,11 @@ NAVIGATION_SYSTEM_PROMPT = (
     "in at most 2 short sentences. Do not use a numbered list, introduction, "
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
+)
+AUDIO_RESPONSE_PROMPT = (
+    "Return only concise, audio-friendly plain text in one line, preferably 1-2 short "
+    "sentences. Do not use Markdown, headings, bullet points, numbered lists, or newline "
+    "characters. For ordered information, use commas or semicolons instead of line breaks."
 )
 EVALUATION_PROMPT = """Judge only whether the candidate response is sufficiently useful, informative, accessible, and actionable for the user's request. You cannot see the image. Do not fact-check visual claims or reject because you are unsure whether a visual claim is true.
 
@@ -381,6 +387,28 @@ def _response_text(response: Any) -> str:
         return str(response).strip()
 
 
+def _single_line_audio_text(text: Any) -> str:
+    """Normalize generated user-facing text into plain, single-line speech."""
+    lines = []
+    for raw_line in str(text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^#{1,6}\s*", "", line)
+        line = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", line)
+        line = line.replace("**", "").replace("__", "").replace("`", "")
+        lines.append(" ".join(line.split()))
+    result = ""
+    for line in lines:
+        if not result:
+            result = line
+        elif result.endswith(":"):
+            result += " " + line
+        else:
+            result += "; " + line
+    return result
+
+
 try:
     validate_execution_configuration()
 except Exception as exc:
@@ -681,6 +709,7 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
             f"Default implementation {implementation!r} must define kind=model and model"
         )
     call_messages = list(messages or [])
+    call_messages.insert(0, {"role": "system", "content": AUDIO_RESPONSE_PROMPT})
     streaming = bool((metadata or {}).get("streaming") or STREAMING_EXECUTION_CONTEXT.get())
     if streaming:
         call_messages.insert(0, {"role": "system", "content": STREAMING_RESPONSE_PROMPT})
@@ -694,7 +723,7 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
         profile.model,
     )
     response = call_model(profile.model, call_messages, images=images, metadata=metadata)
-    text = _response_text(response)
+    text = _single_line_audio_text(_response_text(response))
     return {
         "response": text,
         "artifact": {"text": text},
@@ -759,6 +788,7 @@ def copilot_llm_call(
     if task and "task_text" not in call_metadata:
         call_metadata["task_text"] = task
     call_messages = list(messages or [])
+    call_messages.insert(0, {"role": "system", "content": AUDIO_RESPONSE_PROMPT})
     target_labels = _target_labels(call_metadata)
     grounding_context = [goal, task, call_metadata.get("goal"), call_metadata.get("task_text")]
     grounding_context.extend(message.get("content") for message in call_messages if isinstance(message, dict))
@@ -837,7 +867,7 @@ def copilot_llm_call(
             )
             continue
 
-        response_text = _response_text(candidate_output.response)
+        response_text = _single_line_audio_text(_response_text(candidate_output.response))
         if not response_text:
             logger.warning(
                 "[Execution Policy] capability=%s implementation=%s failed=empty response",
@@ -976,11 +1006,12 @@ def copilot_llm_call(
             )
             implementation = "fallback"
             logger.warning("[Execution Policy] capability=%s fallback=none", declared)
+    final_text = _single_line_audio_text(_response_text(output.response))
     artifact = output.artifact
     if artifact is None:
-        artifact = {"text": _response_text(output.response)}
+        artifact = {"text": final_text}
     return {
-        "response": _response_text(output.response),
+        "response": final_text,
         "artifact": artifact,
         "implementation": implementation,
         "capability": declared,
@@ -989,7 +1020,7 @@ def copilot_llm_call(
 
 __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
-    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "TOOL_EXECUTION_IMAGES",
+    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "AUDIO_RESPONSE_PROMPT", "TOOL_EXECUTION_IMAGES",
     "EVALUATION_PROMPT", "EVALUATION_REASON_PROMPT", "STREAMING_RESPONSE_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
