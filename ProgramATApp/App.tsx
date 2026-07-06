@@ -205,6 +205,19 @@ function AppContent() {
           TextToSpeechService.speakWithInterrupt(message.message);
           setSpokenFeedback(message.message);
         }
+      } else if (message.type === 'ideation_question') {
+        // Ideation turn: all fields filled, server asks one open-ended question
+        console.log('[App] Received ideation question:', message.message);
+        if (message.message) {
+          TextToSpeechService.speakWithInterrupt(message.message);
+          setSpokenFeedback(message.message);
+        }
+      } else if (message.type === 'progress') {
+        // Step-by-step status during long operations (video summarization, parsing, etc.)
+        console.log('[App] Progress:', message.message);
+        if (message.message) {
+          TextToSpeechService.speak(message.message);
+        }
       } else if (message.type === 'pr_sessions_list') {
         // Handle Copilot sessions for a PR
         console.log('[App] Received sessions for PR #' + message.pr_number + ':', message.sessions?.length || 0);
