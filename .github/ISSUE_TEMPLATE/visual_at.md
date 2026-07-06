@@ -21,7 +21,7 @@ assignees: ''
 
 **Implementation details**
 <!-- Any particular models or libraries that should be employed -->
-If not specified otherwise above, tools for object detection should either utilize Yolo11 and COCO or YoloWorld, based on the conditions described in the copilot instructions. Tools involving text extraction should utilize the Google Cloud Vision API. 
+Assume each generated tool implements one user-facing task. If this issue enumerates multiple stages, execute one ordered `copilot_llm_call(...)` per stage, pass useful structured artifacts to later calls with `metadata={"previous_stage_artifact": ...}`, and pass the original image to every later visual stage. If an earlier result is empty, failed, or low-confidence, pass only the original image—not the failed response or artifact—so the next model can inspect it independently. Use the stage capability as `capability`. Choose only from these capabilities: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, or `temporal_reasoning`. Never use `visual_reasoning`. The backend may evaluate and escalate reasoning capabilities according to the execution policy. Generated tools must not choose implementations, models, providers, detector backends, fallback order, retries, or verification logic. Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files. Generated tools must not create routers, capability registries, detector/OCR/LLM wrappers, new model-router clients, provider-specific `DEFAULT_MODEL` constants, `COCO_CLASSES`, `.pt` model loading/discovery logic, or direct provider calls.
 
 **Alternatives Considered**
 <!-- Describe any alternative solutions or features you've considered. -->
@@ -29,11 +29,11 @@ If not specified otherwise above, tools for object detection should either utili
 **Example usage**
 <!-- Describe an example situation the tool would be used in and how it could work -->
 
-**Custom GPT**
-<!-- Should this tool, in live mode, leverage Gemini live and work basically as a custom GPT without the need to ask again?-->
+**Live Mode**
+<!-- Should this tool, in live mode, use the backend-managed live multimodal mode without the need to ask again?-->
 
-**GPT Query**
-<!-- If custom GPT, what is the query to be reasked every few seconds. Otherwise leave empty-->
+**Live Query**
+<!-- If live mode is enabled, what is the query to be reasked every few seconds. Otherwise leave empty-->
 
 **Additional Context**
 <!-- Add any other context or screenshots about the feature request here. -->
