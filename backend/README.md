@@ -31,14 +31,46 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `LLM_MODEL`: Optional model name used by LiteLLM (for example `gemini-3-flash-preview` or `openai/gpt-4o`). Change this to switch provider/model without code changes.
+- `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider API keys: keep any provider keys you need in the environment, for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
-  - If a provider-specific model is selected, ensure the corresponding provider API key is present.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for Vision OCR.
+  - System calls use the fixed system model.
+  - Detection and OCR use one implementation. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
+
+### LLM Interfaces
+
+ProgramAT separates fixed infrastructure LLM calls from take-photo capability execution.
+
+Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
+
+Take-photo model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. The declared capability selects its configured policy:
+
+```yaml
+cascade_profiles:
+  default_reasoning:
+    candidates: [gemini_flash_lite, gpt4o]
+    evaluator: gpt4o-mini
+
+navigation:
+  cascade: default_reasoning
+
+ocr:
+  implementation: google_vision
+```
+
+Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
+
+Execution modes are distinct:
+
+- `planner_enabled: false`, `routing_enabled: false`: bypass generated tool stages and call `default_llm_when_routing_disabled` once with the original image.
+- `planner_enabled: true`, `routing_enabled: false`: execute planned stages; fixed detector/OCR stages remain specialized, while every model stage uses `default_llm_when_routing_disabled` without a cascade.
+- `planner_enabled: true`, `routing_enabled: true`: execute planned stages using their configured fixed implementations or cascades.
+
+`copilot_llm_call(...)` returns a dictionary containing `response`, `artifact`, `implementation`, and `capability`. Generated tools execute planner-produced stages as explicit ordered calls and decide which artifact fields to pass to each subsequent call. The backend does not run capability sequences.
 
 ### Optional
 
-- `GEMINI_MODEL`: (legacy) Gemini model name used as a fallback if `LLM_MODEL` isn't set (default: `gemini-3-flash-preview`)
+- `MIN_STREAMING_EXECUTION_INTERVAL`: Minimum seconds between the completion of one streaming execution and the start of the next (default: `2.0`). Frames received while waiting replace the pending frame, so the newest scene is analyzed when the interval expires.
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8081`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
@@ -55,7 +87,6 @@ python stream_server.py
 
 ```bash
 export GITHUB_TOKEN="your_github_token_here"
-export LLM_MODEL="gemini-3-flash-preview"
 export GEMINI_API_KEY="your_gemini_api_key_here"
 export OPENAI_API_KEY="your_openai_key_here"
 export GITHUB_REPO="owner/repo"
@@ -172,7 +203,7 @@ User: "I open the camera and click the photo button. I expected to take a photo 
 
 ## Security Notes
 
-- Never commit your `GITHUB_TOKEN` or any provider API key (for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) to source control
+- Never commit your `GITHUB_TOKEN` or any provider API key (for example `GEMINI_API_KEY`, `OPENAI_API_KEY`, `GROQ_API_KEY`) to source control
 - Use environment variables or a secure secrets manager
 - The GitHub token should have minimal required permissions (only `repo` scope)
 - Provider API keys should be kept secure and rotated regularly

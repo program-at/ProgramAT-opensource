@@ -8,11 +8,16 @@ google-genai
 aiohttp>=3.13.0
 litellm
 python-dotenv>=1.0.0
+PyYAML>=6.0.0
 pytesseract>=0.3.0
 scipy
 scikit-learn
+sentence-transformers
+torch
+transformers
 ultralytics>=8.0.0
 google-cloud-secret-manager
 google-cloud-storage
 aiortc>=1.9.0
 av>=12.0.0
+google-auth>=2.0.0

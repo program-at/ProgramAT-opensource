@@ -76,8 +76,6 @@ The tool accepts an optional `input_data` dictionary with the following paramete
 
 - **api_key**: Optional Gemini API key override (uses environment variable by default)
 
-- **model**: Optional Gemini model override (default: `'gemini-3-flash-preview'`)
-
 ## Example Outputs
 
 **All outputs are limited to 15 words maximum and focus only on the most prominent clothing item.**

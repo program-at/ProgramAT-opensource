@@ -7,7 +7,6 @@
  */
 
 import Config from './config';
-import { getModelPreference } from './ModelPreference';
 
 export interface StreamFrame {
   frameNumber: number;
@@ -31,6 +30,8 @@ export interface ServerMessage {
   [key: string]: any;
 }
 
+type WebSocketMessageEvent = { data: string };
+
 class WebSocketService {
   private ws: WebSocket | null = null;
   private serverUrl: string = Config.WEBSOCKET_SERVER_URL;
@@ -52,7 +53,7 @@ class WebSocketService {
 
   // Raw message listeners — attached to whichever socket is active.
   // Saved so they auto-attach to reviewWs when connectReview() opens it.
-  private rawMessageListeners: Set<(event: MessageEvent) => void> = new Set();
+  private rawMessageListeners: Set<(event: WebSocketMessageEvent) => void> = new Set();
   
   // Heartbeat mechanism
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -67,11 +68,8 @@ class WebSocketService {
   private onMessageCallback?: (message: ServerMessage) => void;
   private onErrorCallback?: (error: string) => void;
 
-  // Server capabilities cached from the 'server_capabilities' message — used
-  // by the Settings picker. The user's chosen model lives in ModelPreference
-  // (one store), not here.
+  // Server capabilities cached from the 'server_capabilities' message.
   private defaultModel: string = '';
-  private availableModels: string[] = [];
 
   constructor(serverUrl?: string) {
     if (serverUrl) {
@@ -104,16 +102,6 @@ class WebSocketService {
 
   getDefaultModel(): string {
     return this.defaultModel;
-  }
-
-  getAvailableModels(): string[] {
-    return this.availableModels;
-  }
-
-  /** Spread into any outbound message that triggers an LLM call. */
-  private modelField(): { model?: string } {
-    const model = getModelPreference();
-    return model ? { model } : {};
   }
 
   /**
@@ -348,12 +336,10 @@ class WebSocketService {
               return; // Don't forward pong messages to app callbacks
             }
 
-            // Capture model defaults + preset list from server capabilities so
-            // the picker can populate without hardcoding provider strings.
+            // Capture routing status from server capabilities for Settings.
             if (message.type === 'server_capabilities') {
               const caps = message.capabilities || {};
-              this.defaultModel = caps.default_model || '';
-              this.availableModels = caps.available_models || [];
+              this.defaultModel = caps.model_routing ? 'Semantic routing' : caps.default_model || '';
             }
 
             // Extra logging for production_tools messages
@@ -542,7 +528,7 @@ class WebSocketService {
         timestamp: Date.now(),
       };
 
-      this.ws!.send(JSON.stringify({ ...message, ...this.modelField() }));
+      this.ws!.send(JSON.stringify(message));
       return true;
     } catch (error) {
       console.error('Failed to send text:', error);
@@ -566,7 +552,6 @@ class WebSocketService {
           question: question,
           conversation_id: conversationId,  // Send conversation ID instead of image
           timestamp: Date.now(),
-          ...this.modelField(),
         };
 
         console.log('[WebSocket] Sending follow-up question for conversation:', conversationId);
@@ -667,7 +652,6 @@ class WebSocketService {
           height,
           text,
         },
-        ...this.modelField(),
       };
 
       this.ws!.send(JSON.stringify(message));
@@ -972,19 +956,21 @@ class WebSocketService {
    * auto-attached to the review socket when connectReview() succeeds.
    * Use this instead of (WebSocketService as any).ws.addEventListener().
    */
-  addMessageListener(fn: (event: MessageEvent) => void): void {
+  addMessageListener(fn: (event: WebSocketMessageEvent) => void): void {
     this.rawMessageListeners.add(fn);
-    if (this.ws) this.ws.addEventListener('message', fn);
-    if (this.reviewWs) this.reviewWs.addEventListener('message', fn);
+    console.log('[WebSocketService] raw listener registered; count:', this.rawMessageListeners.size);
+    if (this.ws) (this.ws as any).addEventListener('message', fn);
+    if (this.reviewWs) (this.reviewWs as any).addEventListener('message', fn);
   }
 
   /**
    * Remove a raw WebSocket message event listener from all sockets.
    */
-  removeMessageListener(fn: (event: MessageEvent) => void): void {
+  removeMessageListener(fn: (event: WebSocketMessageEvent) => void): void {
     this.rawMessageListeners.delete(fn);
-    if (this.ws) this.ws.removeEventListener('message', fn);
-    if (this.reviewWs) this.reviewWs.removeEventListener('message', fn);
+    console.log('[WebSocketService] raw listener removed; count:', this.rawMessageListeners.size);
+    if (this.ws) (this.ws as any).removeEventListener('message', fn);
+    if (this.reviewWs) (this.reviewWs as any).removeEventListener('message', fn);
   }
 
   // ─── Review Server (general server) methods ────────────────────────────────
@@ -1032,7 +1018,7 @@ class WebSocketService {
           this.reviewFrameNumber = 0;
           hasResolved = true;
           // Auto-attach any raw message listeners that were registered before review mode
-          this.rawMessageListeners.forEach(fn => this.reviewWs!.addEventListener('message', fn));
+          this.rawMessageListeners.forEach(fn => (this.reviewWs as any).addEventListener('message', fn));
           if (this.onReviewConnectionChangeCallback) this.onReviewConnectionChangeCallback(true);
           resolve();
         };
@@ -1075,7 +1061,7 @@ class WebSocketService {
     if (this.reviewWs) {
       console.log('[WebSocketService] Disconnecting from review server');
       // Detach raw message listeners before closing
-      this.rawMessageListeners.forEach(fn => this.reviewWs!.removeEventListener('message', fn));
+      this.rawMessageListeners.forEach(fn => (this.reviewWs as any).removeEventListener('message', fn));
       try {
         if (this.reviewWs.readyState === WebSocket.OPEN || this.reviewWs.readyState === WebSocket.CONNECTING) {
           this.reviewWs.close();

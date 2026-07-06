@@ -21,7 +21,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Config, { AppMode } from './config';
 import WebSocketService from './WebSocketService';
-import { getModelPreference, setModelPreference } from './ModelPreference';
 import { useTheme } from './ThemeContext';
 import ModelPickerScreen from './ModelPickerScreen';
 import VideoSummaryTestScreen from './VideoSummaryTestScreen';
@@ -40,8 +39,6 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
   const [serverUrl, setServerUrl] = useState('');
   const [currentServerUrl, setCurrentServerUrl] = useState(Config.WEBSOCKET_SERVER_URL);
 
-  // Mirror of ModelPreference for re-render. null = use server default.
-  const [selectedModel, setSelectedModel] = useState<string | null>(getModelPreference());
   const [serverDefaultModel, setServerDefaultModel] = useState<string>('');
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showModelPicker, setShowModelPicker] = useState(false);
@@ -62,16 +59,12 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
     setIsConnected(WebSocketService.isConnected());
     setCurrentServerUrl(WebSocketService.getServerUrl());
     loadSavedServerUrl();
-    // Re-sync from ModelPreference in case it loaded after our initial render.
-    setSelectedModel(getModelPreference());
-
     const checkConnection = setInterval(() => {
       setIsConnected(WebSocketService.isConnected());
       setCurrentServerUrl(WebSocketService.getServerUrl());
       // Poll the service for the latest cached capabilities — picks up the
-      // server's reported default + preset list once the socket handshakes.
+      // server's routing status once the socket handshakes.
       setServerDefaultModel(WebSocketService.getDefaultModel());
-      setAvailableModels(WebSocketService.getAvailableModels());
     }, 1000);
 
     return () => clearInterval(checkConnection);
@@ -105,12 +98,6 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
     await AsyncStorage.setItem(SERVER_URL_KEY, trimmed);
     Alert.alert('Server Saved', `Connecting to ${trimmed}...`, [{ text: 'OK' }]);
     WebSocketService.setServerUrl(trimmed, true);
-  };
-
-  // Single entry point: null clears the choice (use server default), a string picks it.
-  const applyModel = async (model: string | null) => {
-    setSelectedModel(model);
-    await setModelPreference(model);
   };
 
   const handleClearServerUrl = async () => {
@@ -500,31 +487,28 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
           <Text style={[styles.sectionTitle, { color: theme.text }]} accessibilityRole="header">AI Model</Text>
 
           <Pressable
-            style={({ pressed }) => [
+            style={[
               styles.settingCard,
               styles.modelRow,
+              styles.disabledSettingCard,
               { backgroundColor: theme.card, borderColor: theme.border },
-              pressed && { opacity: 0.6 },
             ]}
-            onPress={() => setShowModelPicker(true)}
+            disabled={true}
             accessible={true}
             accessibilityRole="button"
-            accessibilityLabel="Choose AI model"
-            accessibilityHint="Double tap to open the model picker"
+            accessibilityLabel="AI model routing"
+            accessibilityHint="Models are selected automatically by semantic routing"
+            accessibilityState={{ disabled: true }}
             accessibilityValue={{
-              text: selectedModel ?? (serverDefaultModel ? `Server default (${serverDefaultModel})` : 'Server default'),
+              text: serverDefaultModel || 'Semantic routing',
             }}>
             <View style={styles.modelRowText}>
-              <Text style={[styles.settingLabel, { color: theme.text }]}>Active model</Text>
+              <Text style={[styles.settingLabel, { color: theme.text }]}>AI model routing</Text>
               <Text style={[styles.settingDescription, { color: theme.textSecondary }]}>
-                {selectedModel
-                  ? selectedModel
-                  : serverDefaultModel
-                    ? `Server default (${serverDefaultModel})`
-                    : 'Connect to see available models'}
+                {serverDefaultModel || 'Semantic routing chooses the model automatically'}
               </Text>
             </View>
-            <Text style={[styles.chevron, { color: theme.textSecondary }]}>›</Text>
+            <Text style={[styles.chevron, { color: theme.textSecondary }]}>Managed</Text>
           </Pressable>
         </View>
 
@@ -861,6 +845,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  disabledSettingCard: {
+    opacity: 0.6,
   },
   modelRowText: {
     flex: 1,
