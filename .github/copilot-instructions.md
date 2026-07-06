@@ -164,3 +164,7 @@ From the Github agent, all code should be able to use the camera feed provided b
 For any tools that ask for clock face navigation, output should be restricted to 1-3 and 9-12 (others cannot reasonably be captured as they would be behind the camera).
 
 Optimize for doing your generation quickly. Extensive documentation after the code is written and tested is not wanted or needed.
+
+<!--
+Model router will take charge of differing between YOLO11 and YOLOWorld.
+-->
