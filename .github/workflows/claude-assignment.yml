@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write the code for this tool inside the tools folder. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write the code for this tool inside the tools folder. Assume the tool implements one user-facing task. For a Task Stages section, make one ordered `copilot_llm_call(...)` per stage and explicitly pass useful artifacts to later calls. Use only these capabilities: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, `temporal_reasoning`. Never use `visual_reasoning`. Do not implement detection, OCR, VLM, LLM, model loading, provider calls, new wrapper clients, routing logic, retries, or verification inside generated tool files. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -65,6 +65,13 @@ jobs:
             Issue body: ${{ github.event.issue.body }}
             Requirements:
             - Write the code for this tool inside the tools folder.
+            - Assume the tool implements one user-facing task.
+            - For any Task Stages section, make one ordered copilot_llm_call(...) per stage and explicitly pass useful artifacts forward.
+            - Use copilot_llm_call(...) with the listed capability as capability.
+            - Use only these capability values: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, `temporal_reasoning`. Never use `visual_reasoning`.
+            - Do not select concrete implementations, providers, or fallback order in generated tools.
+            - Do not implement detection, OCR, VLM, LLM, model loading, or provider calls inside generated tool files.
+            - If the needed router wrapper does not exist, add it to the backend/shared layer instead of implementing the model inside the tool.
             - Follow the existing repository structure and style.
             - Make the smallest reasonable implementation.
             - Do not modify unrelated files.
