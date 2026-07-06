@@ -336,6 +336,25 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         config = stream_server.load_streaming_frame_selector_config()
         self.assertEqual(config, self.selector_config)
 
+    def test_clip_warmup_runs_once_and_logs_ready_latency(self):
+        stream_server._clip_ready_models.clear()
+        with patch.object(
+            stream_server,
+            "load_streaming_frame_selector_config",
+            return_value=dict(self.selector_config),
+        ), patch.object(
+            stream_server,
+            "encode_streaming_frame",
+            return_value=np.array([1.0, 0.0], dtype=np.float32),
+        ) as encode, self.assertLogs(stream_server.logger, level="INFO") as logs:
+            stream_server.warm_streaming_frame_selector()
+            stream_server.warm_streaming_frame_selector()
+
+        encode.assert_called_once()
+        warmed_image = encode.call_args.args[0]
+        self.assertEqual(warmed_image.size, (32, 32))
+        self.assertIn("[Streaming] CLIP ready latency_ms=", "\n".join(logs.output))
+
 
 if __name__ == "__main__":
     unittest.main()

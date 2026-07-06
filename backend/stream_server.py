@@ -19,6 +19,7 @@ import io
 import logging
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -34,6 +35,8 @@ from dotenv import load_dotenv
 
 # Load .env before importing modules that read routing/provider settings at import time.
 load_dotenv(dotenv_path=str(Path(__file__).parent / '.env'))
+os.environ.setdefault('HF_HUB_DISABLE_PROGRESS_BARS', '1')
+os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
 
 MIN_STREAMING_EXECUTION_INTERVAL = float(
     os.getenv('MIN_STREAMING_EXECUTION_INTERVAL', '2.0')
@@ -536,6 +539,7 @@ active_streaming_tools = {}
 EXECUTION_POLICY_PATH = Path(__file__).resolve().parent / 'execution_policy.yaml'
 _clip_encoders = {}
 _clip_encoder_load_lock = threading.Lock()
+_clip_ready_models = set()
 
 
 def load_streaming_frame_selector_config(path=EXECUTION_POLICY_PATH) -> Dict[str, Any]:
@@ -576,9 +580,18 @@ class ClipFrameEncoder:
         with _clip_encoder_load_lock:
             if self._model is not None:
                 return
-            from transformers import CLIPModel, CLIPProcessor
-            self._processor = CLIPProcessor.from_pretrained(self.model_name)
-            self._model = CLIPModel.from_pretrained(self.model_name)
+            transformer_logger = logging.getLogger('transformers')
+            hub_logger = logging.getLogger('huggingface_hub')
+            previous_levels = (transformer_logger.level, hub_logger.level)
+            transformer_logger.setLevel(logging.ERROR)
+            hub_logger.setLevel(logging.ERROR)
+            try:
+                from transformers import CLIPModel, CLIPProcessor
+                self._processor = CLIPProcessor.from_pretrained(self.model_name)
+                self._model = CLIPModel.from_pretrained(self.model_name)
+            finally:
+                transformer_logger.setLevel(previous_levels[0])
+                hub_logger.setLevel(previous_levels[1])
             self._model.eval()
 
     @staticmethod
@@ -646,6 +659,21 @@ def encode_streaming_frame(frame, selector_config: Dict[str, Any]) -> np.ndarray
             encoder = ClipFrameEncoder(model_name)
             _clip_encoders[model_name] = encoder
     return encoder.encode(frame)
+
+
+def warm_streaming_frame_selector() -> None:
+    """Load CLIP and run one inference before the server accepts streaming clients."""
+    selector_config = load_streaming_frame_selector_config()
+    model_name = selector_config['model']
+    if model_name in _clip_ready_models:
+        return
+    started = time.perf_counter()
+    encode_streaming_frame(Image.new('RGB', (32, 32), 'black'), selector_config)
+    _clip_ready_models.add(model_name)
+    logger.info(
+        "[Streaming] CLIP ready latency_ms=%.1f",
+        (time.perf_counter() - started) * 1000,
+    )
 
 # Conversation images - stores images for chat follow-up questions
 # Format: {conversation_id: PIL.Image}
@@ -6274,6 +6302,11 @@ async def main():
     logger.info(f"Starting backend server on {HOST}:{PORT}")
     logger.info(f"Frame saving: {'enabled' if SAVE_FRAMES else 'disabled'}")
     logger.info(f"GitHub issue creation: {'enabled' if GITHUB_TOKEN else 'disabled'}")
+
+    try:
+        await asyncio.to_thread(warm_streaming_frame_selector)
+    except Exception as exc:
+        logger.warning("[Streaming] CLIP warm-up failed; first frame will retry: %s", exc)
 
     app = web.Application(client_max_size=20 * 1024 * 1024)
     app.router.add_get('/', websocket_handler)

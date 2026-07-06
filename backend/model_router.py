@@ -62,6 +62,13 @@ Previous-stage artifact, when relevant: {artifact}
 Current response: {response}
 
 Output only YES or NO."""
+STREAMING_RESPONSE_PROMPT = (
+    "You are responding to a live camera stream. Answer in 1-2 short, audio-friendly "
+    "sentences. Prioritize only the most useful information for the user right now. "
+    "Do not give long bullet lists, full reports, or repeated reasoning. For mail "
+    "categorization, state the likely category and one brief reason. Include extra "
+    "detail only when important for action or safety."
+)
 TARGET_LABEL_ALIASES = {
     "exit": {"exit", "door", "doorway", "exit sign"},
     "door": {"exit", "door", "doorway", "exit sign"},
@@ -634,6 +641,10 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
             f"Default implementation {implementation!r} must define kind=model and model"
         )
     call_messages = list(messages or [])
+    streaming = bool((metadata or {}).get("streaming") or STREAMING_EXECUTION_CONTEXT.get())
+    if streaming:
+        call_messages.insert(0, {"role": "system", "content": STREAMING_RESPONSE_PROMPT})
+        logger.info("[Streaming] concise response prompt enabled")
     if task:
         call_messages.append({"role": "user", "content": str(task)})
     logger.info("[Execution Policy] planner disabled -> single-stage execution")
@@ -897,7 +908,7 @@ def copilot_llm_call(
 __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
     "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "TOOL_EXECUTION_IMAGES",
-    "EVALUATION_PROMPT",
+    "EVALUATION_PROMPT", "STREAMING_RESPONSE_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",

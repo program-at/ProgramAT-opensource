@@ -192,6 +192,65 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
 
 class TestAtomicCopilotCall(unittest.TestCase):
+    def test_streaming_single_stage_uses_concise_audio_prompt(self):
+        profiles = {
+            "default": model_router.ImplementationProfile(
+                "default", "model", model="test/default"
+            ),
+            "system": model_router.ImplementationProfile(
+                "system", "model", model="test/system"
+            ),
+        }
+        config = {
+            "planner_enabled": False,
+            "routing_enabled": False,
+            "system_model": "system",
+            "default_llm_when_routing_disabled": "default",
+        }
+        with patch.object(model_router, "load_global_execution_config", return_value=config), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "call_model", return_value=response("Brief answer")) as call_model:
+            model_router.single_stage_llm_call(
+                task="Categorize this mail",
+                images=[b"image"],
+                metadata={"streaming": True},
+            )
+
+        messages = call_model.call_args.args[1]
+        self.assertEqual(messages[0]["role"], "system")
+        self.assertIn("1-2 short, audio-friendly sentences", messages[0]["content"])
+        self.assertIn("likely category and one brief reason", messages[0]["content"])
+
+    def test_non_streaming_single_stage_keeps_detailed_prompt_available(self):
+        profiles = {
+            "default": model_router.ImplementationProfile(
+                "default", "model", model="test/default"
+            ),
+            "system": model_router.ImplementationProfile(
+                "system", "model", model="test/system"
+            ),
+        }
+        config = {
+            "planner_enabled": False,
+            "routing_enabled": False,
+            "system_model": "system",
+            "default_llm_when_routing_disabled": "default",
+        }
+        with patch.object(model_router, "load_global_execution_config", return_value=config), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "call_model", return_value=response("Detailed answer")) as call_model:
+            model_router.single_stage_llm_call(
+                task="Describe this document",
+                images=[b"image"],
+                metadata={"streaming": False},
+            )
+
+        messages = call_model.call_args.args[1]
+        self.assertFalse(any(
+            model_router.STREAMING_RESPONSE_PROMPT in message["content"]
+            for message in messages
+        ))
+
     def test_planner_disabled_bypasses_policies_and_calls_default_once(self):
         profiles = {
             "default": model_router.ImplementationProfile("default", "model", model="test/default"),
