@@ -1,59 +1,30 @@
 """
 Clothing Category and Feature Recognition Tool
 
-AI-powered clothing recognition tool that identifies the most prominent clothing 
+AI-powered clothing recognition tool that identifies the most prominent clothing
 item and describes its visual features concisely for blind or low vision users.
-
-Features:
-- Focuses on the biggest/most prominent clothing item in the image
-- Identifies clothing categories (shirts, pants, shoes, dresses, jackets, etc.)
-- Describes colors, patterns, and styles concisely
-- Limited to 15 words for quick, audio-friendly output
-- Uses Google Gemini Vision API for accurate recognition
-
-Audio Output:
-- Returns natural language descriptions suitable for text-to-speech
-- Example: "Red t-shirt with graphic print."
 """
+
+from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
-from typing import Dict, Optional, Any
-import os
-import base64
-import io
 from PIL import Image
-from litellm_utils import (
-    resolve_model_name,
-    resolve_api_key,
-    extract_text,
-    pil_image_to_data_uri,
-)
 
-try:
-    import litellm
-    LITELLM_AVAILABLE = True
-except ImportError:
-    litellm = None
-    LITELLM_AVAILABLE = False
-    print("⚠️  litellm not installed. Install with: pip install litellm")
+from litellm_utils import extract_text, pil_image_to_data_uri
+from model_router_client import copilot_llm_call
+
+TOOL_NAME = "clothing_recognition"
+TASK_CATEGORY = "general_reasoning"
 
 
-# Building block functions from scene_description.py
 def resize_image_if_needed(image: np.ndarray, max_size: tuple = (1024, 1024)) -> np.ndarray:
     """
     Resize image efficiently while maintaining aspect ratio.
-    
-    Args:
-        image: OpenCV image (numpy array)
-        max_size: Maximum dimensions (width, height)
-    
-    Returns:
-        Resized image if needed, original otherwise
     """
-    height, width = image.shape[:2]
     max_width, max_height = max_size
-    
+    height, width = image.shape[:2]
+
     # Check if resize needed
     if width <= max_width and height <= max_height:
         return image
@@ -97,7 +68,7 @@ def build_clothing_prompt(detail_level: str = 'standard') -> str:
         detail_level: 'brief', 'standard', or 'detailed'
     
     Returns:
-        Formatted prompt string for Gemini
+        Formatted prompt string for the routed vision model
     """
     # Base instruction - focus on the most prominent item only
     base = "Analyze the clothing in this image for a blind or low vision user. "
@@ -138,7 +109,6 @@ def analyze_clothing(
     image: np.ndarray,
     api_key: Optional[str] = None,
     detail_level: str = 'standard',
-    model_name: str = 'gemini-3-flash-preview'
 ) -> Dict[str, Any]:
     """
     Core function that performs AI-powered clothing analysis using Gemini.
@@ -147,7 +117,6 @@ def analyze_clothing(
         image: OpenCV image (numpy array in BGR format)
         api_key: Gemini API key (uses env var if not provided)
         detail_level: 'brief', 'standard', or 'detailed'
-        model_name: Gemini model to use
     
     Returns:
         Dictionary with analysis results:
@@ -158,25 +127,6 @@ def analyze_clothing(
             'detail_level': str
         }
     """
-    if not LITELLM_AVAILABLE:
-        return {
-            'success': False,
-            'description': 'LiteLLM not available. Please install litellm package.',
-            'confidence': 0.0,
-            'detail_level': detail_level
-        }
-    
-    # Get API key
-    api_key = resolve_api_key(model_name, api_key)
-    
-    if not api_key:
-        return {
-            'success': False,
-            'description': 'API key not configured. Please set the matching provider key in the environment.',
-            'confidence': 0.0,
-            'detail_level': detail_level
-        }
-    
     try:
         # Resize image if needed for efficiency
         processed_image = resize_image_if_needed(image, max_size=(1024, 1024))
@@ -187,35 +137,31 @@ def analyze_clothing(
         
         # Build prompt
         prompt = build_clothing_prompt(detail_level)
-
-        model_name = resolve_model_name(model_name)
-
-        print(f"🤖 Using LiteLLM model: {model_name}")
         print(f"📋 Detail level: {detail_level}")
         
-        response = litellm.completion(
-            model=model_name,
-            messages=[
-                {
-                    'role': 'user',
-                    'content': [
-                        {'type': 'text', 'text': prompt},
-                        {'type': 'image_url', 'image_url': {'url': image_data_uri}},
-                    ],
-                }
-            ],
-            api_key=api_key,
+        metadata = {
+            'tool_name': TOOL_NAME,
+            'route_text': 'identify the most prominent clothing item and describe visual features concisely',
+        }
+        if api_key:
+            metadata['api_key'] = api_key
+
+        result = copilot_llm_call(
+            capability=TASK_CATEGORY,
+            messages=[{'role': 'user', 'content': prompt}],
+            images=[image_data_uri],
+            metadata=metadata,
         )
         
         # Extract description
-        description = extract_text(response)
+        description = result['response']
         
         print(f"\n👔 Clothing Analysis:\n{description}\n")
         
         return {
             'success': True,
             'description': description,
-            'confidence': 0.9,  # Gemini provides high-quality results
+            'confidence': 0.9,
             'detail_level': detail_level
         }
         
@@ -278,7 +224,6 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
         input_data: Optional configuration dictionary:
             - 'detail_level': 'brief', 'standard', or 'detailed' (default: 'standard')
             - 'api_key': Optional API key override
-            - 'model': Optional Gemini model override
     
     Returns:
         Dictionary with analysis results and audio configuration:
@@ -322,14 +267,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Dict[str, Any]
     
     detail_level = input_data.get('detail_level', 'standard')
     api_key = input_data.get('api_key')
-    model = input_data.get('model', os.environ.get('LLM_MODEL', os.environ.get('GEMINI_MODEL', 'gemini-3-flash-preview')))
-    
     # Analyze clothing
     result = analyze_clothing(
         image=image,
         api_key=api_key,
         detail_level=detail_level,
-        model_name=model
     )
     
     # Format and return description
