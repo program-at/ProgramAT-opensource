@@ -33,8 +33,10 @@ LEGACY_CAPABILITY_ALIASES = {
 }
 NAVIGATION_SYSTEM_PROMPT = (
     "You provide navigation guidance for a blind or low-vision user. "
-    "Use previous-stage detection results as the primary source of truth. "
-    "Use the image only to refine navigation. Give concise spoken instructions "
+    "Use useful previous-stage detection results as additional context. "
+    "A missing, failed, or uncertain detection is not evidence that the target is absent; "
+    "inspect the image independently when prior-stage context is uncertain. "
+    "Give concise spoken instructions "
     "in at most 2 short sentences. Do not use a numbered list, introduction, "
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
@@ -438,6 +440,35 @@ def _filter_target_artifact(artifact: Any, target_labels: Sequence[str]) -> Dict
     }
 
 
+def _artifact_is_useful(artifact: Any) -> bool:
+    """Return whether a prior stage produced usable positive information."""
+    if artifact is None:
+        return False
+    if isinstance(artifact, str):
+        return bool(artifact.strip()) and not artifact.strip().lower().startswith(
+            ("no ", "not found", "couldn't", "could not", "failed")
+        )
+    if isinstance(artifact, (list, tuple)):
+        return bool(artifact)
+    if not isinstance(artifact, dict):
+        return bool(artifact)
+    if artifact.get("accepted") is False or artifact.get("low_confidence") is True:
+        return False
+    confidence = artifact.get("confidence")
+    if isinstance(confidence, str) and confidence.strip().lower() in {"low", "uncertain"}:
+        return False
+    if "matching_detection" in artifact and not artifact.get("matching_detection"):
+        return False
+    for key in ("detections", "objects", "regions", "items"):
+        if key in artifact:
+            return isinstance(artifact[key], (list, tuple)) and bool(artifact[key])
+    for key in ("text", "ocr_text", "content"):
+        if key in artifact:
+            return _artifact_is_useful(artifact[key])
+    ignored = {"target_labels", "confidence", "accepted", "low_confidence", "error"}
+    return any(value not in (None, "", [], {}) for key, value in artifact.items() if key not in ignored)
+
+
 def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     image_items = list(images or [])
     if not image_items:
@@ -573,18 +604,6 @@ def copilot_llm_call(
             previous_artifact = _filter_target_artifact(previous_artifact, target_labels)
             call_metadata["previous_stage_artifact"] = previous_artifact
             logger.info("[Target Grounding] navigation target_artifact=%s", previous_artifact)
-            if not previous_artifact["matching_detection"]:
-                fallback_text = (
-                    "I couldn't locate the exit in this frame."
-                    if _label_matches_targets("exit", target_labels)
-                    else "I couldn't locate the requested target in this frame."
-                )
-                return {
-                    "response": fallback_text,
-                    "artifact": {"text": fallback_text, **previous_artifact},
-                    "implementation": "target_not_found",
-                    "capability": declared,
-                }
         legacy_output = call_metadata.get("previous_stage_output")
         if target_labels and previous_artifact is None and legacy_output is not None:
             logger.info("[Target Grounding] navigation target_artifact=%s", legacy_output)
@@ -594,17 +613,7 @@ def copilot_llm_call(
                 for alias in TARGET_LABEL_ALIASES.get(target, {target})
             )
             if not matching_alias:
-                fallback_text = (
-                    "I couldn't locate the exit in this frame."
-                    if _label_matches_targets("exit", target_labels)
-                    else "I couldn't locate the requested target in this frame."
-                )
-                return {
-                    "response": fallback_text,
-                    "artifact": {"text": fallback_text, "target_labels": target_labels, "matching_detection": False},
-                    "implementation": "target_not_found",
-                    "capability": declared,
-                }
+                previous_artifact = None
         target_text = ", ".join(target_labels) or "the requested destination"
         call_messages.insert(0, {
             "role": "system",
@@ -612,11 +621,20 @@ def copilot_llm_call(
             f" The navigation target is: {target_text}. "
             "Never substitute another detected object for this target.",
         })
-    if previous_artifact is not None:
+    if _artifact_is_useful(previous_artifact):
         call_messages.append({
             "role": "user",
-            "content": "Previous-stage artifact (primary source of truth): "
+            "content": "Useful previous-stage artifact (additional context): "
             + json.dumps(previous_artifact, ensure_ascii=False, default=str),
+        })
+    elif previous_artifact is not None or call_metadata.get("previous_stage_output") is not None:
+        call_messages.append({
+            "role": "user",
+            "content": (
+                "The previous stage could not confidently localize or extract the target. "
+                "Treat that result as uncertainty, not as evidence that the target is absent. "
+                "Inspect the original image independently."
+            ),
         })
     if goal:
         call_metadata["goal"] = str(goal)
@@ -743,7 +761,10 @@ def copilot_llm_call(
             )
         else:
             fallback_text = "Sorry, I couldn't generate guidance from this image."
-            output = ImplementationResult(_simple_response(fallback_text), {"text": fallback_text})
+            output = ImplementationResult(
+                _simple_response(fallback_text),
+                {"text": fallback_text, "accepted": False, "error": "stage_failed"},
+            )
             implementation = "fallback"
             logger.warning("[Execution Policy] capability=%s fallback=none", declared)
     artifact = output.artifact

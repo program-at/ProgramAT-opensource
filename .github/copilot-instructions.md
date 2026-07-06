@@ -17,7 +17,8 @@ Hierarchy for staged issues:
 
 If the generated issue explicitly enumerates a `Task Stages` section, generated tools must follow that stage list exactly:
 - Execute the stages in order with one call per declared capability.
-- Read each call's structured `artifact` and explicitly pass only the useful information to the next call in `metadata` and/or `messages`.
+- Read each call's structured `artifact` and explicitly pass useful information to the next call in `metadata` and/or `messages`.
+- Pass the original image to every later visual stage. Empty, failed, or low-confidence artifacts mean uncertainty, not target absence; later stages must inspect the image independently.
 - The generated tool owns stage composition and artifact handoff.
 - Planner stages contain only `goal` and `capability`.
 
@@ -127,7 +128,7 @@ Do not invent or substitute task categories. In particular, never use `visual_re
 
 When creating a new tool, explicitly choose the nearest task category before writing a model-backed call. Let the backend choose the actual model/backend and emit routing logs. Do not pass `model`, `requested_model`, provider-specific names, detector names, OCR engine names, or routing registries in generated tools. Do not import `litellm`, provider SDKs, detector libraries, OCR SDKs, `ultralytics`, or `YOLO` directly. Do not call `litellm.completion()` or `YOLO(...)`. Do not create a `ModelRouter` class, model registry, model cache, provider fallback logic, `COCO_CLASSES`, hardcoded model names, `.pt` model loading/discovery logic, wrapper functions, new client modules, or alternative model-routing helpers. If the approved API cannot support the needed capability, add support to the centralized backend router instead of implementing it inside the tool.
 
-For multi-stage issues, write the ordered `copilot_llm_call()` calls explicitly. Extract the useful artifact fields between calls and return the final call's `response` as spoken output.
+For multi-stage issues, write the ordered `copilot_llm_call()` calls explicitly. Extract useful artifact fields between calls and return the final call's `response` as spoken output. Pass `images=[image]` to every stage that can inspect the scene. If an earlier result is empty, failed, or low-confidence, describe it only as uncertainty (for example, "The previous stage could not localize the target") and let the next model inspect the original image independently. Never translate a failed detection into "the target does not exist."
 Preserve the stage target across calls: pass the same `target_labels` to detection and downstream navigation, and pass only the detector's target-filtered artifact. For exit-finding tools, use `target_labels = ["exit", "door", "doorway", "exit sign"]`.
 
 Example (Uber pickup guidance):
@@ -142,11 +143,13 @@ vehicle = copilot_llm_call(
 door = copilot_llm_call(
     capability="spatial_reasoning",
     goal="Locate the passenger-side door.",
+    images=[image],
     metadata={"previous_stage_artifact": vehicle["artifact"]},
 )
 guidance = copilot_llm_call(
     capability="navigation",
     goal="Guide the user toward the door.",
+    images=[image],
     metadata={"previous_stage_artifact": door["artifact"]},
 )
 return guidance["response"]

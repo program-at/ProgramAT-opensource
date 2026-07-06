@@ -154,7 +154,8 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["artifact"], {"text": "Turn left"})
         self.assertEqual(calls[0][0]["role"], "system")
         self.assertIn("blind or low-vision", calls[0][0]["content"])
-        self.assertIn("primary source of truth", calls[0][0]["content"])
+        self.assertIn("additional context", calls[0][0]["content"])
+        self.assertIn("not evidence that the target is absent", calls[0][0]["content"])
         self.assertIn("at most 2 short sentences", calls[0][0]["content"])
 
     def test_unknown_capability_is_rejected(self):
@@ -229,7 +230,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual([call[0] for call in calls], ["llava", "gpt4o"])
         self.assertEqual(result["response"], "Turn right toward the exit.")
         self.assertEqual(result["implementation"], "llava")
-        self.assertIn("Previous-stage artifact", calls[0][1][-2]["content"])
+        self.assertIn("previous-stage artifact", calls[0][1][-2]["content"])
         evaluator_prompt = calls[1][1][0]["content"]
         self.assertIn('Target labels, when relevant: ["exit", "door", "doorway", "exit sign"]', evaluator_prompt)
         self.assertIn("enough useful information", evaluator_prompt)
@@ -267,30 +268,63 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn('"label": "door"', prompt)
         self.assertNotIn('"label": "toilet"', prompt)
 
-    def test_navigation_falls_back_when_artifact_has_only_unrelated_detection(self):
+    def test_navigation_independently_inspects_image_when_artifact_has_no_target(self):
+        calls = []
+
+        def executor(_profile, messages, images, _metadata):
+            calls.append((messages, images))
+            return model_router.ImplementationResult(response("The exit is visible on the left."))
+
         policies = {"navigation": {"candidates": ["nav"], "evaluator": None, "cascade": None}}
         profiles = {"nav": model_router.ImplementationProfile("nav", "fake")}
         with patch.object(model_router, "load_execution_policies", return_value=policies), \
              patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
-             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": lambda *_: self.fail("navigation model should not run")}):
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
             result = model_router.copilot_llm_call(
                 capability="navigation", goal="Navigate to the exit",
                 metadata={"previous_stage_artifact": {"detections": [{"label": "toilet", "location": "right"}]}},
+                images=[b"original-image"],
             )
 
-        self.assertEqual(result["response"], "I couldn't locate the exit in this frame.")
-        self.assertFalse(result["artifact"]["matching_detection"])
+        self.assertEqual(result["response"], "The exit is visible on the left.")
+        self.assertEqual(calls[0][1], [b"original-image"])
+        prompt_text = "\n".join(message["content"] for message in calls[0][0])
+        self.assertIn("previous stage could not confidently localize", prompt_text)
+        self.assertIn("not as evidence that the target is absent", prompt_text)
+        self.assertNotIn("toilet", prompt_text)
 
-    def test_legacy_unrelated_detection_text_cannot_ground_exit_navigation(self):
+    def test_legacy_unrelated_detection_text_is_uncertainty_not_absence(self):
+        calls = []
+
+        def executor(_profile, messages, images, _metadata):
+            calls.append((messages, images))
+            return model_router.ImplementationResult(response("I can see an exit ahead."))
+
         policies = {"navigation": {"candidates": ["nav"], "evaluator": None, "cascade": None}}
+        profiles = {"nav": model_router.ImplementationProfile("nav", "fake")}
         with patch.object(model_router, "load_execution_policies", return_value=policies), \
-             patch.object(model_router, "load_implementation_profiles", return_value={}):
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
             result = model_router.copilot_llm_call(
                 capability="navigation", goal="Navigate to the nearest exit",
                 metadata={"previous_stage_output": "toilet at right"}, images=[b"image"],
             )
 
-        self.assertEqual(result["response"], "I couldn't locate the exit in this frame.")
+        self.assertEqual(result["response"], "I can see an exit ahead.")
+        self.assertEqual(calls[0][1], [b"image"])
+        self.assertIn(
+            "Inspect the original image independently",
+            "\n".join(message["content"] for message in calls[0][0]),
+        )
+
+    def test_empty_and_explicitly_low_confidence_artifacts_are_not_useful(self):
+        self.assertFalse(model_router._artifact_is_useful({"detections": []}))
+        self.assertFalse(model_router._artifact_is_useful({"text": ""}))
+        self.assertFalse(model_router._artifact_is_useful({"text": "Stage failed", "accepted": False}))
+        self.assertFalse(model_router._artifact_is_useful({"text": "possible label", "low_confidence": True}))
+        self.assertFalse(model_router._artifact_is_useful({"text": "possible label", "confidence": "low"}))
+        self.assertTrue(model_router._artifact_is_useful({"text": "Take one tablet daily"}))
+        self.assertTrue(model_router._artifact_is_useful({"detections": [{"label": "document"}]}))
 
     def test_target_filter_keeps_exit_aliases_only(self):
         artifact = model_router._filter_target_artifact(
