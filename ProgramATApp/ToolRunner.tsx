@@ -21,7 +21,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import CameraView, { CameraViewHandle } from './CameraView';
 import WebSocketService from './WebSocketService';
-import { getModelPreference } from './ModelPreference';
 import AudioOutputService from './AudioOutputService';
 import BeepService from './BeepService';
 import TextToSpeechService from './TextToSpeechService';
@@ -80,6 +79,7 @@ export default function ToolRunner({
   const lastCapturedImageRef = useRef<string | null>(null); // Ref to track image for WebSocket handler
   const [lastStreamingText, setLastStreamingText] = useState(''); // Track last streaming text for similarity
   const lastStreamingTextRef = useRef(''); // Backup ref to persist across re-renders
+  const lastStreamingExecutionRef = useRef(0);
   
   // Custom GPT follow-up state
   const [isCustomGptStreaming, setIsCustomGptStreaming] = useState(false);
@@ -347,6 +347,12 @@ export default function ToolRunner({
   useEffect(() => {
     console.log('[ToolRunner] lastStreamingText state changed to:', JSON.stringify(lastStreamingText));
   }, [lastStreamingText]);
+
+  useEffect(() => {
+    if (toolOutput) {
+      console.log('[Streaming UI] output committed to render state:', toolOutput.substring(0, 100));
+    }
+  }, [toolOutput]);
 
   // Clear saved one-shot result when tool changes
   useEffect(() => {
@@ -675,11 +681,23 @@ export default function ToolRunner({
           }
         } else if (message.type === 'tool_stream_result') {
           // Streaming result - update continuously
+          console.log('[Streaming UI] websocket result received, execution:', message.execution_id);
+          if (
+            typeof message.execution_id === 'number' &&
+            message.execution_id <= lastStreamingExecutionRef.current
+          ) {
+            console.log('[Streaming UI] duplicate/stale result ignored, execution:', message.execution_id);
+            return;
+          }
+          if (typeof message.execution_id === 'number') {
+            lastStreamingExecutionRef.current = message.execution_id;
+          }
           console.log('[ToolRunner] Stream result:', message.result?.substring(0, 100));
           console.log('[ToolRunner] Stream audio config:', message.audio);
           console.log('[ToolRunner] audioEnabled state:', audioEnabled);
           const result = message.result || 'Processing...';
           setToolOutput(result);
+          console.log('[Streaming UI] state update scheduled, execution:', message.execution_id);
           
           // Use accessibility announcement for streaming results with similarity checking
           console.log('[ToolRunner] About to check streaming result for similarity...');
@@ -715,6 +733,7 @@ export default function ToolRunner({
           const mode = message.mode || 'code_execution';
           console.log('[ToolRunner] Streaming mode:', mode);
           setIsStreaming(true);
+          lastStreamingExecutionRef.current = 0;
           setIsCustomGptStreaming(mode === 'gemini_live');
           setToolOutput(`Streaming started: ${message.tool_name || 'tool'}${mode === 'gemini_live' ? ' (Gemini Live)' : ''}`);
           
@@ -920,7 +939,6 @@ export default function ToolRunner({
     }
 
     // Send tool execution request to backend with captured frame
-    const modelPref = getModelPreference();
     const message = {
       type: 'run_tool',
       tool_name: selectedTool.name,
@@ -928,6 +946,7 @@ export default function ToolRunner({
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
+      task: selectedTool.description || selectedTool.name,
       frame: {
         base64: frameData.base64,
         width: frameData.width,
@@ -935,7 +954,6 @@ export default function ToolRunner({
       },
       conversation_id: conversationId, // Include conversation ID if in conversation mode
       timestamp: Date.now(),
-      ...(modelPref ? { model: modelPref } : {}),
     };
 
     const ws = WebSocketService.getActiveSocket();
@@ -973,15 +991,15 @@ export default function ToolRunner({
     setIsStreaming(true);
     setToolOutput('Starting stream...');
     
-    const modelPref = getModelPreference();
     const message: any = {
       type: 'start_streaming_tool',
       tool_name: selectedTool.name,
+      tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
       input: '',
+      task: selectedTool.description || selectedTool.name,
       throttle_ms: 1000, // Process 1 frame per second
-      ...(modelPref ? { model: modelPref } : {}),
     };
 
     // Forward custom GPT / Gemini Live fields if present
