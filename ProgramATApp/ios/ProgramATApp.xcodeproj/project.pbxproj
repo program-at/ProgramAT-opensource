@@ -26,11 +26,11 @@
 		13B07F961A680F5B00A75B9A /* ProgramATApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ProgramATApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = ProgramATApp/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = ProgramATApp/Info.plist; sourceTree = "<group>"; };
-		A7C9E0E92FD0000000000001 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
 		13B07FB81A68108700A75B9A /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = PrivacyInfo.xcprivacy; path = ProgramATApp/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		761780EC2CA45674006654EE /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ProgramATApp/AppDelegate.swift; sourceTree = "<group>"; };
 		81AB9BB72411601600AC10FF /* LaunchScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = LaunchScreen.storyboard; path = ProgramATApp/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		9882676676B182EFBB1A613D /* Pods-ProgramATApp.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-ProgramATApp.debug.xcconfig"; path = "Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp.debug.xcconfig"; sourceTree = "<group>"; };
+		A7C9E0E92FD0000000000001 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
 		AF00EDC02FCE094000DBDEF5 /* ProgramATApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ProgramATApp.entitlements; path = ProgramATApp/ProgramATApp.entitlements; sourceTree = "<group>"; };
 		AF31C7912FC88C2F0067CBB7 /* MetaWearablesModule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MetaWearablesModule.swift; sourceTree = "<group>"; };
 		AF31C7932FC88D950067CBB7 /* ProgramATApp-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "ProgramATApp-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -238,13 +238,9 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-resources-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			inputPaths = (
-			);
 			name = "[CP] Copy Pods Resources";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-resources-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -259,13 +255,9 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			inputPaths = (
-			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-ProgramATApp/Pods-ProgramATApp-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -302,7 +294,6 @@
 				DEVELOPMENT_TEAM = 82C3N62J4P;
 				ENABLE_BITCODE = NO;
 				INFOPLIST_FILE = ProgramATApp/Info.plist;
-				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -337,7 +328,6 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 82C3N62J4P;
 				INFOPLIST_FILE = ProgramATApp/Info.plist;
-				CODE_SIGN_ENTITLEMENTS = ProgramATApp/ProgramATApp.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

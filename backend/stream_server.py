@@ -58,7 +58,11 @@ from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
+from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
+from video_summarizer import summarize_video
 import re
+import tempfile
+import secrets
 import traceback
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
@@ -517,6 +521,13 @@ last_text = {'content': None, 'timestamp': None, 'task': None, 'prev_raw': None}
 # Incomplete issue tracking for GitHub issue creation
 incomplete_issue = {'data': None, 'missing_fields': [], 'timestamp': None}
 
+# Ideation turn state — set after all fields are filled, before issue creation.
+# WebSocket path: keyed fields below; HTTP path uses pending_ideation_http dict.
+pending_ideation = {'active': False, 'parsed_data': None, 'video_summary': ''}
+
+# HTTP ideation tokens: token -> {'parsed_data': dict, 'video_summary': str, 'created_at': datetime}
+pending_ideation_http: dict = {}
+
 # Issue iteration tracking - for updating existing issues
 selected_issue = {'number': None, 'title': None, 'mode': 'create'}  # mode can be 'create' or 'update'
 issue_cache = {'issues': [], 'last_fetch': None, 'cache_duration': 300}  # Cache for 5 minutes
@@ -535,6 +546,11 @@ LATEST_META_FRAME_FILENAME = 'latest_meta_frame.jpg'
 # Active streaming tools - tracks which tools are running continuously per client
 # Format: {client_id: {'tool': {...}, 'last_run': timestamp, 'throttle_ms': 1000}}
 active_streaming_tools = {}
+
+# Tracks the asyncio.Task currently running a streaming tool for each client.
+# Cancelled on stop or when a new tool starts to prevent stale results arriving
+# after the tool has been swapped out.
+active_streaming_tasks: dict = {}
 
 EXECUTION_POLICY_PATH = Path(__file__).resolve().parent / 'execution_policy.yaml'
 _clip_encoders = {}
@@ -1017,8 +1033,11 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         return False
     
     tool_config = active_streaming_tools[client_id]
+    # Snapshot generation at dispatch time so we can discard results that
+    # arrive after a stop/restart replaced the tool config.
+    dispatched_generation = tool_config.get('generation', 0)
     now = datetime.now()
-    
+
     # Gemini Live tools handle their own query loop — don't exec code here
     if tool_config.get('gemini_live'):
         return False
@@ -1123,55 +1142,88 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             stdout_capture.seek(0)
             stdout_capture.truncate(0)
             
-            # Capture stdout to get print() output
+            # Run exec + function call in a thread so blocking LLM/CV calls
+            # inside the tool don't stall the event loop (which would cause
+            # the aiohttp heartbeat to miss and the app to declare disconnect).
             import sys
-            old_stdout = sys.stdout
-            
-            # Retry loop for automatic module installation
+            import inspect
+            import io as _io
+
+            def _run_tool_in_thread():
+                _capture = _io.StringIO()
+                _old = sys.stdout
+                sys.stdout = _capture
+                try:
+                    exec(tool_code, exec_globals, exec_locals)
+                finally:
+                    sys.stdout = _old
+
+                exec_globals.update(exec_locals)
+
+                _result = None
+                if 'main' in exec_locals and callable(exec_locals['main']):
+                    sig = inspect.signature(exec_locals['main'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['main'](image, parsed_input)
+                    else:
+                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
+                elif 'run' in exec_locals and callable(exec_locals['run']):
+                    sig = inspect.signature(exec_locals['run'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['run'](image, parsed_input)
+                    else:
+                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
+                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
+                    sig = inspect.signature(exec_locals['process_image'])
+                    if len(sig.parameters) == 2:
+                        _result = exec_locals['process_image'](image, parsed_input)
+                    else:
+                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
+                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
+                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
+                        verbalizer = exec_locals['get_verbalizer']()
+                        if not verbalizer and GEMINI_API_KEY:
+                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
+                    _result = exec_locals['process_frame_for_text'](image_base64)
+                elif 'result' in exec_locals:
+                    _result = exec_locals['result']
+                else:
+                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
+                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
+                    if available_funcs or available_classes:
+                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+
+                return _capture.getvalue(), _result
+
             retry_count = 0
             max_retries = 3
             image_context_token = TOOL_EXECUTION_IMAGES.set([image])
-            
+            printed_output = ''
+            result = None
+
             while retry_count < max_retries:
                 try:
                     logger.info(f"Executing {tool_name} code for {client_id}, attempt {retry_count + 1}")
-                    # Redirect stdout to capture print statements
-                    sys.stdout = stdout_capture
-                    try:
-                        # Execute tool code
-                        logger.info(f"About to exec() tool code for {client_id}")
-                        exec(tool_code, exec_globals, exec_locals)
-                        logger.info(f"Successfully exec()d tool code for {client_id}")
-                    finally:
-                        sys.stdout = old_stdout
-                    break  # Success, exit retry loop
+                    printed_output, result = await asyncio.to_thread(_run_tool_in_thread)
+                    logger.info(f"Tool {tool_name} completed for {client_id}: {type(result)}")
+                    break
                 except (ImportError, ModuleNotFoundError) as e:
-                    sys.stdout = old_stdout  # Restore stdout for logging
                     error_msg = str(e)
                     logger.warning(f"Module error in streaming {tool_name}: {error_msg}")
-                    
-                    # PAUSE STREAMING: Mark as installing
+
                     tool_config['installing_module'] = True
-                    
-                    # Notify client that streaming is paused for installation
                     await websocket.send(json.dumps({
                         'type': 'module_installing',
                         'tool_name': tool_name,
                         'message': f"Pausing streaming to install required module...",
                         'timestamp': datetime.now().isoformat()
                     }))
-                    
-                    # Install the module synchronously (just like one-shot mode)
-                    # This will block, but streaming is already paused
-                    installed_module = module_mgr.install_from_error(error_msg)
-                    
-                    # RESUME STREAMING: Clear installing flag
+
+                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
                     tool_config['installing_module'] = False
-                    
+
                     if installed_module:
                         logger.info(f"Installed {installed_module}, resuming streaming execution...")
-                        
-                        # Notify client that streaming is resuming
                         await websocket.send(json.dumps({
                             'type': 'module_installed',
                             'tool_name': tool_name,
@@ -1179,13 +1231,10 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
                             'message': f"Successfully installed {installed_module}. Resuming streaming...",
                             'timestamp': datetime.now().isoformat()
                         }))
-                        
-                        # Reload common modules to include newly installed one
                         common_modules = module_mgr.get_common_modules()
                         exec_globals.update(common_modules)
                         retry_count += 1
                     else:
-                        # Could not identify/install module
                         await websocket.send(json.dumps({
                             'type': 'module_install_failed',
                             'tool_name': tool_name,
@@ -1195,8 +1244,6 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
                         }))
                         raise
                 except Exception:
-                    # Non-module errors should be raised immediately
-                    sys.stdout = old_stdout  # Restore stdout before raising
                     raise
             
             # Get captured print output
@@ -3587,7 +3634,7 @@ def should_mention_copilot(text: str) -> bool:
         if keyword in text_lower:
             return True
     
-    # Default to mentioning copilot if unsure (better to over-mention than under-mention)
+    # Default: always mention @copilot so it stays aware of issue updates.
     return True
 
 
@@ -3654,32 +3701,9 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                 'pr_number': pr_number,
                 'pr_url': pr_url
             }
-            await broadcast_to_connected_clients(success_data)
-            
-            # If we mentioned @copilot, start polling for the Copilot session
-            if mention_copilot and connected_clients:
-                # Get the first connected client's websocket and derive its ID
-                for ws in connected_clients:
-                    try:
-                        ws_client_id = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
-                        
-                        if pr_number:
-                            # If there's already a PR, poll that specific PR for a session
-                            logger.info(f"@copilot mentioned on PR #{pr_number}, starting direct session polling")
-                            asyncio.create_task(
-                                poll_for_copilot_session_on_pr(pr_number, ws, ws_client_id)
-                            )
-                            logger.info(f"Started Copilot session polling for PR #{pr_number}")
-                        else:
-                            # If there's no PR yet, wait for Copilot to create one
-                            logger.info(f"@copilot mentioned on issue #{issue_number}, waiting for PR creation")
-                            asyncio.create_task(
-                                poll_for_copilot_session(issue_number, ws, ws_client_id)
-                            )
-                            logger.info(f"Started Copilot session polling for issue #{issue_number}")
-                        break  # Only start one polling task
-                    except Exception as e:
-                        logger.error(f"Error starting Copilot poll for @copilot comment: {e}")
+            await _broadcast_ws(success_data)
+            # @copilot was mentioned in the comment — no automatic log streaming.
+            # Copilot session logs are only streamed when the user explicitly requests them.
         
     except Exception as e:
         import traceback
@@ -4071,26 +4095,78 @@ def generate_feedback_message(missing_fields: list, issue_type: str) -> str:
     return f"I need {friendly_name}."
 
 
+async def generate_ideation_question(parsed_data: dict, video_summary: str, model: str) -> str:
+    """
+    Ask an LLM to generate one open-ended ideation question based on the filled issue
+    fields and optional video summary. The question is meant to help the user think
+    through an edge case, environmental constraint, or failure behavior they may not
+    have considered.
+
+    Returns a plain question string, or a sensible fallback on any error.
+    """
+    import litellm
+    from litellm_utils import resolve_model_name, resolve_api_key, extract_text
+
+    title = parsed_data.get('title', '')
+    description = parsed_data.get('description', '')
+    solution = parsed_data.get('solution', '')
+    example_usage = parsed_data.get('example_usage', '')
+
+    video_section = ''
+    if video_summary:
+        video_section = f"\n\nVideo demonstration summary:\n{video_summary}"
+
+    prompt = (
+        "You are helping a blind or low-vision user design a camera-based assistive tool. "
+        "They have described the tool they want. Your job is to ask them ONE concise, "
+        "open-ended question that helps them think more deeply about their idea — "
+        "such as an edge case, an environmental condition, or how the tool should behave "
+        "when something goes wrong. Do not ask about things already answered below. "
+        "Return only the question itself, nothing else.\n\n"
+        f"Tool title: {title}\n"
+        f"Description: {description}\n"
+        f"Proposed solution: {solution}\n"
+        f"Example usage: {example_usage}"
+        f"{video_section}"
+    )
+
+    try:
+        resolved_model = resolve_model_name(model)
+        api_key = resolve_api_key(resolved_model)
+        response = await asyncio.to_thread(
+            litellm.completion,
+            model=resolved_model,
+            messages=[{'role': 'user', 'content': prompt}],
+            api_key=api_key,
+
+        )
+        question = extract_text(response).strip()
+        if question:
+            return question
+    except Exception:
+        logger.warning("generate_ideation_question failed", exc_info=True)
+
+    return "Is there anything specific about how the tool should behave in difficult conditions, like low lighting or a cluttered background?"
+
+
 def _log_to_all_sessions(level: str, message: str):
     """Helper to log a message to all active session logs."""
     for session_log in active_session_loggers.values():
         session_log.log(level, message)
 
 
-async def broadcast_to_connected_clients(payload: dict):
-    """Broadcast JSON to aiohttp/websockets-compatible client adapters."""
+async def _broadcast_ws(data: dict) -> None:
+    """Broadcast a JSON payload to every connected AiohttpWebSocketAdapter client."""
     if not connected_clients:
         return
-
-    message = json.dumps(payload)
-    send_tasks = []
+    msg = json.dumps(data)
+    coros = []
     for client in list(connected_clients):
         send = getattr(client, 'send', None)
         if callable(send):
-            send_tasks.append(send(message))
-
-    if send_tasks:
-        results = await asyncio.gather(*send_tasks, return_exceptions=True)
+            coros.append(send(msg))
+    if coros:
+        results = await asyncio.gather(*coros, return_exceptions=True)
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Failed to broadcast to client: {result}")
@@ -4158,7 +4234,7 @@ async def create_github_issue(text: str):
                     'message': issue_list_msg,
                     'issues': available_issues[:10]
                 }
-                await broadcast_to_connected_clients(list_data)
+                await _broadcast_ws(list_data)
             return
         
         # Handle update mode selection
@@ -4179,7 +4255,7 @@ async def create_github_issue(text: str):
                     'duplicate_match': selection.get('match_reason') == 'duplicate_similarity',
                     'confidence': selection.get('confidence'),
                 }
-                await broadcast_to_connected_clients(confirm_data)
+                await _broadcast_ws(confirm_data)
             
             logger.info(f"Switched to update mode for issue #{selected_issue['number']}")
             return
@@ -4222,7 +4298,7 @@ async def create_github_issue(text: str):
                 f"Issue creation stopped because stage decomposition failed: {error_message}",
             )
             if connected_clients:
-                await broadcast_to_connected_clients({
+                await _broadcast_ws({
                     'type': 'issue_creation_error',
                     'message': 'I could not decompose the task, so no incomplete issue was created. Please try again.',
                 })
@@ -4247,18 +4323,47 @@ async def create_github_issue(text: str):
                     'message': feedback_msg,
                     'missing_fields': missing_fields
                 }
-                await broadcast_to_connected_clients(feedback_data)
+                await _broadcast_ws(feedback_data)
             
             # Don't create issue yet, wait for more info
             logger.info("Issue incomplete, waiting for user to provide more details")
             return
         
-        # All required fields are filled! Clear incomplete state and create issue
-        logger.info("All required fields filled, creating issue")
+        # All required fields are filled! Clear incomplete state.
+        logger.info("All required fields filled")
         incomplete_issue['data'] = None
         incomplete_issue['missing_fields'] = []
         incomplete_issue['timestamp'] = None
-        
+
+        # --- Ideation turn ---
+        # If not yet done, send one open-ended question to help the user flesh out
+        # their idea, then wait for their answer before creating the issue.
+        if not pending_ideation['active']:
+            logger.info("Sending ideation question before issue creation")
+            _log_to_all_sessions("INFO", "Sending ideation question")
+            question = await generate_ideation_question(parsed_data, '', active_model)
+            pending_ideation['active'] = True
+            pending_ideation['parsed_data'] = parsed_data
+            pending_ideation['video_summary'] = ''
+            await _broadcast_ws({'type': 'ideation_question', 'message': question})
+            return  # wait for user's answer
+
+        # Ideation answer has arrived — fold it into the parsed data and proceed.
+        logger.info("Received ideation answer, proceeding to issue creation")
+        _log_to_all_sessions("INFO", "Received ideation answer")
+        parsed_data = pending_ideation['parsed_data']
+        ideation_answer = text.strip()
+        if ideation_answer:
+            parsed_data['additional'] = (
+                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer
+            ).strip()
+        pending_ideation['active'] = False
+        pending_ideation['parsed_data'] = None
+        pending_ideation['video_summary'] = ''
+
+        logger.info("Creating issue after ideation turn")
+        _log_to_all_sessions("INFO", "Creating issue after ideation turn")
+
         # Use visual AT template
         template_file = TEMPLATE_DIR / 'visual_at.md'
         
@@ -4343,7 +4448,7 @@ async def create_github_issue(text: str):
                 'issue_number': issue.number,
                 'issue_url': issue.html_url
             }
-            await broadcast_to_connected_clients(success_data)
+            await _broadcast_ws(success_data)
             
             # Start polling for Copilot session for each connected client
             for ws in connected_clients:
@@ -4373,10 +4478,13 @@ async def create_github_issue(text: str):
         _log_to_all_sessions("ERROR", tb)
         logger.error(f"Failed to create GitHub issue: {e}")
         logger.error(tb)
-        # Clear incomplete state on error
+        # Clear incomplete + ideation state on error
         incomplete_issue['data'] = None
         incomplete_issue['missing_fields'] = []
         incomplete_issue['timestamp'] = None
+        pending_ideation['active'] = False
+        pending_ideation['parsed_data'] = None
+        pending_ideation['video_summary'] = ''
 
 
 async def monitor_text_pause():
@@ -4593,6 +4701,355 @@ async def test_door_recognition(request: web.Request):
             },
             status=500,
         )
+
+
+# =============================================================================
+# Creation Submit Endpoint
+# =============================================================================
+
+async def handle_creation_submit(request: web.Request) -> web.Response:
+    """
+    POST /submit-creation
+    Accepts multipart/form-data with:
+      - 'metadata'  (JSON string): must include 'text'; optionally 'ideation_answer'
+                    and 'token' for the second call of the ideation round-trip.
+      - 'video'     (bytes, optional): mp4/mov to summarize via Gemini Files API
+
+    Two-shape protocol:
+      Shape A (first call)  — no token in metadata:
+        Parses transcript + video, generates ideation question.
+        Returns: {status: 'ideation', question, token}
+
+      Shape B (second call) — token + ideation_answer in metadata:
+        Looks up stored parsed_data, folds in the answer, creates GitHub issue.
+        Returns: {status: 'created', issue_number, issue_url, video_summary}
+    """
+    if not GITHUB_TOKEN:
+        return web.json_response({'status': 'error', 'error': 'GitHub not configured'}, status=503)
+
+    # --- Purge stale HTTP ideation tokens (older than 10 min) ---
+    now = datetime.now()
+    stale = [t for t, v in pending_ideation_http.items()
+             if (now - v['created_at']).total_seconds() > 600]
+    for t in stale:
+        pending_ideation_http.pop(t, None)
+
+    # --- Parse multipart ---
+    text = ''
+    video_bytes = None
+    video_suffix = '.mp4'
+    ideation_answer = ''
+    token = ''
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'metadata':
+                raw = await part.read(decode=True)
+                try:
+                    meta = json.loads(raw)
+                    text = meta.get('text', '')
+                    ideation_answer = meta.get('ideation_answer', '')
+                    token = meta.get('token', '')
+                except Exception:
+                    text = raw.decode('utf-8', errors='replace')
+            elif part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'upload.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /submit-creation: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not text or not text.strip():
+        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+
+    # --- Shape B: ideation answer received — look up stored state and create issue ---
+    if token and ideation_answer:
+        entry = pending_ideation_http.pop(token, None)
+        if entry is None:
+            return web.json_response(
+                {'status': 'error', 'error': 'Ideation session expired or not found'},
+                status=400,
+            )
+        parsed_data = entry['parsed_data']
+        video_summary = entry['video_summary']
+        if ideation_answer.strip():
+            parsed_data['additional'] = (
+                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer.strip()
+            ).strip()
+        logger.info("Received ideation answer via HTTP — proceeding to issue creation")
+        await _broadcast_ws({'type': 'progress', 'message': 'Creating your GitHub issue…'})
+        # Fall through to template fill + issue creation below using this parsed_data.
+    else:
+        # --- Shape A: first call — summarize video, parse transcript ---
+        video_summary = ''
+        if video_bytes:
+            tmp_path = None
+            try:
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='creation_')
+                with os.fdopen(tmp_fd, 'wb') as fh:
+                    fh.write(video_bytes)
+                logger.info("Saved uploaded video to %s (%d bytes)", tmp_path, len(video_bytes))
+                await _broadcast_ws({'type': 'progress', 'message': 'Summarizing video…'})
+                video_summary = await summarize_video(tmp_path)
+                if video_summary:
+                    await _broadcast_ws({'type': 'progress', 'message': 'Video summarized. Parsing your description…'})
+                else:
+                    await _broadcast_ws({'type': 'progress', 'message': 'Parsing your description…'})
+            except Exception:
+                logger.error("Video temp-file handling failed", exc_info=True)
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+        else:
+            await _broadcast_ws({'type': 'progress', 'message': 'Parsing your description…'})
+
+        parse_input = text.strip()
+        if video_summary:
+            parse_input = (
+                f"{text.strip()}\n\n"
+                f"[Video demonstration summary – use this to populate example_usage "
+                f"and any other relevant fields]:\n{video_summary}"
+            )
+
+        try:
+            active_model = LLM_MODEL
+            parsed_data = await asyncio.to_thread(
+                parse_transcript_with_ai, parse_input, None, active_model
+            )
+        except Exception as e:
+            logger.error("AI parsing failed in /submit-creation: %s", e, exc_info=True)
+            return web.json_response(
+                {'status': 'error', 'error': 'Failed to process issue data',
+                 'video_failed': not bool(video_summary) and bool(video_bytes)},
+                status=500,
+            )
+
+        # Generate ideation question and return it for the client to present.
+        await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
+        try:
+            active_model = LLM_MODEL
+            question = await generate_ideation_question(parsed_data, video_summary, active_model)
+        except Exception:
+            logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
+            question = "Is there anything specific about how the tool should behave in difficult conditions?"
+
+        new_token = secrets.token_urlsafe(12)
+        pending_ideation_http[new_token] = {
+            'parsed_data': parsed_data,
+            'video_summary': video_summary,
+            'created_at': datetime.now(),
+        }
+        logger.info("Sending ideation question via HTTP (token=%s)", new_token)
+        return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
+
+    # --- Fill template and create GitHub issue (reached from Shape B) ---
+    try:
+        template_file = TEMPLATE_DIR / 'visual_at.md'
+        if template_file.exists():
+            template_content = template_file.read_text(encoding='utf-8')
+            if template_content.startswith('---'):
+                parts = template_content.split('---', 2)
+                if len(parts) >= 3:
+                    template_content = parts[2].strip()
+            body = await asyncio.to_thread(fill_template, template_content, parsed_data)
+        else:
+            body = (
+                f"**Transcript:**\n{text}\n\n"
+                f"**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
+            )
+
+        if video_summary:
+            body += f"\n\n## Video Summary\n\n{video_summary}"
+
+        title = parsed_data.get('title', text[:100])
+        if isinstance(title, list):
+            title = ' '.join(str(t) for t in title)
+        else:
+            title = str(title)
+        if len(title) > 256:
+            title = title[:253] + '...'
+
+    except Exception as e:
+        logger.error("Template fill failed in /submit-creation: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': 'Failed to process issue data'}, status=500)
+
+    try:
+        def _create_issue():
+            g = Github(GITHUB_TOKEN)
+            repo = g.get_repo(GITHUB_REPO)
+            return repo.create_issue(title=title, body=body, labels=['enhancement'])
+
+        issue = await asyncio.to_thread(_create_issue)
+        logger.info("Created GitHub issue #%d via /submit-creation: %s", issue.number, title[:60])
+
+        return web.json_response({
+            'status': 'created',
+            'issue_number': issue.number,
+            'issue_url': issue.html_url,
+            'video_summary': video_summary,
+        })
+
+    except Exception as e:
+        logger.error("GitHub issue creation failed in /submit-creation: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+
+async def handle_update_submit(request: web.Request) -> web.Response:
+    """
+    POST /submit-update
+    Accepts multipart/form-data with:
+      - 'metadata'  (JSON): must include 'text' and 'issue_number'
+      - 'video'     (bytes, optional): video whose Gemini summary is appended directly
+                    to the comment text — no AI field-parsing, just concatenation.
+
+    Posts a comment to the GitHub issue and broadcasts issue_updated to clients.
+    """
+    if not GITHUB_TOKEN:
+        return web.json_response({'status': 'error', 'error': 'GitHub not configured'}, status=503)
+
+    text = ''
+    issue_number = None
+    video_bytes = None
+    video_suffix = '.mp4'
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'metadata':
+                raw = await part.read(decode=True)
+                try:
+                    meta = json.loads(raw)
+                    text = meta.get('text', '')
+                    issue_number = meta.get('issue_number')
+                except Exception:
+                    text = raw.decode('utf-8', errors='replace')
+            elif part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'upload.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /submit-update: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not text or not text.strip():
+        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+    if not issue_number:
+        return web.json_response({'status': 'error', 'error': 'No issue_number provided'}, status=400)
+
+    # --- Summarize video if present (best-effort) ---
+    video_summary = ''
+    if video_bytes:
+        tmp_path = None
+        try:
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='update_')
+            with os.fdopen(tmp_fd, 'wb') as fh:
+                fh.write(video_bytes)
+            logger.info("Saved update video to %s (%d bytes)", tmp_path, len(video_bytes))
+            video_summary = await summarize_video(tmp_path)
+        except Exception:
+            logger.error("Video summarization failed in /submit-update", exc_info=True)
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    # --- Build comment: text + appended video summary ---
+    comment = text.strip()
+    if video_summary:
+        comment += f"\n\n---\n**Video Summary:**\n{video_summary}"
+
+    # --- Post to GitHub ---
+    try:
+        # Always @copilot on updates so it stays aware of new context/video summaries.
+        final_comment = f"{comment}\n\n@copilot"
+
+        def _post_comment():
+            g = Github(GITHUB_TOKEN)
+            repo = g.get_repo(GITHUB_REPO)
+            issue = repo.get_issue(int(issue_number))
+            issue.create_comment(final_comment)
+            return issue.html_url
+
+        issue_url = await asyncio.to_thread(_post_comment)
+        logger.info("Posted comment to issue #%s via /submit-update", issue_number)
+
+        await _broadcast_ws({
+            'type': 'issue_updated',
+            'message': f"Comment added to issue #{issue_number}",
+            'issue_number': int(issue_number),
+            'issue_url': issue_url,
+        })
+
+        return web.json_response({
+            'status': 'updated',
+            'issue_number': int(issue_number),
+            'issue_url': issue_url,
+            'video_summary': video_summary,
+        })
+
+    except Exception as e:
+        logger.error("Failed to post comment in /submit-update: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+
+async def handle_test_video_summary(request: web.Request) -> web.Response:
+    """
+    POST /test-video-summary
+    Developer testing endpoint: accepts a 'video' multipart field, summarizes it
+    via Gemini, and returns the summary — no GitHub issue is created.
+    Returns JSON: {status: 'ok', summary: str} or {status: 'error', error: str}
+    """
+    video_bytes = None
+    video_suffix = '.mp4'
+
+    try:
+        reader = await request.multipart()
+        async for part in reader:
+            if part.name == 'video':
+                video_bytes = await part.read(decode=True)
+                filename = part.filename or 'test.mp4'
+                video_suffix = Path(filename).suffix or '.mp4'
+    except Exception as e:
+        logger.error("Failed to parse multipart in /test-video-summary: %s", e)
+        return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
+
+    if not video_bytes:
+        return web.json_response({'status': 'error', 'error': 'No video field provided'}, status=400)
+
+    tmp_path = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=video_suffix, prefix='vidtest_')
+        with os.fdopen(tmp_fd, 'wb') as fh:
+            fh.write(video_bytes)
+        logger.info("Test video saved to %s (%d bytes)", tmp_path, len(video_bytes))
+
+        summary = await summarize_video(tmp_path)
+
+        if summary:
+            return web.json_response({'status': 'ok', 'summary': summary})
+        else:
+            return web.json_response(
+                {'status': 'error', 'error': 'Gemini returned no summary — check GEMINI_API_KEY and video format.'},
+                status=500,
+            )
+
+    except Exception as e:
+        logger.error("test-video-summary handler failed: %s", e, exc_info=True)
+        return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 # New helper to process/save incoming text
@@ -4848,7 +5305,14 @@ async def handle_client(websocket):
                 if msg_type == 'start_streaming_tool':
                     logger.info(f"Client {client_id} started streaming tool: {data.get('tool_name')}")
                     session_log.log("INFO", f"Started streaming tool: {data.get('tool_name')}")
-                    
+
+                    # Cancel any in-flight task from the previous tool so its
+                    # stale result can't arrive after the new tool is registered.
+                    if client_id in active_streaming_tasks:
+                        old_task = active_streaming_tasks.pop(client_id)
+                        if not old_task.done():
+                            old_task.cancel()
+
                     custom_gpt = data.get('custom_gpt', False)
                     gpt_query = data.get('gpt_query', '')
                     tool_name = data.get('tool_name', 'unknown')
@@ -4969,6 +5433,10 @@ async def handle_client(websocket):
                 # Handle stop_streaming_tool message type
                 if msg_type == 'stop_streaming_tool':
                     logger.info(f"Client {client_id} stopped streaming tool")
+                    if client_id in active_streaming_tasks:
+                        old_task = active_streaming_tasks.pop(client_id)
+                        if not old_task.done():
+                            old_task.cancel()
                     if client_id in active_streaming_tools:
                         tool_name = active_streaming_tools[client_id]['tool']['name']
                         # Clean up Gemini Live session if active
@@ -5453,12 +5921,15 @@ async def handle_client(websocket):
                     # Run active streaming tools asynchronously
                     if last_frame['image'] is not None and client_id in active_streaming_tools:
                         logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
-                        # Run tool execution in background task to avoid blocking frame processing
-                        task = asyncio.create_task(schedule_streaming_frame(
+                        # Only run if no task is already in flight for this client
+                        # (prevents piling up concurrent runs per frame)
+                        existing = active_streaming_tasks.get(client_id)
+                        if existing is None or existing.done():
+                            task = asyncio.create_task(schedule_streaming_frame(
                             websocket, client_id, last_frame['image'], last_frame['base64']
                         ))
-                        # Add error handling to the task
-                        task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if t.exception() else None)
+                            active_streaming_tasks[client_id] = task
+                            task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if not t.cancelled() and t.exception() else None)
                     elif last_frame['image'] is None:
                         logger.debug(f"No image available for {client_id}")
                     elif client_id not in active_streaming_tools:
@@ -5723,121 +6194,83 @@ async def handle_client(websocket):
                             logger.info(f"EXEC_GLOBALS: image_base64 length: {len(frame_base64) if frame_base64 else 0}")
                             
                             exec_locals = {}
-                            
-                            # Capture stdout to get print() output
-                            import io
-                            import sys
-                            stdout_capture = io.StringIO()
-                            old_stdout = sys.stdout
-                            
-                            # Execute the tool code with retry on module errors
-                            max_retries = 3
-                            retry_count = 0
                             image_context_token = TOOL_EXECUTION_IMAGES.set([frame_image])
-                            
-                            while retry_count < max_retries:
-                                try:
-                                    # Redirect stdout to capture print statements
-                                    sys.stdout = stdout_capture
-                                    try:
-                                        exec(tool_code, exec_globals, exec_locals)
-                                    finally:
-                                        sys.stdout = old_stdout
-                                    break  # Success, exit retry loop
-                                except (ImportError, ModuleNotFoundError) as e:
-                                    error_msg = str(e)
-                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
-                                    
-                                    # Try to install the missing module
-                                    installed_module = module_mgr.install_from_error(error_msg)
-                                    
-                                    if installed_module:
-                                        logger.info(f"Installed {installed_module}, retrying execution...")
-                                        # Reload common modules to include newly installed one
-                                        common_modules = module_mgr.get_common_modules()
-                                        exec_globals.update(common_modules)
-                                        retry_count += 1
-                                    else:
-                                        # Could not identify/install module, raise error
-                                        raise
-                                except Exception:
-                                    # Non-module errors should be raised immediately
-                                    sys.stdout = old_stdout  # Restore stdout before raising
-                                    raise
-                            
-                            # Get captured print output
-                            printed_output = stdout_capture.getvalue()
-                            
-                            # IMPORTANT: Merge exec_locals into exec_globals so functions can see each other
-                            # This allows main() to call helper functions defined in the same file
-                            exec_globals.update(exec_locals)
-                            
-                            # Try to find a main function or use the result
-                            # Check function signatures to avoid calling helper functions
+
+                            import sys
                             import inspect
-                            
-                            result = None
-                            
-                            # Try main() - highest priority
-                            if 'main' in exec_locals and callable(exec_locals['main']):
+                            import io as _io
+
+                            _fi = frame_image
+                            _fb = frame_base64
+
+                            def _run_one_shot_in_thread():
+                                _capture = _io.StringIO()
+                                _old = sys.stdout
+                                sys.stdout = _capture
                                 try:
+                                    exec(tool_code, exec_globals, exec_locals)
+                                finally:
+                                    sys.stdout = _old
+
+                                exec_globals.update(exec_locals)
+
+                                _result = None
+                                if 'main' in exec_locals and callable(exec_locals['main']):
                                     sig = inspect.signature(exec_locals['main'])
-                                    if len(sig.parameters) == 2:  # Should take (image, input_data)
-                                        result = exec_locals['main'](frame_image, parsed_input)
+                                    if len(sig.parameters) == 2:
+                                        _result = exec_locals['main'](_fi, parsed_input)
                                     else:
                                         logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                                except Exception as e:
-                                    logger.error(f"Error calling main(): {e}")
-                            
-                            # Try run() - second priority
-                            elif 'run' in exec_locals and callable(exec_locals['run']):
-                                try:
+                                elif 'run' in exec_locals and callable(exec_locals['run']):
                                     sig = inspect.signature(exec_locals['run'])
                                     if len(sig.parameters) == 2:
-                                        result = exec_locals['run'](frame_image, parsed_input)
+                                        _result = exec_locals['run'](_fi, parsed_input)
                                     else:
                                         logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                                except Exception as e:
-                                    logger.error(f"Error calling run(): {e}")
-                            
-                            # Try process_image() - but check signature carefully
-                            elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                                try:
+                                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
                                     sig = inspect.signature(exec_locals['process_image'])
-                                    # Only call if it takes 2 params (entry point), not 1 (helper function)
                                     if len(sig.parameters) == 2:
-                                        result = exec_locals['process_image'](frame_image, parsed_input)
+                                        _result = exec_locals['process_image'](_fi, parsed_input)
                                     else:
                                         logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                                except Exception as e:
-                                    logger.error(f"Error calling process_image(): {e}")
-                            
-                            # Try process_frame_for_text() - special case for text tools
-                            elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                                try:
-                                    # Initialize verbalizer if needed
+                                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
                                     if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
                                         verbalizer = exec_locals['get_verbalizer']()
                                         if not verbalizer and GEMINI_API_KEY:
                                             exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                                    result = exec_locals['process_frame_for_text'](frame_base64)
-                                except Exception as e:
-                                    logger.error(f"Error calling process_frame_for_text(): {e}")
-                            
-                            # Check for result variable
-                            elif 'result' in exec_locals:
-                                result = exec_locals['result']
-                            else:
-                                # Tool is a library - show available functions
-                                available_funcs = [name for name, obj in exec_locals.items() 
-                                                 if callable(obj) and not name.startswith('_')]
-                                available_classes = [name for name, obj in exec_locals.items() 
-                                                   if isinstance(obj, type) and not name.startswith('_')]
-                                
-                                if available_funcs or available_classes:
-                                    result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+                                    _result = exec_locals['process_frame_for_text'](_fb)
+                                elif 'result' in exec_locals:
+                                    _result = exec_locals['result']
                                 else:
-                                    result = None
+                                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
+                                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
+                                    if available_funcs or available_classes:
+                                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
+
+                                return _capture.getvalue(), _result
+
+                            max_retries = 3
+                            retry_count = 0
+                            printed_output = ''
+                            result = None
+
+                            while retry_count < max_retries:
+                                try:
+                                    printed_output, result = await asyncio.to_thread(_run_one_shot_in_thread)
+                                    break
+                                except (ImportError, ModuleNotFoundError) as e:
+                                    error_msg = str(e)
+                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
+                                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
+                                    if installed_module:
+                                        logger.info(f"Installed {installed_module}, retrying execution...")
+                                        common_modules = module_mgr.get_common_modules()
+                                        exec_globals.update(common_modules)
+                                        retry_count += 1
+                                    else:
+                                        raise
+                                except Exception:
+                                    raise
                             TOOL_EXECUTION_IMAGES.reset(image_context_token)
                             image_context_token = None
                             
@@ -6050,6 +6483,11 @@ async def handle_client(websocket):
                 active_session_loggers[client_id].log("ERROR", f"Connection error: {e}")
     finally:
         connected_clients.discard(websocket)
+        # Cancel any in-flight streaming task
+        if client_id in active_streaming_tasks:
+            t = active_streaming_tasks.pop(client_id)
+            if not t.done():
+                t.cancel()
         # Clean up streaming tools for this client
         if client_id in active_streaming_tools:
             logger.info(f"Stopping streaming tool for disconnected client {client_id}")
@@ -6312,6 +6750,10 @@ async def main():
     app.router.add_get('/', websocket_handler)
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
+    app.router.add_post('/submit-creation', handle_creation_submit)
+    app.router.add_post('/submit-update', handle_update_submit)
+    app.router.add_post('/test-video-summary', handle_test_video_summary)
+    app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
 
     runner = web.AppRunner(app)
     await runner.setup()
@@ -6337,6 +6779,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
+        asyncio.run(cleanup_webrtc_peers())
     except Exception as e:
         logger.error(f"Server error: {e}")
         raise
