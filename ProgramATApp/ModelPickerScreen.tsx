@@ -4,7 +4,7 @@
  * Standalone screen for selecting which LLM model the server should use.
  * Opened from Settings; back arrow returns the user to Settings.
  */
-
+  
 import React from 'react';
 import {
   StyleSheet,
