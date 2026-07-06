@@ -422,7 +422,16 @@ class TestAtomicCopilotCall(unittest.TestCase):
             result = model_router.copilot_llm_call(
                 capability="navigation",
                 goal="Guide me to the exit",
-                metadata={"previous_stage_artifact": {"detections": [{"label": "exit"}]}},
+                metadata={
+                    "previous_stage_artifact": {
+                        "text": "The exit is on the right.",
+                        "detections": [{"label": "exit"}],
+                    },
+                    "image_url": "data:image/jpeg;base64,secret",
+                    "image_base64": "secret",
+                    "image": b"secret",
+                },
+                images=[b"candidate-image"],
             )
 
         self.assertEqual([call[0] for call in calls], ["llava", "gpt4o"])
@@ -430,14 +439,72 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(result["implementation"], "llava")
         self.assertIn("previous-stage artifact", calls[0][1][-2]["content"])
         evaluator_prompt = calls[1][1][0]["content"]
-        self.assertIn('Target labels, when relevant: ["exit", "door", "doorway", "exit sign"]', evaluator_prompt)
-        self.assertIn("enough useful information", evaluator_prompt)
-        self.assertIn("Navigation requires actionable guidance", evaluator_prompt)
-        self.assertIn("Do not answer NO merely", evaluator_prompt)
-        self.assertIn("Output only YES or NO", evaluator_prompt)
+        self.assertIn("Original user request or tool goal: Guide me to the exit", evaluator_prompt)
+        self.assertIn("Previous-stage textual outputs, if any: The exit is on the right.", evaluator_prompt)
+        self.assertNotIn('"detections"', evaluator_prompt)
+        self.assertIn("The blue envelope is junk", evaluator_prompt)
+        self.assertIn("The bottom mailer is a junk credit card offer", evaluator_prompt)
+        self.assertIn("promotional flyer for a dental office", evaluator_prompt)
+        self.assertIn("Partial but useful answers should usually be accepted", evaluator_prompt)
+        self.assertIn("uncertainty is clearly communicated", evaluator_prompt)
+        self.assertIn("Output exactly one token: YES or NO", evaluator_prompt)
         self.assertEqual(calls[1][2], [])
+        self.assertEqual(calls[1][3], {
+            "temperature": 0,
+            "max_tokens": 3,
+            "capability": "navigation",
+            "evaluator": True,
+        })
+        self.assertNotIn("image", calls[1][3])
+        self.assertNotIn("image_url", calls[1][3])
+        self.assertNotIn("image_base64", calls[1][3])
 
-    def test_exit_target_is_inferred_and_evaluator_receives_grounding_context(self):
+    def test_debug_reason_uses_separate_text_only_evaluator_call(self):
+        calls = []
+
+        def executor(profile, messages, images, metadata):
+            calls.append((profile.name, messages, images, metadata))
+            prompt = messages[0].get("content", "")
+            if "Output exactly one token: YES or NO" in prompt:
+                return model_router.ImplementationResult(response("YES"))
+            if "Output only the concise reason sentence" in prompt:
+                return model_router.ImplementationResult(response(
+                    "Categorizes one item and clearly marks the other as unreadable."
+                ))
+            return model_router.ImplementationResult(response(
+                "The flyer is junk mail; the top envelope is unreadable."
+            ))
+
+        policies = {"general_reasoning": {
+            "candidates": ["candidate", "fallback"],
+            "evaluator": "judge",
+            "cascade": "test",
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake")
+            for name in ("candidate", "fallback", "judge")
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
+             self.assertLogs(model_router.logger, level="DEBUG") as logs:
+            result = model_router.copilot_llm_call(
+                capability="general_reasoning",
+                goal="Categorize the mail",
+                images=[b"candidate-image"],
+            )
+
+        self.assertEqual(result["implementation"], "candidate")
+        self.assertEqual([call[0] for call in calls], ["candidate", "judge", "judge"])
+        self.assertEqual(calls[1][2], [])
+        self.assertEqual(calls[2][2], [])
+        self.assertNotIn("image", calls[2][3])
+        self.assertIn(
+            '[Evaluator] decision=YES reason="Categorizes one item and clearly marks the other as unreadable."',
+            "\n".join(logs.output),
+        )
+
+    def test_exit_target_is_inferred_and_evaluator_ignores_structured_grounding(self):
         calls = []
 
         def executor(profile, messages, images, metadata):
@@ -462,8 +529,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(nav_metadata["target_labels"], model_router.EXIT_TARGET_LABELS)
         self.assertEqual([item["label"] for item in nav_metadata["previous_stage_artifact"]["detections"]], ["door"])
         prompt = calls[1][1][0]["content"]
-        self.assertIn('Target labels, when relevant: ["exit", "door", "doorway", "exit sign"]', prompt)
-        self.assertIn('"label": "door"', prompt)
+        self.assertNotIn('"label": "door"', prompt)
         self.assertNotIn('"label": "toilet"', prompt)
 
     def test_navigation_independently_inspects_image_when_artifact_has_no_target(self):
@@ -561,7 +627,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         decisions = iter(["NO", "NO"])
 
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output exactly one token: YES or NO" in messages[0].get("content", "")
             if profile.name == "gpt4o" and is_evaluation:
                 return model_router.ImplementationResult(response(next(decisions)))
             return model_router.ImplementationResult(response(f"response from {profile.name}"))
@@ -586,12 +652,14 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn("implementation=qwen response:\nresponse from qwen", output)
         self.assertIn("implementation=gpt4o response:\nresponse from gpt4o", output)
         self.assertEqual(output.count("evaluator=gpt4o decision=NO"), 2)
+        self.assertEqual(output.count("[Evaluator] image_included=false"), 2)
+        self.assertEqual(output.count("[Evaluator] decision=NO"), 2)
         self.assertIn("selected implementation=gpt4o", output)
         self.assertEqual(result["response"], "response from gpt4o")
 
     def test_returns_best_response_when_later_candidate_fails(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output exactly one token: YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 return model_router.ImplementationResult(response("NO"))
             if profile.name == "llava":
@@ -619,7 +687,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_evaluator_failure_continues_to_next_candidate(self):
         def executor(profile, messages, _images, _metadata):
-            is_evaluation = "Output only YES or NO" in messages[0].get("content", "")
+            is_evaluation = "Output exactly one token: YES or NO" in messages[0].get("content", "")
             if profile.name == "judge" and is_evaluation:
                 raise TimeoutError("evaluation timed out")
             return model_router.ImplementationResult(response(f"response from {profile.name}"))

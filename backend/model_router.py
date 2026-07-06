@@ -41,32 +41,56 @@ NAVIGATION_SYSTEM_PROMPT = (
     "explanation, conversational filler, safety disclaimer, 'keep an eye out', "
     "or 'don't hesitate to ask'."
 )
-EVALUATION_PROMPT = """Decide whether the current response already provides enough useful information that running a more expensive model is unlikely to significantly improve the user experience.
+EVALUATION_PROMPT = """Judge only whether the candidate response is sufficiently useful, informative, accessible, and actionable for the user's request. You cannot see the image. Do not fact-check visual claims or reject because you are unsure whether a visual claim is true.
 
-Use the capability as context for what "enough" means:
-- OCR requires complete text extraction for the request.
-- Object localization requires enough spatial detail to locate the requested object.
-- Navigation requires actionable guidance toward the requested destination.
-- General and visual reasoning require enough useful information to satisfy the request, not the longest possible explanation.
+Output YES if the response:
+- provides actionable useful information for at least part of the task;
+- clearly states uncertainty for parts it cannot determine;
+- helps the user make progress even if it does not fully solve every item;
+- gives a reasonable next action when something remains unclear;
+- is specific and actionable for a blind or low-vision user;
+- uses visual descriptors appropriately or supplements them with actionable cues.
 
-Answer YES if the response fully answers the request, contains sufficient useful information, is specific enough to help, and is unlikely to benefit substantially from another model.
+Output NO if the response:
+- gives no useful actionable information or fails to address the task;
+- is too vague or generic to help;
+- fails to distinguish multiple physical items using usable cues;
+- relies mainly on inaccessible visual cues such as color when color was not requested;
+- gives partial information in a confusing way that could make the user act on the wrong item.
 
-Answer NO only if important requested information is missing, the response is too vague or generic, or another model is likely to provide significantly more useful information.
+Do not ban color or appearance. It is acceptable when requested, supplementary, or paired with position, order, size, proximity, or a next action. Prefer cues such as left/right, top/bottom, first/second, closest/farthest, next to, open/recycle, move closer, or turn.
 
-Do not answer NO merely because you prefer different wording or style, the response could include minor additional details, or another model might phrase an already adequate answer differently.
+Partial but useful answers should usually be accepted, especially for streaming assistive tools. Do not output NO merely because the answer is incomplete, not every visible item is categorized, uncertainty is clearly communicated, or another model might provide more detail.
 
-Capability: {capability}
-User or stage request: {goal}
-Target labels, when relevant: {target_labels}
-Previous-stage artifact, when relevant: {artifact}
-Current response: {response}
+Mail examples:
+- NO: "The blue envelope is junk and the white envelope is important."
+- YES: "The bottom mailer is a junk credit card offer; the top envelope addressed to you is likely important."
+- YES: "This appears to be a promotional flyer for a dental office, which is junk mail. There is also a partial view of an envelope at the top of the table, but I cannot read the details on it."
 
-Output only YES or NO."""
+Be conservative but not overly strict. Do not reject merely because wording could improve or minor details could be added.
+
+Capability/task type: {capability}
+Original user request or tool goal: {goal}
+Previous-stage textual outputs, if any: {previous_text}
+Candidate response: {response}
+
+Output exactly one token: YES or NO."""
+EVALUATION_REASON_PROMPT = """Explain in one short sentence why the evaluator decision below passed or failed on usefulness, actionability, accessibility, partial progress, and clearly stated uncertainty. Do not inspect or fact-check an image.
+
+Capability/task type: {capability}
+Original user request or tool goal: {goal}
+Previous-stage textual outputs, if any: {previous_text}
+Candidate response: {response}
+Decision: {decision}
+
+Output only the concise reason sentence."""
 STREAMING_RESPONSE_PROMPT = (
     "You are responding to a live camera stream. Answer in 1-2 short, audio-friendly "
     "sentences. Prioritize only the most useful information for the user right now. "
     "Do not give long bullet lists, full reports, or repeated reasoning. For mail "
-    "categorization, state the likely category and one brief reason. Include extra "
+    "categorization, state the likely category and one brief reason. When multiple "
+    "physical items are present, do not rely on color alone; prefer concise actionable "
+    "cues such as position, order, size, proximity, or the next action. Include extra "
     "detail only when important for action or safety."
 )
 TARGET_LABEL_ALIASES = {
@@ -547,6 +571,22 @@ def _artifact_is_useful(artifact: Any) -> bool:
     return any(value not in (None, "", [], {}) for key, value in artifact.items() if key not in ignored)
 
 
+def _previous_stage_text(metadata: Mapping[str, Any], artifact: Any) -> str:
+    """Extract text-only prior-stage context for the non-visual evaluator."""
+    values: List[str] = []
+    legacy = metadata.get("previous_stage_output")
+    if isinstance(legacy, str) and legacy.strip():
+        values.append(legacy.strip())
+    if isinstance(artifact, str) and artifact.strip():
+        values.append(artifact.strip())
+    elif isinstance(artifact, dict):
+        for key in ("text", "ocr_text", "content", "description", "response"):
+            value = artifact.get(key)
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+    return "\n".join(dict.fromkeys(values))
+
+
 def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     image_items = list(images or [])
     if not image_items:
@@ -823,6 +863,14 @@ def copilot_llm_call(
                     raise ExecutionPolicyError(
                         f"No executor for evaluator implementation kind {evaluator_profile.kind!r}"
                     )
+                previous_text = _previous_stage_text(call_metadata, previous_artifact)
+                evaluator_metadata = {
+                    "temperature": 0,
+                    "max_tokens": 3,
+                    "capability": declared,
+                    "evaluator": True,
+                }
+                logger.info("[Evaluator] image_included=false")
                 evaluation = evaluator(
                     evaluator_profile,
                     [{
@@ -830,13 +878,12 @@ def copilot_llm_call(
                         "content": EVALUATION_PROMPT.format(
                             capability=declared,
                             goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
-                            target_labels=json.dumps(target_labels, ensure_ascii=False),
-                            artifact=json.dumps(previous_artifact, ensure_ascii=False, default=str),
+                            previous_text=previous_text,
                             response=response_text,
                         ),
                     }],
                     [],
-                    {**call_metadata, "temperature": 0, "max_tokens": 3},
+                    evaluator_metadata,
                 )
                 raw_decision = _response_text(evaluation.response).strip().upper()
                 if raw_decision not in {"YES", "NO"}:
@@ -857,6 +904,41 @@ def copilot_llm_call(
                 evaluator_name,
                 decision,
             )
+            logger.info("[Evaluator] decision=%s", decision)
+            if logger.isEnabledFor(logging.DEBUG):
+                try:
+                    reason_output = evaluator(
+                        evaluator_profile,
+                        [{
+                            "role": "user",
+                            "content": EVALUATION_REASON_PROMPT.format(
+                                capability=declared,
+                                goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
+                                previous_text=previous_text,
+                                response=response_text,
+                                decision=decision,
+                            ),
+                        }],
+                        [],
+                        {
+                            "temperature": 0,
+                            "max_tokens": 60,
+                            "capability": declared,
+                            "evaluator_reason": True,
+                        },
+                    )
+                    reason = " ".join(_response_text(reason_output.response).split())
+                    logger.debug(
+                        "[Evaluator] decision=%s reason=%s",
+                        decision,
+                        json.dumps(reason, ensure_ascii=False),
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[Evaluator] decision=%s reason=%s",
+                        decision,
+                        json.dumps(f"reason unavailable: {exc}"),
+                    )
             if streaming_log:
                 logger.info(
                     "[Streaming] evaluator=%s capability=%s decision=%s",
@@ -908,7 +990,7 @@ def copilot_llm_call(
 __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
     "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "TOOL_EXECUTION_IMAGES",
-    "EVALUATION_PROMPT", "STREAMING_RESPONSE_PROMPT",
+    "EVALUATION_PROMPT", "EVALUATION_REASON_PROMPT", "STREAMING_RESPONSE_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
