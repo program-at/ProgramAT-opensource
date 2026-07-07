@@ -106,6 +106,22 @@ TARGET_LABEL_ALIASES = {
     "exit sign": {"exit", "door", "doorway", "exit sign"},
 }
 EXIT_TARGET_LABELS = ["exit", "door", "doorway", "exit sign"]
+COCO_CLASSES = {
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
+    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
+    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
+    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
+    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
+    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
+    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
+    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear",
+    "hair drier", "toothbrush",
+}
+YOLO11_MODEL = "yolo11n.pt"
+YOLOWORLD_MODEL = "yolov8s-world.pt"
 _IMPLEMENTATION_MODEL_CACHE: Dict[str, Any] = {}
 STREAMING_EXECUTION_CONTEXT: ContextVar[bool] = ContextVar(
     "streaming_execution", default=False
@@ -545,6 +561,25 @@ def _target_labels(metadata: Mapping[str, Any]) -> List[str]:
     return [str(label).strip().lower() for label in labels if str(label).strip()]
 
 
+def _object_detector_model(
+    profile: ImplementationProfile, target_labels: Sequence[str]
+) -> tuple[str, str]:
+    if not target_labels:
+        logger.info("[Target Grounding] detector=default reason=no_target_labels")
+        return profile.model_name or YOLO11_MODEL, "default"
+    if all(label in COCO_CLASSES for label in target_labels):
+        logger.info(
+            "[Target Grounding] detector=yolo11 reason=all_targets_in_coco target_labels=%s",
+            list(target_labels),
+        )
+        return YOLO11_MODEL, "yolo11"
+    logger.info(
+        "[Target Grounding] detector=yoloworld reason=non_coco_targets target_labels=%s",
+        list(target_labels),
+    )
+    return YOLOWORLD_MODEL, "yoloworld"
+
+
 def _mentions_exit(value: Any) -> bool:
     text = str(value or "").lower()
     return any(label in text for label in EXIT_TARGET_LABELS)
@@ -623,11 +658,12 @@ def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     from ultralytics import YOLO
     image = Image.open(io.BytesIO(_image_bytes(image_items[0]))).convert("RGB")
     cache = metadata.get("model_cache") if isinstance(metadata.get("model_cache"), dict) else {}
-    model_name = profile.model_name or "yolo11n.pt"
+    target_labels = _target_labels(metadata)
+    model_name, detector = _object_detector_model(profile, target_labels)
     model = cache.get(model_name) or YOLO(model_name)
     cache[model_name] = model
-    target_labels = _target_labels(metadata)
-    logger.info("[Target Grounding] object_detection_localization target_labels=%s", target_labels)
+    if detector == "yoloworld":
+        model.set_classes(target_labels)
     detections = []
     for result in model(image, verbose=False):
         for box in result.boxes:
@@ -641,7 +677,7 @@ def _yolo_executor(profile, messages, images, metadata) -> ImplementationResult:
     logger.info("[Target Grounding] YOLO raw_labels=%s kept_labels=%s", raw_labels, [item["label"] for item in matching])
     text = "; ".join(f"{item['label']} at {item['location']}" for item in matching)
     if not text:
-        text = "The detector could not confidently localize the requested object."
+        text = "No localized detection was produced for the requested object."
     return ImplementationResult(_simple_response(text), {
         "detections": matching,
         "target_labels": target_labels,

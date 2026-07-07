@@ -123,6 +123,7 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
     def test_first_implementation_exists(self):
         model_router.validate_execution_configuration()
 
+
     def test_policy_loader_rejects_unknown_taxonomy(self):
         with patch.object(
             model_router,
@@ -190,6 +191,56 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
             ["gemini_flash_lite", "gpt4o"],
         )
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
+
+class TestObjectDetectorRouting(unittest.TestCase):
+    def setUp(self):
+        self.profile = model_router.ImplementationProfile(
+            "yolo", "yolo", model_name="configured-default.pt"
+        )
+
+    def assert_detector(self, labels, expected_model, expected_log):
+        normalized = model_router._target_labels({"target_labels": labels})
+        with self.assertLogs(model_router.logger, level="INFO") as logs:
+            model_name, _ = model_router._object_detector_model(self.profile, normalized)
+        self.assertEqual(model_name, expected_model)
+        self.assertIn(expected_log, "\n".join(logs.output))
+
+    def test_coco_targets_route_to_yolo11(self):
+        for label in ("car", "chair"):
+            with self.subTest(label=label):
+                self.assert_detector(
+                    [label], model_router.YOLO11_MODEL,
+                    "detector=yolo11 reason=all_targets_in_coco",
+                )
+
+    def test_non_coco_targets_route_to_yoloworld(self):
+        for label in ("exit sign", "soy sauce bottle"):
+            with self.subTest(label=label):
+                self.assert_detector(
+                    [label], model_router.YOLOWORLD_MODEL,
+                    "detector=yoloworld reason=non_coco_targets",
+                )
+
+    def test_target_normalization_happens_before_routing(self):
+        self.assert_detector(
+            ["  CAR  "], model_router.YOLO11_MODEL,
+            "target_labels=['car']",
+        )
+
+    def test_missing_or_empty_targets_keep_configured_default(self):
+        for metadata in ({}, {"target_labels": []}, {"target_labels": ["  "]}):
+            with self.subTest(metadata=metadata):
+                normalized = model_router._target_labels(metadata)
+                with self.assertLogs(model_router.logger, level="INFO") as logs:
+                    model_name, detector = model_router._object_detector_model(
+                        self.profile, normalized
+                    )
+                self.assertEqual(model_name, "configured-default.pt")
+                self.assertEqual(detector, "default")
+                self.assertIn(
+                    "detector=default reason=no_target_labels", "\n".join(logs.output)
+                )
+
 
 class TestAtomicCopilotCall(unittest.TestCase):
     def test_generation_prompt_requires_single_line_plain_audio_text(self):
