@@ -4095,7 +4095,7 @@ def generate_feedback_message(missing_fields: list, issue_type: str) -> str:
     return f"I need {friendly_name}."
 
 
-async def generate_ideation_question(parsed_data: dict, video_summary: str, model: str) -> str:
+async def generate_ideation_question(parsed_data: dict, video_summary: str) -> str:
     """
     Ask an LLM to generate one open-ended ideation question based on the filled issue
     fields and optional video summary. The question is meant to help the user think
@@ -4104,9 +4104,6 @@ async def generate_ideation_question(parsed_data: dict, video_summary: str, mode
 
     Returns a plain question string, or a sensible fallback on any error.
     """
-    import litellm
-    from litellm_utils import resolve_model_name, resolve_api_key, extract_text
-
     title = parsed_data.get('title', '')
     description = parsed_data.get('description', '')
     solution = parsed_data.get('solution', '')
@@ -4131,14 +4128,9 @@ async def generate_ideation_question(parsed_data: dict, video_summary: str, mode
     )
 
     try:
-        resolved_model = resolve_model_name(model)
-        api_key = resolve_api_key(resolved_model)
         response = await asyncio.to_thread(
-            litellm.completion,
-            model=resolved_model,
+            system_llm_call,
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=api_key,
-
         )
         question = extract_text(response).strip()
         if question:
@@ -4341,7 +4333,7 @@ async def create_github_issue(text: str):
         if not pending_ideation['active']:
             logger.info("Sending ideation question before issue creation")
             _log_to_all_sessions("INFO", "Sending ideation question")
-            question = await generate_ideation_question(parsed_data, '', active_model)
+            question = await generate_ideation_question(parsed_data, '')
             pending_ideation['active'] = True
             pending_ideation['parsed_data'] = parsed_data
             pending_ideation['video_summary'] = ''
@@ -4817,9 +4809,8 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             )
 
         try:
-            active_model = LLM_MODEL
             parsed_data = await asyncio.to_thread(
-                parse_transcript_with_ai, parse_input, None, active_model
+                parse_transcript_with_ai, parse_input, None
             )
         except Exception as e:
             logger.error("AI parsing failed in /submit-creation: %s", e, exc_info=True)
@@ -4832,8 +4823,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         # Generate ideation question and return it for the client to present.
         await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
         try:
-            active_model = LLM_MODEL
-            question = await generate_ideation_question(parsed_data, video_summary, active_model)
+            question = await generate_ideation_question(parsed_data, video_summary)
         except Exception:
             logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
             question = "Is there anything specific about how the tool should behave in difficult conditions?"

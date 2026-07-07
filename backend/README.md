@@ -17,6 +17,19 @@ WebSocket server for receiving camera frames and audio transcriptions from the P
 pip install -r requirements.txt
 ```
 
+2. Optional: install the Tesseract system binary if you configure
+   `tesseract_local` as an OCR candidate:
+
+   Ubuntu/WSL:
+   ```bash
+   sudo apt-get install -y tesseract-ocr
+   ```
+
+   macOS:
+   ```bash
+   brew install tesseract
+   ```
+
 ## Configuration
 
 The server uses environment variables for configuration:
@@ -33,9 +46,9 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for Vision OCR.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; OCR uses `MISTRAL_API_KEY` and optionally `MISTRAL_OCR_MODEL` (default `mistral-ocr-latest`), with Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for the Google Vision fallback.
   - System calls use the fixed system model.
-  - Detection and OCR use one implementation. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
+  - Detection uses one implementation. OCR tries Mistral OCR before Google Vision. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
 
 ### LLM Interfaces
 
@@ -50,12 +63,15 @@ cascade_profiles:
   default_reasoning:
     candidates: [gemini_flash_lite, gpt4o]
     evaluator: gpt4o-mini
+  ocr:
+    candidates: [mistral_ocr, google_vision]
+    evaluator: gpt4o-mini
 
 navigation:
   cascade: default_reasoning
 
 ocr:
-  implementation: google_vision
+  cascade: ocr
 ```
 
 Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.

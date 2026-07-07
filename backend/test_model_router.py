@@ -5,8 +5,10 @@ import io
 import json
 import sys
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
+
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -112,7 +114,12 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         self.assertEqual(set(policies), capabilities)
         self.assertEqual(policies["object_detection_localization"]["candidates"], ["yolo"])
         self.assertIsNone(policies["object_detection_localization"]["evaluator"])
-        self.assertEqual(policies["ocr"]["candidates"], ["google_vision"])
+        self.assertEqual(
+            policies["ocr"]["candidates"],
+            ["mistral_ocr", "google_vision"],
+        )
+        self.assertEqual(policies["ocr"]["evaluator"], "gpt4o-mini")
+        self.assertEqual(policies["ocr"]["cascade"], "ocr")
         default_reasoning = policies["navigation"]
         self.assertTrue(default_reasoning["candidates"])
         self.assertTrue(default_reasoning["evaluator"])
@@ -240,6 +247,224 @@ class TestObjectDetectorRouting(unittest.TestCase):
                 self.assertIn(
                     "detector=default reason=no_target_labels", "\n".join(logs.output)
                 )
+
+
+class TestOcrCascadeRouting(unittest.TestCase):
+    @staticmethod
+    def _image_bytes():
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (2, 2)).save(image_bytes, format="PNG")
+        return image_bytes.getvalue()
+
+    def _run_ocr(self, executor):
+        policies = {"ocr": {
+            "candidates": ["mistral_ocr", "google_vision"],
+            "evaluator": "gpt4o-mini",
+            "cascade": "ocr",
+            "specialized": True,
+        }}
+        profiles = {
+            "mistral_ocr": model_router.ImplementationProfile("mistral_ocr", "fake"),
+            "google_vision": model_router.ImplementationProfile("google_vision", "fake"),
+            "gpt4o-mini": model_router.ImplementationProfile("gpt4o-mini", "fake"),
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router.copilot_llm_call(capability="ocr", images=[b"image"])
+        return result, "\n".join(logs.output)
+
+    def test_mistral_is_tried_and_accepted_first(self):
+        calls = []
+
+        def executor(profile, *_args):
+            calls.append(profile.name)
+            if profile.name == "gpt4o-mini":
+                return model_router.ImplementationResult(response("YES"))
+            return model_router.ImplementationResult(
+                response("A sufficiently long receipt"),
+                {"text": "A sufficiently long receipt", "accepted": True},
+            )
+
+        result, logs = self._run_ocr(executor)
+
+        self.assertEqual(calls, ["mistral_ocr", "gpt4o-mini"])
+        self.assertEqual(result["implementation"], "mistral_ocr")
+        self.assertIn("[OCR] trying=mistral_ocr", logs)
+        self.assertIn("[OCR] implementation=mistral_ocr latency_ms=", logs)
+        self.assertIn(
+            "[Execution Policy] capability=ocr candidate=mistral_ocr", logs
+        )
+        self.assertIn(
+            "[Execution Policy] capability=ocr evaluator=gpt4o-mini decision=YES", logs
+        )
+
+    def test_insufficient_mistral_falls_back_to_google_vision(self):
+        calls = []
+
+        def executor(profile, *_args):
+            calls.append(profile.name)
+            if profile.name == "gpt4o-mini":
+                return model_router.ImplementationResult(response("NO"))
+            if profile.name == "mistral_ocr":
+                return model_router.ImplementationResult(
+                    response("Partial vague text"),
+                    {"text": "Partial vague text", "accepted": True},
+                )
+            return model_router.ImplementationResult(
+                response("Accurate Google Vision text"),
+                {"text": "Accurate Google Vision text", "accepted": True},
+            )
+
+        result, logs = self._run_ocr(executor)
+
+        self.assertEqual(
+            calls, ["mistral_ocr", "gpt4o-mini", "google_vision"]
+        )
+        self.assertEqual(result["implementation"], "google_vision")
+        self.assertIn(
+            "[Execution Policy] capability=ocr evaluator=gpt4o-mini decision=NO", logs
+        )
+        self.assertIn("[OCR] trying=google_vision", logs)
+        self.assertIn("[OCR] implementation=google_vision latency_ms=", logs)
+
+    def test_empty_mistral_output_falls_back_without_evaluation(self):
+        calls = []
+
+        def executor(profile, *_args):
+            calls.append(profile.name)
+            if profile.name == "mistral_ocr":
+                return model_router.ImplementationResult(response(""), {"text": ""})
+            if profile.name == "gpt4o-mini":
+                self.fail("empty Mistral output should not call the evaluator")
+            return model_router.ImplementationResult(response("Google Vision text"))
+
+        result, _logs = self._run_ocr(executor)
+
+        self.assertEqual(calls, ["mistral_ocr", "google_vision"])
+        self.assertEqual(result["implementation"], "google_vision")
+
+    def test_failed_mistral_output_falls_back_to_google_vision(self):
+        calls = []
+
+        def executor(profile, *_args):
+            calls.append(profile.name)
+            if profile.name == "mistral_ocr":
+                raise RuntimeError("mistral_ocr_failed")
+            if profile.name == "gpt4o-mini":
+                self.fail("failed Mistral output should not call the evaluator")
+            return model_router.ImplementationResult(response("Google Vision text"))
+
+        result, _logs = self._run_ocr(executor)
+
+        self.assertEqual(calls, ["mistral_ocr", "google_vision"])
+        self.assertEqual(result["implementation"], "google_vision")
+
+    def test_mistral_executor_sends_jpeg_data_uri_and_joins_pages(self):
+        captured = {}
+
+        class Ocr:
+            def process(self, **kwargs):
+                captured.update(kwargs)
+                return SimpleNamespace(pages=[
+                    SimpleNamespace(markdown="First page"),
+                    SimpleNamespace(markdown=""),
+                    SimpleNamespace(markdown="Second page"),
+                ])
+
+        class Mistral:
+            def __init__(self):
+                captured["client_created"] = True
+                self.ocr = Ocr()
+
+        mistralai_module = ModuleType("mistralai")
+        mistralai_module.__path__ = []
+        mistralai_client_module = ModuleType("mistralai.client")
+        mistralai_client_module.Mistral = Mistral
+        profile = model_router.ImplementationProfile("mistral_ocr", "mistral_ocr")
+        with patch.dict(sys.modules, {
+                 "mistralai": mistralai_module,
+                 "mistralai.client": mistralai_client_module,
+             }), \
+             patch.dict(model_router.os.environ, {"MISTRAL_OCR_MODEL": "mistral-ocr-latest"}), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router._mistral_ocr_executor(
+                profile, [], [self._image_bytes()], {}
+            )
+
+        self.assertTrue(captured["client_created"])
+        self.assertEqual(captured["model"], "mistral-ocr-latest")
+        document = captured["document"]
+        self.assertEqual(document["type"], "image_url")
+        self.assertTrue(document["image_url"].startswith("data:image/jpeg;base64,"))
+        encoded = document["image_url"].split(",", 1)[1]
+        self.assertTrue(model_router.base64.b64decode(encoded).startswith(b"\xff\xd8"))
+        self.assertEqual(model_router._response_text(result.response), "First page\nSecond page")
+        self.assertIn(
+            "[Mistral OCR] model=mistral-ocr-latest input=image_data_uri payload_kb=",
+            "\n".join(logs.output),
+        )
+
+    def test_mistral_import_failure_is_recoverable_and_logs_import_path(self):
+        profile = model_router.ImplementationProfile("mistral_ocr", "mistral_ocr")
+        with patch.dict(sys.modules, {"mistralai": None, "mistralai.client": None}), \
+             self.assertLogs(model_router.logger, level="WARNING") as logs, \
+             self.assertRaisesRegex(RuntimeError, "mistral_ocr_import_failed"):
+            model_router._mistral_ocr_executor(
+                profile, [], [self._image_bytes()], {}
+            )
+
+        self.assertIn(
+            "import_failed path=mistralai.client.Mistral",
+            "\n".join(logs.output),
+        )
+
+    def test_missing_tesseract_binary_raises_recoverable_provider_error(self):
+        class TesseractNotFoundError(Exception):
+            pass
+
+        fake_pytesseract = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            TesseractNotFoundError=TesseractNotFoundError,
+            image_to_data=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                TesseractNotFoundError("binary missing")
+            ),
+        )
+        profile = model_router.ImplementationProfile("tesseract_local", "tesseract")
+
+        with patch.dict(sys.modules, {"pytesseract": fake_pytesseract}), \
+             self.assertLogs(model_router.logger, level="WARNING") as logs, \
+             self.assertRaisesRegex(RuntimeError, "tesseract_binary_unavailable"):
+            model_router._tesseract_executor(
+                profile, [], [self._image_bytes()], {}
+            )
+
+        self.assertIn(
+            "tesseract insufficient reason=tesseract_binary_unavailable",
+            "\n".join(logs.output),
+        )
+
+    def test_empty_tesseract_text_fails_but_short_text_reaches_evaluator(self):
+        profile = model_router.ImplementationProfile("tesseract_local", "tesseract")
+        fake_pytesseract = SimpleNamespace(
+            Output=SimpleNamespace(DICT="dict"),
+            TesseractNotFoundError=type("TesseractNotFoundError", (Exception,), {}),
+            image_to_data=lambda *_args, **_kwargs: {"text": [], "conf": []},
+        )
+        with patch.dict(sys.modules, {"pytesseract": fake_pytesseract}), \
+             self.assertRaisesRegex(RuntimeError, "no_text"):
+            model_router._tesseract_executor(profile, [], [self._image_bytes()], {})
+
+        fake_pytesseract.image_to_data = lambda *_args, **_kwargs: {
+            "text": ["tiny"],
+            "conf": [20],
+        }
+        with patch.dict(sys.modules, {"pytesseract": fake_pytesseract}):
+            result = model_router._tesseract_executor(
+                profile, [], [self._image_bytes()], {}
+            )
+        self.assertEqual(model_router._response_text(result.response), "tiny")
 
 
 class TestAtomicCopilotCall(unittest.TestCase):
@@ -463,6 +688,32 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn("additional context", calls[0][0]["content"])
         self.assertIn("not evidence that the target is absent", calls[0][0]["content"])
         self.assertIn("at most 2 short sentences", calls[0][0]["content"])
+
+    def test_single_candidate_does_not_call_configured_evaluator(self):
+        calls = []
+
+        def executor(profile, *_args):
+            calls.append(profile.name)
+            if profile.name == "judge":
+                self.fail("single-candidate capability should not call evaluator")
+            return model_router.ImplementationResult(response("Direct result"))
+
+        policies = {"ocr": {
+            "candidates": ["reader"],
+            "evaluator": "judge",
+            "cascade": "test",
+        }}
+        profiles = {
+            "reader": model_router.ImplementationProfile("reader", "fake"),
+            "judge": model_router.ImplementationProfile("judge", "fake"),
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            result = model_router.copilot_llm_call(capability="ocr")
+
+        self.assertEqual(calls, ["reader"])
+        self.assertEqual(result["implementation"], "reader")
 
     def test_unknown_capability_is_rejected(self):
         with patch.object(model_router, "load_execution_policies", return_value={"ocr": {

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import time
 import urllib.request
 import urllib.error
 from contextvars import ContextVar
@@ -546,6 +547,104 @@ def _google_vision_executor(profile, messages, images, metadata) -> Implementati
     return ImplementationResult(_simple_response(text), {"text": text, "accepted": True})
 
 
+def _mistral_ocr_executor(profile, messages, images, metadata) -> ImplementationResult:
+    image_items = list(images or [])
+    if not image_items:
+        logger.warning("[Mistral OCR] failed reason=no_image")
+        raise RuntimeError("no_image")
+
+    from PIL import Image
+    image = Image.open(io.BytesIO(_image_bytes(image_items[0]))).convert("RGB")
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG")
+    jpeg_bytes = buffer.getvalue()
+    image_data_uri = "data:image/jpeg;base64," + base64.b64encode(jpeg_bytes).decode("ascii")
+    model = os.getenv("MISTRAL_OCR_MODEL", "mistral-ocr-latest")
+    logger.info(
+        "[Mistral OCR] model=%s input=image_data_uri payload_kb=%.1f",
+        model,
+        len(jpeg_bytes) / 1024,
+    )
+
+    try:
+        from mistralai.client import Mistral
+    except Exception as exc:
+        logger.warning(
+            "[Mistral OCR] import_failed path=mistralai.client.Mistral error=%s",
+            exc,
+        )
+        raise RuntimeError("mistral_ocr_import_failed") from exc
+
+    try:
+        client = Mistral()
+        ocr_response = client.ocr.process(
+            model=model,
+            document={
+                "type": "image_url",
+                "image_url": image_data_uri,
+            },
+        )
+    except Exception as exc:
+        logger.warning("[Mistral OCR] sdk_call_failed error=%s", exc)
+        raise RuntimeError("mistral_ocr_failed") from exc
+
+    text = "\n".join(
+        str(page.markdown).strip()
+        for page in (getattr(ocr_response, "pages", None) or [])
+        if getattr(page, "markdown", None) and str(page.markdown).strip()
+    ).strip()
+    if not text:
+        logger.warning("[Mistral OCR] failed reason=empty_text")
+        raise RuntimeError("empty_text")
+    return ImplementationResult(_simple_response(text), {"text": text, "accepted": True})
+
+
+def _tesseract_executor(profile, messages, images, metadata) -> ImplementationResult:
+    image_items = list(images or [])
+    if not image_items:
+        logger.info("[OCR] tesseract insufficient reason=no_image")
+        raise RuntimeError("no_image")
+    try:
+        import pytesseract
+    except (ImportError, ModuleNotFoundError) as exc:
+        logger.warning("[OCR] tesseract insufficient reason=pytesseract_unavailable")
+        raise RuntimeError("pytesseract_unavailable") from exc
+
+    from PIL import Image
+    image = Image.open(io.BytesIO(_image_bytes(image_items[0]))).convert("RGB")
+    try:
+        data = pytesseract.image_to_data(
+            image,
+            output_type=pytesseract.Output.DICT,
+        )
+    except Exception as exc:
+        not_found = getattr(pytesseract, "TesseractNotFoundError", ())
+        reason = "tesseract_binary_unavailable" if not_found and isinstance(exc, not_found) else "tesseract_error"
+        logger.warning("[OCR] tesseract insufficient reason=%s", reason)
+        raise RuntimeError(reason) from exc
+
+    raw_tokens = data.get("text", []) if isinstance(data, dict) else []
+    text = " ".join(str(token).strip() for token in raw_tokens if str(token).strip()).strip()
+    if not text:
+        logger.info("[OCR] tesseract insufficient reason=no_text")
+        raise RuntimeError("no_text")
+
+    confidences = []
+    for value in data.get("conf", []) if isinstance(data, dict) else []:
+        try:
+            confidence = float(value)
+        except (TypeError, ValueError):
+            continue
+        if confidence >= 0:
+            confidences.append(confidence)
+    mean_confidence = sum(confidences) / len(confidences) if confidences else None
+    logger.info("[OCR] tesseract produced text_chars=%s", len(text))
+    artifact = {"text": text, "accepted": True}
+    if mean_confidence is not None:
+        artifact["confidence"] = mean_confidence
+    return ImplementationResult(_simple_response(text), artifact)
+
+
 def _location(bbox: Sequence[float], width: int, height: int) -> str:
     x = (bbox[0] + bbox[2]) / 2
     y = (bbox[1] + bbox[3]) / 2
@@ -709,6 +808,8 @@ def _groundingdino_executor(profile, messages, images, metadata) -> Implementati
 
 IMPLEMENTATION_EXECUTORS: Dict[str, ImplementationExecutor] = {
     "model": _model_executor,
+    "mistral_ocr": _mistral_ocr_executor,
+    "tesseract": _tesseract_executor,
     "google_vision": _google_vision_executor,
     "yolo": _yolo_executor,
     "groundingdino": _groundingdino_executor,
@@ -805,11 +906,11 @@ def copilot_llm_call(
         evaluator_name = policy.get("evaluator")
     elif policy.get("specialized"):
         logger.info(
-            "[Execution Policy] routing disabled -> preserving specialized implementation=%s",
-            policy["candidates"][0],
+            "[Execution Policy] routing disabled -> preserving specialized candidates=%s",
+            policy["candidates"],
         )
         candidates = policy["candidates"]
-        evaluator_name = None
+        evaluator_name = policy.get("evaluator")
     else:
         logger.info("[Execution Policy] routing disabled -> using default model for all LLM stages")
         candidates = [global_config["default_llm_when_routing_disabled"]]
@@ -886,6 +987,10 @@ def copilot_llm_call(
                 declared,
             )
         logger.info("[Execution Policy] capability=%s trying=%s", declared, candidate)
+        logger.info("[Execution Policy] capability=%s candidate=%s", declared, candidate)
+        started_at = time.perf_counter()
+        if declared == "ocr":
+            logger.info("[OCR] trying=%s", candidate)
         try:
             profile = implementations[candidate]
             executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
@@ -895,6 +1000,12 @@ def copilot_llm_call(
                 )
             candidate_output = executor(profile, call_messages, call_images, call_metadata)
         except Exception as exc:
+            if declared == "ocr":
+                logger.info(
+                    "[OCR] implementation=%s latency_ms=%.1f",
+                    candidate,
+                    (time.perf_counter() - started_at) * 1000,
+                )
             logger.warning(
                 "[Execution Policy] capability=%s implementation=%s failed=%s",
                 declared,
@@ -902,8 +1013,14 @@ def copilot_llm_call(
                 exc,
             )
             continue
-
         response_text = _single_line_audio_text(_response_text(candidate_output.response))
+        if declared == "ocr":
+            logger.info(
+                "[OCR] implementation=%s latency_ms=%.1f text_chars=%s",
+                candidate,
+                (time.perf_counter() - started_at) * 1000,
+                len(response_text),
+            )
         if not response_text:
             logger.warning(
                 "[Execution Policy] capability=%s implementation=%s failed=empty response",
@@ -921,7 +1038,7 @@ def copilot_llm_call(
             response_text,
         )
 
-        if evaluator_name and index < len(candidates) - 1:
+        if evaluator_name and len(candidates) > 1 and index < len(candidates) - 1:
             try:
                 evaluator_profile = implementations[evaluator_name]
                 evaluator = IMPLEMENTATION_EXECUTORS.get(evaluator_profile.kind)

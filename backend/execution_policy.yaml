@@ -37,6 +37,12 @@ implementations:
   google_vision:
     kind: google_vision
 
+  mistral_ocr:
+    kind: mistral_ocr
+
+  tesseract_local:
+    kind: tesseract
+
   yolo:
     kind: yolo
     model_name: yolo11n.pt
@@ -48,11 +54,17 @@ cascade_profiles:
       - gpt4o
     evaluator: gpt4o-mini
 
+  ocr:
+    candidates:
+      - mistral_ocr
+      - google_vision
+    evaluator: gpt4o-mini
+
 general_reasoning:
   cascade: default_reasoning
 
 ocr:
-  implementation: google_vision
+  cascade: ocr
   specialized: true
 
 object_detection_localization:
