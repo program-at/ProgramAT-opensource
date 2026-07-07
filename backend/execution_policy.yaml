@@ -14,6 +14,10 @@ streaming:
     max_skip_frames: 20
 
 implementations:
+  moondream_cloud:
+    kind: moondream_cloud
+    model: moondream/moondream3-preview
+
   llama_planner:
     kind: model
     model: groq/llama-3.1-8b-instant
@@ -50,6 +54,7 @@ implementations:
 cascade_profiles:
   default_reasoning:
     candidates:
+      - moondream_cloud
       - gemini_flash_lite
       - gpt4o
     evaluator: gpt4o-mini

@@ -46,9 +46,9 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; OCR uses `MISTRAL_API_KEY` and optionally `MISTRAL_OCR_MODEL` (default `mistral-ocr-latest`), with Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for the Google Vision fallback.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; reasoning uses `MOONDREAM_API_KEY`, `GEMINI_API_KEY`, and `OPENAI_API_KEY`; OCR uses `MISTRAL_API_KEY` and optionally `MISTRAL_OCR_MODEL` (default `mistral-ocr-latest`), with Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for the Google Vision fallback.
   - System calls use the fixed system model.
-  - Detection uses one implementation. OCR tries Mistral OCR before Google Vision. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
+  - Detection uses one implementation. OCR tries Mistral OCR before Google Vision. Reasoning capabilities try Moondream Cloud, Gemini Flash Lite, and GPT-4o in order, escalating on provider failure or when the evaluator finds a response insufficient.
 
 ### LLM Interfaces
 
@@ -61,7 +61,7 @@ Take-photo model-backed work should call `copilot_llm_call(...)` through `model_
 ```yaml
 cascade_profiles:
   default_reasoning:
-    candidates: [gemini_flash_lite, gpt4o]
+    candidates: [moondream_cloud, gemini_flash_lite, gpt4o]
     evaluator: gpt4o-mini
   ocr:
     candidates: [mistral_ocr, google_vision]
@@ -86,12 +86,26 @@ Execution modes are distinct:
 
 ### Optional
 
+- `ENABLE_MOONDREAM_CLOUD`: Enable the execution-policy candidate (`true` by default).
+- `MOONDREAM_MODEL`: Cloud model (`moondream/moondream3-preview` from `execution_policy.yaml` by default).
+- `MOONDREAM_TIMEOUT_SECONDS`: Per-request timeout (`2.0` by default).
+- `MOONDREAM_MAX_IMAGE_DIMENSION`: Moondream-only resize bound (`768` by default).
+- `MOONDREAM_JPEG_QUALITY`: Moondream-only RGB JPEG quality (`75` by default).
+- `MOONDREAM_FAILURE_THRESHOLD`: Consecutive non-500 failures before cooldown (`3` by default).
+- `MOONDREAM_FAILURE_COOLDOWN_SECONDS`: Cooldown after a provider 500 or repeated failures (`60` by default).
 - `MIN_STREAMING_EXECUTION_INTERVAL`: Minimum seconds between the completion of one streaming execution and the start of the next (default: `2.0`). Frames received while waiting replace the pending frame, so the newest scene is analyzed when the interval expires.
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8081`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
 
 ## Usage
+
+Run one direct smoke test using the same image preprocessing, short prompt adapter, request builder, and response parser as production:
+
+```bash
+cd backend
+./.venv/bin/python scripts/test_moondream_provider.py
+```
 
 ### Basic Usage
 

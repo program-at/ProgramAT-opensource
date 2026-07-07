@@ -1,14 +1,16 @@
 """Offline regression tests for atomic capability execution."""
 
 from pathlib import Path
+import base64
 import io
 import json
 import sys
 import unittest
 from types import ModuleType, SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PIL import Image
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -17,6 +19,211 @@ import model_router
 
 def response(text):
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text))])
+
+
+class TestMoondreamCloudExecutor(unittest.TestCase):
+    @staticmethod
+    def image_bytes(image_format="JPEG"):
+        output = io.BytesIO()
+        Image.new("RGBA" if image_format == "PNG" else "RGB", (40, 20), "white").save(
+            output, format=image_format
+        )
+        return output.getvalue()
+
+    def setUp(self):
+        model_router._MOONDREAM_COOLDOWN_UNTIL = 0.0
+        model_router._MOONDREAM_CONSECUTIVE_FAILURES = 0
+
+    def profile(self):
+        return model_router.ImplementationProfile(
+            "moondream_cloud", "moondream_cloud", model="moondream/moondream3-preview"
+        )
+
+    def test_builds_expected_payload_and_extracts_choices_message_content(self):
+        create = Mock(return_value=response("A small white image."))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch.object(model_router, "_create_moondream_client", return_value=client) as factory, \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key",
+                 "MOONDREAM_MODEL": "custom/moondream",
+                 "MOONDREAM_TIMEOUT_SECONDS": "2.5",
+                 "ENABLE_MOONDREAM_CLOUD": "true",
+             }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router._moondream_cloud_executor(
+                self.profile(),
+                [
+                    {"role": "system", "content": "Return only concise audio text. " * 30},
+                    {"role": "user", "content": "Full ProgramAT routing and schema instructions " * 20},
+                ],
+                [self.image_bytes("PNG")],
+                {"capability": "general_reasoning", "goal": "Which envelope should I open first?"},
+            )
+
+        factory.assert_called_once_with("test-key", 2.5)
+        request = create.call_args.kwargs
+        self.assertEqual(request["model"], "custom/moondream")
+        self.assertEqual(len(request["messages"]), 1)
+        content = request["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertIn("Which envelope should I open first?", content[0]["text"])
+        self.assertNotIn("routing and schema", content[0]["text"])
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertTrue(content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(model_router._response_text(result.response), "A small white image.")
+        output = "\n".join(logs.output)
+        self.assertIn("base_url=https://api.moondream.ai/v1", output)
+        self.assertIn("message_format=nested_image_url_url", output)
+        self.assertIn("prompt_adapter=task_short", output)
+        self.assertIn("response status=200", output)
+        self.assertIn("latency_ms=", output)
+
+    def test_prompt_adapter_normalizes_and_caps_goal(self):
+        full = "```json\n# ProgramAT\n" + ("Find the nearest exit safely using visible landmarks. " * 20)
+        prompt, short_goal, original_chars = model_router.moondream_provider.adapt_task_prompt(
+            [{"role": "system", "content": "Return only concise output." * 20}],
+            {"capability": "navigation", "stage_goal": full},
+        )
+        self.assertIn("nearest exit", prompt)
+        self.assertNotIn("```", prompt)
+        self.assertLessEqual(len(short_goal), 160)
+        self.assertLessEqual(len(prompt), 250)
+        self.assertGreater(original_chars, 100)
+
+    def test_non_moondream_model_receives_original_messages(self):
+        messages = [{"role": "user", "content": "Keep this complete original prompt."}]
+        profile = model_router.ImplementationProfile("gemini", "model", model="gemini/test")
+        with patch.object(model_router, "call_model", return_value=response("ok")) as call_model:
+            model_router._model_executor(profile, messages, [b"image"], {})
+        self.assertEqual(call_model.call_args.args[1], messages)
+
+    def test_extracts_text_content_part(self):
+        completion = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(
+            content=[{"type": "text", "text": "Visible answer."}]
+        ))])
+        self.assertEqual(model_router._moondream_response_text(completion), "Visible answer.")
+
+    def test_prepares_opencv_bgr_ndarray_as_rgb_jpeg(self):
+        frame = np.zeros((20, 40, 3), dtype=np.uint8)
+        frame[:, :] = [255, 0, 0]  # OpenCV BGR blue.
+
+        payload, media_type, dimensions = model_router._prepare_moondream_image(frame)
+
+        self.assertEqual(media_type, "image/jpeg")
+        self.assertEqual(dimensions, (40, 20))
+        with Image.open(io.BytesIO(payload)) as decoded:
+            red, _green, blue = decoded.convert("RGB").getpixel((20, 10))
+        self.assertGreater(blue, red)
+
+    def test_executor_accepts_streaming_ndarray_frame(self):
+        create = Mock(return_value=response("The frame is visible."))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        frame = np.zeros((24, 32, 3), dtype=np.uint8)
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+             }):
+            result = model_router._moondream_cloud_executor(
+                self.profile(), [{"role": "user", "content": "Describe it"}], [frame], {}
+            )
+
+        self.assertEqual(model_router._response_text(result.response), "The frame is visible.")
+        image_url = create.call_args.kwargs["messages"][0]["content"][1]["image_url"]["url"]
+        self.assertTrue(image_url.startswith("data:image/jpeg;base64,"))
+
+    def test_pil_and_data_uri_inputs_are_safely_reencoded_for_request(self):
+        jpeg = self.image_bytes()
+        data_uri = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+        inputs = [Image.new("RGBA", (16, 12), "white"), data_uri]
+        for source in inputs:
+            with self.subTest(source_type=type(source).__name__):
+                create = Mock(return_value=response("Visible."))
+                client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+                with patch.object(model_router, "_create_moondream_client", return_value=client), \
+                     patch.dict(model_router.os.environ, {
+                         "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+                     }):
+                    model_router._moondream_cloud_executor(
+                        self.profile(), [{"role": "user", "content": "Describe it"}],
+                        [source], {},
+                    )
+                part = create.call_args.kwargs["messages"][0]["content"][1]
+                self.assertEqual(part["type"], "image_url")
+                self.assertTrue(part["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_empty_or_malformed_response_is_soft_failure(self):
+        create = Mock(return_value=SimpleNamespace(choices=[]))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+             }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            with self.assertRaisesRegex(RuntimeError, "empty or malformed"):
+                model_router._moondream_cloud_executor(
+                    self.profile(), [{"role": "user", "content": "Describe it"}],
+                    [self.image_bytes()], {},
+                )
+        self.assertIn("continuing cascade", "\n".join(logs.output))
+
+    def test_500_starts_cooldown_and_next_call_skips_network(self):
+        error = RuntimeError("FAL backend error: 500")
+        error.status_code = 500
+        error.request_id = "request-123"
+        create = Mock(side_effect=error)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        environment = {
+            "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+            "MOONDREAM_FAILURE_COOLDOWN_SECONDS": "60",
+        }
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.os.environ, environment), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            with self.assertRaisesRegex(RuntimeError, "FAL backend"):
+                model_router._moondream_cloud_executor(
+                    self.profile(), [{"role": "user", "content": "Describe it"}],
+                    [self.image_bytes()], {"capability": "general_reasoning", "goal": "Describe it"},
+                )
+            with self.assertRaisesRegex(RuntimeError, "cooldown"):
+                model_router._moondream_cloud_executor(
+                    self.profile(), [{"role": "user", "content": "Describe it"}],
+                    [self.image_bytes()], {},
+                )
+
+        self.assertEqual(create.call_count, 1)
+        output = "\n".join(logs.output)
+        self.assertIn("failed status=500 request_id=request-123", output)
+        self.assertIn("temporarily disabled reason=provider_backend_failure cooldown_seconds=60", output)
+
+    def test_timeout_failure_continues_policy_cascade_to_gemini(self):
+        create = Mock(side_effect=TimeoutError("timed out"))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        calls = []
+
+        def fake_executor(profile, _messages, _images, _metadata):
+            calls.append(profile.name)
+            return model_router.ImplementationResult(response("Gemini recovered."))
+
+        policies = {"general_reasoning": {
+            "candidates": ["moondream", "gemini"], "evaluator": "judge", "cascade": "test",
+        }}
+        profiles = {
+            "moondream": self.profile(),
+            "gemini": model_router.ImplementationProfile("gemini", "fake"),
+            "judge": model_router.ImplementationProfile("judge", "fake"),
+        }
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": fake_executor}), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+             }):
+            result = model_router.copilot_llm_call(
+                capability="general_reasoning", images=[self.image_bytes()]
+            )
+
+        self.assertEqual(calls, ["gemini"])
+        self.assertEqual(result["response"], "Gemini recovered.")
+        self.assertEqual(result["implementation"], "gemini")
 
 
 class TestGoogleVisionExecutor(unittest.TestCase):
@@ -191,11 +398,11 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         for policy in policies.values():
             self.assertNotIn("llava", policy["candidates"])
 
-    def test_reasoning_cascade_uses_gemini_then_gpt4o(self):
+    def test_reasoning_cascade_uses_moondream_then_gemini_then_gpt4o(self):
         policy = model_router.load_execution_policies()["general_reasoning"]
         self.assertEqual(
             policy["candidates"],
-            ["gemini_flash_lite", "gpt4o"],
+            ["moondream_cloud", "gemini_flash_lite", "gpt4o"],
         )
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
 
@@ -984,10 +1191,12 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_cascade_logs_each_candidate_and_yes_no_only(self):
         decisions = iter(["NO", "NO"])
+        evaluator_images = []
 
-        def executor(profile, messages, _images, _metadata):
+        def executor(profile, messages, images, _metadata):
             is_evaluation = "Output exactly one token: YES or NO" in messages[0].get("content", "")
             if profile.name == "gpt4o" and is_evaluation:
+                evaluator_images.append(images)
                 return model_router.ImplementationResult(response(next(decisions)))
             return model_router.ImplementationResult(response(f"response from {profile.name}"))
 
@@ -1013,6 +1222,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertEqual(output.count("evaluator=gpt4o decision=NO"), 2)
         self.assertEqual(output.count("[Evaluator] image_included=false"), 2)
         self.assertEqual(output.count("[Evaluator] decision=NO"), 2)
+        self.assertEqual(evaluator_images, [[], []])
         self.assertIn("selected implementation=gpt4o", output)
         self.assertEqual(result["response"], "response from gpt4o")
 

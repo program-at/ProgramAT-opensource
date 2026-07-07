@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -18,6 +19,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 import yaml
+import moondream_provider
 
 from litellm_utils import call_model, extract_text
 
@@ -459,6 +461,137 @@ def _image_bytes(image: Any) -> bytes:
     raise TypeError(f"Unsupported image type: {type(image).__name__}")
 
 
+MOONDREAM_BASE_URL = moondream_provider.BASE_URL
+_MOONDREAM_STATE_LOCK = threading.Lock()
+_MOONDREAM_COOLDOWN_UNTIL = 0.0
+_MOONDREAM_CONSECUTIVE_FAILURES = 0
+
+
+def _prepare_moondream_image(image: Any) -> tuple[bytes, str, tuple[int, int]]:
+    """Return a Moondream-only RGB JPEG without altering other providers' input."""
+    return moondream_provider.prepare_image(image)
+
+
+def _build_moondream_messages(
+    messages: Iterable[Mapping[str, Any]], image_data_uri: str
+) -> List[Dict[str, Any]]:
+    """Build the documented OpenAI content-list payload used in production."""
+    return moondream_provider.build_messages(messages, image_data_uri)
+
+
+def _create_moondream_client(api_key: str, timeout: float):
+    return moondream_provider.create_client(api_key, timeout)
+
+
+def _moondream_response_text(completion: Any) -> str:
+    return moondream_provider.response_text(completion)
+
+
+def _moondream_error_context(exc: Exception) -> tuple[Any, str, str]:
+    return moondream_provider.error_context(exc)
+
+
+def _moondream_cooldown_remaining() -> float:
+    with _MOONDREAM_STATE_LOCK:
+        return max(0.0, _MOONDREAM_COOLDOWN_UNTIL - time.monotonic())
+
+
+def _record_moondream_success() -> None:
+    global _MOONDREAM_CONSECUTIVE_FAILURES
+    with _MOONDREAM_STATE_LOCK:
+        _MOONDREAM_CONSECUTIVE_FAILURES = 0
+
+
+def _record_moondream_failure(status: Any) -> tuple[float, int]:
+    global _MOONDREAM_CONSECUTIVE_FAILURES, _MOONDREAM_COOLDOWN_UNTIL
+    cooldown_seconds = max(
+        0.0, float(os.environ.get("MOONDREAM_FAILURE_COOLDOWN_SECONDS", "60"))
+    )
+    threshold = max(1, int(os.environ.get("MOONDREAM_FAILURE_THRESHOLD", "3")))
+    with _MOONDREAM_STATE_LOCK:
+        _MOONDREAM_CONSECUTIVE_FAILURES += 1
+        failures = _MOONDREAM_CONSECUTIVE_FAILURES
+        if status == 500 or failures >= threshold:
+            _MOONDREAM_COOLDOWN_UNTIL = time.monotonic() + cooldown_seconds
+            _MOONDREAM_CONSECUTIVE_FAILURES = 0
+            return cooldown_seconds, failures
+    return 0.0, failures
+
+
+def _moondream_cloud_executor(profile, messages, images, metadata) -> ImplementationResult:
+    enabled = os.environ.get("ENABLE_MOONDREAM_CLOUD", "true").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        raise RuntimeError("Moondream Cloud is disabled")
+    api_key = os.environ.get("MOONDREAM_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("MOONDREAM_API_KEY is not configured")
+    image_items = list(images or [])
+    if not image_items:
+        raise RuntimeError("Moondream Cloud requires an image")
+    remaining = _moondream_cooldown_remaining()
+    if remaining > 0:
+        logger.info("[Moondream] cooldown active remaining_seconds=%.1f; continuing cascade", remaining)
+        raise RuntimeError("Moondream Cloud cooldown is active")
+
+    model = os.environ.get("MOONDREAM_MODEL", "").strip() or profile.model
+    timeout = float(os.environ.get("MOONDREAM_TIMEOUT_SECONDS", "2.0"))
+    source_type = moondream_provider.input_type(image_items[0])
+    prompt, short_goal, original_prompt_chars = moondream_provider.adapt_task_prompt(
+        messages, metadata
+    )
+    payload, media_type, dimensions = _prepare_moondream_image(image_items[0])
+    data_uri = f"data:{media_type};base64," + base64.b64encode(payload).decode("ascii")
+    request_messages = _build_moondream_messages(
+        [{"role": "user", "content": prompt}], data_uri
+    )
+    logger.info(
+        "[Moondream] prompt_adapter=task_short original_prompt_chars=%d "
+        "short_goal_chars=%d prompt_chars_sent=%d",
+        original_prompt_chars, len(short_goal), len(prompt),
+    )
+    logger.info("[Moondream] prompt_preview=%r", prompt)
+    logger.info(
+        "[Moondream] request model=%s base_url=%s provider_input_type=%s "
+        "converted_image=true dimensions=%sx%s payload_kb=%.1f prompt_chars=%d "
+        "message_format=%s timeout_seconds=%.1f",
+        model, MOONDREAM_BASE_URL, source_type,
+        dimensions[0], dimensions[1], len(payload) / 1024, len(prompt),
+        moondream_provider.MESSAGE_FORMAT, timeout,
+    )
+    started = time.perf_counter()
+    try:
+        completion = _create_moondream_client(api_key, timeout).chat.completions.create(
+            model=model,
+            messages=request_messages,
+        )
+        text = _single_line_audio_text(_moondream_response_text(completion))
+        if not text:
+            raise RuntimeError("Moondream returned an empty or malformed response")
+        _record_moondream_success()
+        logger.info(
+            "[Moondream] response status=200 request_id=%s latency_ms=%.1f text_chars=%d",
+            getattr(completion, "_request_id", None) or "unavailable",
+            (time.perf_counter() - started) * 1000,
+            len(text),
+        )
+        return ImplementationResult(_simple_response(text), {"text": text})
+    except Exception as exc:
+        status, request_id, error_body = _moondream_error_context(exc)
+        cooldown_seconds, failures = _record_moondream_failure(status)
+        logger.warning(
+            "[Moondream] failed status=%s request_id=%s error_type=%s error_body=%s",
+            status, request_id, type(exc).__name__, error_body,
+        )
+        if cooldown_seconds:
+            reason = "provider_backend_failure" if status == 500 else "repeated_failures"
+            logger.warning(
+                "[Moondream] temporarily disabled reason=%s cooldown_seconds=%.0f failures=%d",
+                reason, cooldown_seconds, failures,
+            )
+        logger.info("[Moondream] continuing cascade")
+        raise
+
+
 def _google_vision_executor(profile, messages, images, metadata) -> ImplementationResult:
     image_items = list(images or [])
     if not image_items:
@@ -808,6 +941,7 @@ def _groundingdino_executor(profile, messages, images, metadata) -> Implementati
 
 IMPLEMENTATION_EXECUTORS: Dict[str, ImplementationExecutor] = {
     "model": _model_executor,
+    "moondream_cloud": _moondream_cloud_executor,
     "mistral_ocr": _mistral_ocr_executor,
     "tesseract": _tesseract_executor,
     "google_vision": _google_vision_executor,
