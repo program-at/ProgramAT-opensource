@@ -13,6 +13,32 @@ BASE_URL = "https://api.moondream.ai/v1"
 MESSAGE_FORMAT = "nested_image_url_url"
 SHORT_GOAL_MAX_CHARS = 160
 PROMPT_MAX_CHARS = 250
+CARD_IDENTIFICATION_PROMPT = (
+    "Identify playing cards. Read each physical card once. Use the top-left/main "
+    "card identity; ignore upside-down lower-right corner indexes. Return "
+    "rank+suit only."
+)
+CARD_PROMPT_VARIANT = "physical_card_once"
+CARD_FALSE_POSITIVE_TERMS = ("credit card", "id card", "business card", "gift card")
+CARD_RANK_PATTERN = r"(?:ace|king|queen|jack|ten|nine|eight|seven|six|five|four|three|two|10|[2-9]|[akqj])"
+CARD_SUIT_PATTERN = r"(?:spades?|hearts?|diamonds?|clubs?)"
+CARD_PAIR_RE = re.compile(
+    rf"\b(?P<rank>{CARD_RANK_PATTERN})\s+of\s+(?P<suit>{CARD_SUIT_PATTERN})\b",
+    re.IGNORECASE,
+)
+CARD_RANK_LABELS = {
+    "a": "Ace", "ace": "Ace",
+    "k": "King", "king": "King",
+    "q": "Queen", "queen": "Queen",
+    "j": "Jack", "jack": "Jack",
+    "two": "Two", "three": "Three", "four": "Four", "five": "Five",
+    "six": "Six", "seven": "Seven", "eight": "Eight", "nine": "Nine",
+    "ten": "Ten",
+}
+MIRRORED_CORNER_TERMS = (
+    "lower-right", "lower right", "lower corner", "bottom-right", "bottom right",
+    "upside-down", "upside down", "mirrored corner", "corner index", "corner indexes",
+)
 
 
 def input_type(image: Any) -> str:
@@ -30,12 +56,19 @@ def input_type(image: Any) -> str:
 
 
 def image_bytes(image: Any) -> bytes:
+    output = io.BytesIO()
+    to_rgb_image(image).save(output, format="JPEG")
+    return output.getvalue()
+
+
+def to_rgb_image(image: Any):
+    from PIL import Image
+
     if isinstance(image, str):
         payload = image.split(",", 1)[1] if image.startswith("data:image") and "," in image else image
-        return base64.b64decode(payload)
+        return Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
     if isinstance(image, (bytes, bytearray)):
-        return bytes(image)
-    from PIL import Image
+        return Image.open(io.BytesIO(bytes(image))).convert("RGB")
     import numpy as np
     if isinstance(image, np.ndarray):
         array = image
@@ -53,28 +86,47 @@ def image_bytes(image: Any) -> bytes:
             pil_image = Image.fromarray(array[:, :, [2, 1, 0, 3]].copy(), mode="RGBA").convert("RGB")
         else:
             raise TypeError(f"Unsupported ndarray image shape: {array.shape}")
-        output = io.BytesIO()
-        pil_image.save(output, format="JPEG")
-        return output.getvalue()
+        return pil_image.convert("RGB")
     if isinstance(image, Image.Image):
-        output = io.BytesIO()
-        image.convert("RGB").save(output, format="JPEG")
-        return output.getvalue()
+        return image.convert("RGB")
     raise TypeError(f"Unsupported image type: {type(image).__name__}")
 
 
 def prepare_image(image: Any) -> tuple[bytes, str, tuple[int, int]]:
-    from PIL import Image, ImageOps
-
     max_dimension = max(1, int(os.environ.get("MOONDREAM_MAX_IMAGE_DIMENSION", "768")))
     quality = min(95, max(1, int(os.environ.get("MOONDREAM_JPEG_QUALITY", "75"))))
-    with Image.open(io.BytesIO(image_bytes(image))) as opened:
-        normalized = ImageOps.exif_transpose(opened).convert("RGB")
-        normalized.thumbnail((max_dimension, max_dimension), Image.Resampling.LANCZOS)
-        dimensions = normalized.size
-        output = io.BytesIO()
-        normalized.save(output, format="JPEG", quality=quality, optimize=True)
+    return prepare_rgb_jpeg(image, max_dimension, quality)
+
+
+def prepare_rgb_jpeg(
+    image: Any, max_dimension: int, quality: int
+) -> tuple[bytes, str, tuple[int, int]]:
+    from PIL import Image, ImageOps
+
+    normalized = ImageOps.exif_transpose(to_rgb_image(image)).convert("RGB")
+    normalized.thumbnail((max(1, max_dimension), max(1, max_dimension)), Image.Resampling.LANCZOS)
+    dimensions = normalized.size
+    output = io.BytesIO()
+    normalized.save(
+        output, format="JPEG", quality=min(95, max(1, quality)), optimize=True
+    )
     return output.getvalue(), "image/jpeg", dimensions
+
+
+def image_metrics(image: Any) -> tuple[tuple[int, int], int]:
+    import numpy as np
+
+    if isinstance(image, np.ndarray):
+        height, width = image.shape[:2]
+        return (width, height), int(image.nbytes)
+    if isinstance(image, (bytes, bytearray)):
+        return to_rgb_image(image).size, len(image)
+    if isinstance(image, str):
+        payload = image.split(",", 1)[1] if "," in image else image
+        raw = base64.b64decode(payload)
+        return to_rgb_image(raw).size, len(raw)
+    converted = to_rgb_image(image)
+    return converted.size, len(image_bytes(converted))
 
 
 def build_messages(
@@ -136,61 +188,146 @@ def normalize_short_goal(value: Any, max_chars: int = SHORT_GOAL_MAX_CHARS) -> s
     text = re.sub(r"```(?:\w+)?", " ", text)
     text = text.replace("`", " ").replace("**", "").replace("__", "")
     text = re.sub(r"(?m)^\s*(?:#{1,6}|[-*+] |\d+[.)] )", "", text)
-    boilerplate_patterns = (
-        r"return only concise.*?(?:\.|$)",
-        r"do not use markdown.*?(?:\.|$)",
-        r"output (?:exactly|only).*?(?:\.|$)",
-        r"useful previous-stage artifact.*?(?:\.|$)",
-        r"you are responding to a live camera stream.*?(?:\.|$)",
-        r"you provide navigation guidance.*?(?:\.|$)",
+    text = " ".join(text.split()).strip(" -:;,")
+    boilerplate_markers = (
+        "return only concise", "do not use markdown", "output exactly", "output only",
+        "execution policy", "routing detail", "evaluator", "json schema",
+        "stage handoff", "previous-stage artifact", "live camera stream",
+        "audio-friendly plain text", "blind or low-vision user",
+        "for ordered information",
     )
-    for pattern in boilerplate_patterns:
-        text = re.sub(pattern, " ", text, flags=re.IGNORECASE | re.DOTALL)
-    text = " ".join(text.split()).strip(" -:;,.")
-    if len(text) <= max_chars:
-        return text
-    shortened = text[:max_chars].rsplit(" ", 1)[0].rstrip(" ,;:-")
-    return shortened or text[:max_chars]
+    clauses = re.split(r"(?<=[.!?])\s+", text)
+    useful = [
+        clause.strip()
+        for clause in clauses
+        if clause.strip() and not any(marker in clause.lower() for marker in boilerplate_markers)
+    ]
+    task = useful[0] if useful else ""
+    if len(task) <= max_chars:
+        return task
+    window = task[: max_chars + 1]
+    boundary = max(window.rfind(mark) for mark in (";", ",", ":"))
+    if boundary < max_chars // 2:
+        boundary = window.rfind(" ", 0, max_chars + 1)
+    if boundary <= 0:
+        boundary = max_chars
+    shortened = window[:boundary].rstrip(" ,;:-")
+    if shortened and shortened[-1] not in ".!?":
+        shortened += "."
+    return shortened
+
+
+def card_mode_reason(value: Any) -> tuple[bool, str]:
+    text = " ".join(str(value or "").lower().split())
+    if not text:
+        return False, "empty task"
+    for false_positive in CARD_FALSE_POSITIVE_TERMS:
+        if false_positive in text:
+            return False, f"excluded phrase: {false_positive}"
+    card_terms = ("playing card", "playing cards", "card game", "poker")
+    for term in card_terms:
+        if term in text:
+            return True, f"matched phrase: {term}"
+    if "rank" in text or "suit" in text:
+        return True, "matched rank/suit"
+    if "identify" in text and "cards" in text:
+        return True, "matched identify+cards"
+    if "card identifier" in text:
+        return True, "matched card identifier"
+    if "cards" in text and ("hand" in text or "visible" in text):
+        return True, "matched cards+hand/visible"
+    return False, "no playing-card trigger"
+
+
+def is_card_identification_task(value: Any) -> bool:
+    return card_mode_reason(value)[0]
+
+
+def card_response_details(value: Any) -> Dict[str, Any]:
+    text = str(value or "")
+    extracted_cards = []
+    for match in CARD_PAIR_RE.finditer(text):
+        rank = match.group("rank").lower()
+        suit = match.group("suit").lower().rstrip("s") + "s"
+        rank_label = CARD_RANK_LABELS.get(rank, rank)
+        if rank_label.isdigit():
+            rank_label = str(int(rank_label))
+        extracted_cards.append(f"{rank_label} of {suit}")
+
+    deduped_cards = []
+    seen = set()
+    for card in extracted_cards:
+        key = card.lower()
+        if key not in seen:
+            deduped_cards.append(card)
+            seen.add(key)
+
+    lowered = text.lower()
+    mirrored_corner_filter_applied = False
+    final_cards = deduped_cards
+    if len(deduped_cards) == 2:
+        has_corner_cue = any(term in lowered for term in MIRRORED_CORNER_TERMS)
+        first_match = CARD_PAIR_RE.search(text)
+        singular_card_intro = bool(
+            first_match and re.search(r"\bthe card\b", lowered[:first_match.start()])
+        )
+        if has_corner_cue or singular_card_intro:
+            final_cards = deduped_cards[:1]
+            mirrored_corner_filter_applied = True
+
+    final_response = ", ".join(final_cards) + "." if final_cards else "Uncertain."
+    return {
+        "extracted_cards": extracted_cards,
+        "deduped_cards": deduped_cards,
+        "mirrored_corner_filter_applied": mirrored_corner_filter_applied,
+        "final_response": final_response,
+    }
+
+
+def normalize_card_response(value: Any) -> str:
+    return card_response_details(value)["final_response"]
 
 
 def adapt_task_prompt(
     messages: Iterable[Mapping[str, Any]], metadata: Mapping[str, Any] | None = None
-) -> tuple[str, str, int]:
-    """Return Moondream's short prompt, normalized goal, and original prompt length."""
+) -> tuple[str, str, int, str]:
+    """Return the extractive prompt, short task, source length, and source label."""
     message_list = list(messages)
     metadata = metadata or {}
-    original = all_prompt_text(message_list)
-    raw_goal = next(
+    stage_goal = next(
+        (metadata.get(key) for key in ("stage_goal", "step_goal") if metadata.get(key)),
+        None,
+    )
+    user_goal = next(
         (
             metadata.get(key)
-            for key in ("stage_goal", "goal", "task_text", "task")
+            for key in ("goal", "user_goal", "tool_goal", "task_text", "task")
             if metadata.get(key)
         ),
         None,
     )
-    short_goal = normalize_short_goal(raw_goal or prompt_text(message_list))
-    if not short_goal:
-        short_goal = "Describe the relevant visual information"
-    capability = str(metadata.get("capability") or "").strip().lower()
-    goal_lower = short_goal.lower()
-    if capability == "ocr" or any(
-        word in goal_lower for word in ("read", "text", "document", "mail", "envelope", "letter")
-    ):
-        template = "Read visible text and briefly answer this task: {}"
-    elif capability in {"navigation", "spatial_reasoning", "object_detection_localization"} or any(
-        word in goal_lower for word in ("navigate", "location", "locate", "where", "exit")
-    ):
-        template = "Briefly identify relevant objects and locations for this task: {}"
-    elif capability == "general_reasoning":
-        template = "Answer this visual question briefly: {}"
-    elif capability == "structured_visual_understanding":
-        template = "Use the image to answer briefly: {}"
+    if stage_goal:
+        raw_task, source = str(stage_goal), "stage_goal"
+    elif user_goal:
+        raw_task, source = str(user_goal), "user_goal"
     else:
-        template = "Briefly answer the visual task using the image: {}"
-    adapted = template.format(short_goal)
-    if len(adapted) > PROMPT_MAX_CHARS:
-        adapted = adapted[:PROMPT_MAX_CHARS].rsplit(" ", 1)[0].rstrip(" ,;:-")
-    return adapted, short_goal, len(original)
+        raw_task = prompt_text(message_list) or all_prompt_text(message_list)
+        source = "original_prompt"
+    if is_card_identification_task(raw_task):
+        short_task = normalize_short_goal(raw_task)
+        return CARD_IDENTIFICATION_PROMPT, short_task, len(raw_task), source
+    capability = str(metadata.get("capability") or "").strip().lower()
+    prefix = (
+        "Read visible text needed for this task and answer briefly:"
+        if capability == "ocr"
+        else "Answer the visual task directly and briefly:"
+    )
+    available = PROMPT_MAX_CHARS - len(prefix) - 1
+    short_task = normalize_short_goal(raw_task, max_chars=available)
+    if not short_task:
+        short_task = "Describe the relevant visual information."
+    adapted = f"{prefix} {short_task}"
+    return adapted[:PROMPT_MAX_CHARS], short_task, len(raw_task), source
 
 
 def create_client(api_key: str, timeout: float):

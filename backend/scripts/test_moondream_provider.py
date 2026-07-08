@@ -55,7 +55,7 @@ def main() -> int:
     source = args.image.read_bytes() if args.image else tiny_jpeg()
     payload, mime_type, dimensions = moondream_provider.prepare_image(source)
     data_uri = f"data:{mime_type};base64," + base64.b64encode(payload).decode("ascii")
-    adapted_prompt, _short_goal, _original_chars = moondream_provider.adapt_task_prompt(
+    adapted_prompt, _short_task, _original_chars, _source = moondream_provider.adapt_task_prompt(
         [{"role": "user", "content": args.prompt}],
         {"capability": args.capability, "goal": args.prompt},
     )

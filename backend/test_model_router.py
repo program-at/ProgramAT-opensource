@@ -73,21 +73,225 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
         output = "\n".join(logs.output)
         self.assertIn("base_url=https://api.moondream.ai/v1", output)
         self.assertIn("message_format=nested_image_url_url", output)
-        self.assertIn("prompt_adapter=task_short", output)
+        self.assertIn("prompt_adapter=extractive_short", output)
+        self.assertIn("prompt_source=user_goal", output)
+        self.assertIn("prompt_chars_original=35", output)
+        self.assertIn("prompt_chars_sent=", output)
         self.assertIn("response status=200", output)
         self.assertIn("latency_ms=", output)
 
     def test_prompt_adapter_normalizes_and_caps_goal(self):
         full = "```json\n# ProgramAT\n" + ("Find the nearest exit safely using visible landmarks. " * 20)
-        prompt, short_goal, original_chars = model_router.moondream_provider.adapt_task_prompt(
+        prompt, short_goal, original_chars, source = model_router.moondream_provider.adapt_task_prompt(
             [{"role": "system", "content": "Return only concise output." * 20}],
             {"capability": "navigation", "stage_goal": full},
         )
         self.assertIn("nearest exit", prompt)
         self.assertNotIn("```", prompt)
+        self.assertTrue(prompt.endswith("landmarks."))
         self.assertLessEqual(len(short_goal), 160)
         self.assertLessEqual(len(prompt), 250)
         self.assertGreater(original_chars, 100)
+        self.assertEqual(source, "stage_goal")
+
+    def test_card_goal_uses_strict_rank_suit_prompt(self):
+        prompt, short_goal, _original_chars, source = model_router.moondream_provider.adapt_task_prompt(
+            [{"role": "user", "content": "Identify the cards and their properties"}],
+            {
+                "capability": "structured_visual_understanding",
+                "stage_goal": "Identify the cards and their properties",
+            },
+        )
+
+        self.assertEqual(short_goal, "Identify the cards and their properties")
+        self.assertLessEqual(len(prompt), 250)
+        self.assertEqual(source, "stage_goal")
+        self.assertEqual(
+            prompt,
+            model_router.moondream_provider.CARD_IDENTIFICATION_PROMPT,
+        )
+        self.assertNotIn("Ace of Spades", prompt)
+        self.assertNotIn("Ace of Hearts", prompt)
+        self.assertIn("each physical card once", prompt)
+        self.assertIn("ignore upside-down lower-right corner indexes", prompt)
+        self.assertIn("rank+suit only", prompt)
+
+    def test_card_detector_matches_runtime_goal_and_avoids_false_positives(self):
+        true_cases = [
+            "Identify the cards and their properties",
+            "Card identifier",
+            "Cards visible in my hand",
+            "Tell me the suits and ranks",
+            "rank and suit",
+            "playing cards",
+            "card game",
+        ]
+        for text in true_cases:
+            with self.subTest(text=text):
+                matched, _reason = model_router.moondream_provider.card_mode_reason(text)
+                self.assertTrue(matched)
+
+        false_cases = [
+            "Read the credit card offer",
+            "Scan my ID card",
+            "Identify the business card",
+            "Read the gift card balance",
+        ]
+        for text in false_cases:
+            with self.subTest(text=text):
+                matched, _reason = model_router.moondream_provider.card_mode_reason(text)
+                self.assertFalse(matched)
+
+    def test_credit_card_goal_does_not_use_playing_card_prompt(self):
+        prompt, short_goal, _original_chars, source = model_router.moondream_provider.adapt_task_prompt(
+            [{"role": "user", "content": "Read the credit card offer in this mail"}],
+            {
+                "capability": "structured_visual_understanding",
+                "stage_goal": "Read the credit card offer in this mail",
+            },
+        )
+
+        self.assertEqual(source, "stage_goal")
+        self.assertEqual(short_goal, "Read the credit card offer in this mail")
+        self.assertNotEqual(prompt, model_router.moondream_provider.CARD_IDENTIFICATION_PROMPT)
+
+    def test_prompt_uses_first_complete_stage_goal_sentence(self):
+        prompt, short_task, _chars, source = model_router.moondream_provider.adapt_task_prompt(
+            [{"role": "user", "content": "Fallback provider prompt."}],
+            {
+                "stage_goal": "Identify every visible package. Then describe routing metadata.",
+                "goal": "Different user goal",
+                "capability": "structured_visual_understanding",
+            },
+        )
+        self.assertEqual(source, "stage_goal")
+        self.assertEqual(short_task, "Identify every visible package.")
+        self.assertEqual(
+            prompt,
+            "Answer the visual task directly and briefly: Identify every visible package.",
+        )
+
+    def test_card_response_is_normalized_to_rank_and_suit(self):
+        original = (
+            "The card is a Queen of Spades, depicted in black ink on a white background."
+        )
+        create = Mock(return_value=response(
+            original
+        ))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+             }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router._moondream_cloud_executor(
+                self.profile(), [{"role": "user", "content": "Identify the cards and their properties"}],
+                [self.image_bytes()],
+                {
+                    "capability": "structured_visual_understanding",
+                    "goal": "Identify the cards and their properties",
+                },
+            )
+
+        self.assertEqual(model_router._response_text(result.response), "Queen of spades.")
+        output = "\n".join(logs.output)
+        self.assertIn("card_mode=true", output)
+        self.assertIn("matched identify+cards", output)
+        self.assertIn(
+            'original_task_goal="Identify the cards and their properties"',
+            output,
+        )
+        self.assertIn("postprocess=card_rank_suit_only", output)
+        self.assertIn("[Moondream] final_prompt_sent=", output)
+        self.assertIn("[Moondream] raw_response=", output)
+        self.assertIn("card_prompt_variant=physical_card_once", output)
+        self.assertIn('[Moondream] extracted_cards=["Queen of spades"]', output)
+        self.assertIn('[Moondream] deduped_cards=["Queen of spades"]', output)
+        self.assertIn("mirrored_corner_filter_applied=false", output)
+        self.assertIn('[Moondream] final_card_response="Queen of spades."', output)
+
+    def test_multiple_card_response_extracts_all_rank_suit_pairs(self):
+        text = "I can see a Jack of Hearts and a King of Spades."
+        self.assertEqual(
+            model_router.moondream_provider.normalize_card_response(text),
+            "Jack of hearts, King of spades.",
+        )
+
+    def test_mirrored_corner_hallucination_prefers_first_card(self):
+        text = "The card appears to be a six of hearts and a nine of spades."
+        details = model_router.moondream_provider.card_response_details(text)
+        self.assertEqual(details["final_response"], "Six of hearts.")
+        self.assertTrue(details["mirrored_corner_filter_applied"])
+
+    def test_lower_right_wording_filters_second_card(self):
+        text = (
+            "Six of hearts; the lower-right upside-down corner looks like "
+            "nine of spades."
+        )
+        details = model_router.moondream_provider.card_response_details(text)
+        self.assertEqual(details["final_response"], "Six of hearts.")
+        self.assertTrue(details["mirrored_corner_filter_applied"])
+
+    def test_card_rank_abbreviations_and_duplicates_are_normalized(self):
+        text = "Q of spades, Queen of Spade, A of hearts, ten of clubs."
+        details = model_router.moondream_provider.card_response_details(text)
+        self.assertEqual(
+            details["final_response"],
+            "Queen of spades, Ace of hearts, Ten of clubs.",
+        )
+        self.assertEqual(len(details["extracted_cards"]), 4)
+        self.assertEqual(len(details["deduped_cards"]), 3)
+
+    def test_card_response_without_rank_suit_is_uncertain(self):
+        self.assertEqual(
+            model_router.moondream_provider.normalize_card_response(
+                "I can see decorative playing cards but cannot read them."
+            ),
+            "Uncertain.",
+        )
+
+    def test_evaluator_receives_normalized_card_response(self):
+        completion = response(
+            "The card is a Queen of Spades, depicted in black ink on a white background."
+        )
+        client = SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=Mock(return_value=completion))
+            )
+        )
+        evaluator_messages = []
+
+        def fake_executor(profile, messages, _images, _metadata):
+            if profile.name == "judge":
+                evaluator_messages.extend(messages)
+                return model_router.ImplementationResult(response("YES"))
+            return model_router.ImplementationResult(response("fallback"))
+
+        policies = {"structured_visual_understanding": {
+            "candidates": ["moondream", "fallback"], "evaluator": "judge",
+            "cascade": "test",
+        }}
+        profiles = {
+            "moondream": self.profile(),
+            "fallback": model_router.ImplementationProfile("fallback", "fake"),
+            "judge": model_router.ImplementationProfile("judge", "fake"),
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": fake_executor}), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key", "ENABLE_MOONDREAM_CLOUD": "true",
+             }):
+            result = model_router.copilot_llm_call(
+                capability="structured_visual_understanding",
+                goal="Identify the cards and their properties",
+                images=[self.image_bytes()],
+            )
+
+        self.assertEqual(result["response"], "Queen of spades.")
+        evaluator_prompt = evaluator_messages[0]["content"]
+        self.assertIn("Candidate response: Queen of spades.", evaluator_prompt)
+        self.assertNotIn("depicted in black ink", evaluator_prompt)
 
     def test_non_moondream_model_receives_original_messages(self):
         messages = [{"role": "user", "content": "Keep this complete original prompt."}]
@@ -224,6 +428,130 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
         self.assertEqual(calls, ["gemini"])
         self.assertEqual(result["response"], "Gemini recovered.")
         self.assertEqual(result["implementation"], "gemini")
+
+
+class TestStreamingLatencyControls(unittest.TestCase):
+    def test_streaming_vlm_image_is_downscaled_once(self):
+        frame = np.zeros((1200, 1800, 3), dtype=np.uint8)
+        with patch.dict(model_router.os.environ, {
+            "STREAMING_VLM_MAX_DIMENSION": "640",
+            "STREAMING_VLM_JPEG_QUALITY": "70",
+        }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            processed, elapsed_ms = model_router._preprocess_streaming_images(
+                [frame], "general_reasoning"
+            )
+
+        with Image.open(io.BytesIO(processed[0])) as image:
+            self.assertEqual(image.mode, "RGB")
+            self.assertEqual(max(image.size), 640)
+        self.assertGreaterEqual(elapsed_ms, 0)
+        output = "\n".join(logs.output)
+        self.assertIn("original_dimensions=1800x1200", output)
+        self.assertIn("max_dimension=640", output)
+
+    def test_streaming_ocr_uses_separate_resolution(self):
+        frame = np.zeros((1200, 1800, 3), dtype=np.uint8)
+        with patch.dict(model_router.os.environ, {
+            "OCR_MAX_DIMENSION": "1024", "OCR_JPEG_QUALITY": "80",
+        }):
+            processed, _elapsed_ms = model_router._preprocess_streaming_images([frame], "ocr")
+        with Image.open(io.BytesIO(processed[0])) as image:
+            self.assertEqual(max(image.size), 1024)
+
+    def test_card_answer_guard_prevents_streaming_escalation(self):
+        calls = []
+
+        def executor(profile, _messages, _images, _metadata):
+            calls.append(profile.name)
+            if profile.name == "judge":
+                return model_router.ImplementationResult(response("NO"))
+            if profile.name == "moondream":
+                return model_router.ImplementationResult(response("The visible card is the Ace of Spades."))
+            self.fail("streaming guard should avoid the next candidate")
+
+        policies = {"general_reasoning": {
+            "candidates": ["moondream", "gemini"], "evaluator": "judge", "cascade": "test",
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake")
+            for name in ("moondream", "gemini", "judge")
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router.copilot_llm_call(
+                capability="general_reasoning", goal="Identify the playing card rank and suit",
+                metadata={"streaming": True, "streaming_execution_id": 7},
+            )
+
+        self.assertEqual(calls, ["moondream", "judge"])
+        self.assertEqual(result["implementation"], "moondream")
+        output = "\n".join(logs.output)
+        self.assertIn("acceptance_guard=accepted", output)
+        self.assertIn("[Streaming Timing] execution=7", output)
+        self.assertIn("selected=moondream", output)
+
+    def test_uncertain_card_answer_is_not_guarded(self):
+        self.assertFalse(model_router._streaming_acceptance_guard(
+            "Identify the playing card", "I am not sure, but it may be the Ace of Spades."
+        ))
+
+    def test_stop_check_cancels_before_evaluator_and_next_candidate(self):
+        stopped = {"value": False}
+        calls = []
+
+        def executor(profile, _messages, _images, _metadata):
+            calls.append(profile.name)
+            stopped["value"] = True
+            return model_router.ImplementationResult(response("The Ace of Hearts."))
+
+        policies = {"general_reasoning": {
+            "candidates": ["first", "second"], "evaluator": "judge", "cascade": "test",
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake")
+            for name in ("first", "second", "judge")
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
+            with self.assertRaises(model_router.StreamingExecutionCancelled):
+                model_router.copilot_llm_call(
+                    capability="general_reasoning",
+                    metadata={"streaming": True, "_streaming_cancelled": lambda: stopped["value"]},
+                )
+        self.assertEqual(calls, ["first"])
+
+    def test_evaluator_debug_mode_parses_decision_and_logs_reason(self):
+        calls = []
+
+        def executor(profile, messages, _images, _metadata):
+            calls.append(profile.name)
+            if profile.name == "judge":
+                self.assertIn("DECISION: YES or NO", messages[0]["content"])
+                return model_router.ImplementationResult(response(
+                    "DECISION: NO\nREASON: The answer is too vague."
+                ))
+            return model_router.ImplementationResult(response(f"response from {profile.name}"))
+
+        policies = {"general_reasoning": {
+            "candidates": ["first", "second"], "evaluator": "judge", "cascade": "test",
+        }}
+        profiles = {
+            name: model_router.ImplementationProfile(name, "fake")
+            for name in ("first", "second", "judge")
+        }
+        with patch.object(model_router, "load_execution_policies", return_value=policies), \
+             patch.object(model_router, "load_implementation_profiles", return_value=profiles), \
+             patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
+             patch.dict(model_router.os.environ, {"EVALUATOR_DEBUG_REASON": "true"}), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            result = model_router.copilot_llm_call(capability="general_reasoning")
+
+        self.assertEqual(calls, ["first", "judge", "second"])
+        self.assertEqual(result["implementation"], "second")
+        self.assertIn('[Evaluator] reason="The answer is too vague."', "\n".join(logs.output))
 
 
 class TestGoogleVisionExecutor(unittest.TestCase):

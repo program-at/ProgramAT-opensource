@@ -138,6 +138,10 @@ class ExecutionPolicyError(ValueError):
     pass
 
 
+class StreamingExecutionCancelled(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class ImplementationProfile:
     name: str
@@ -461,6 +465,91 @@ def _image_bytes(image: Any) -> bytes:
     raise TypeError(f"Unsupported image type: {type(image).__name__}")
 
 
+def _preprocess_streaming_images(
+    images: Iterable[Any], capability: str, original_payload_bytes: Optional[int] = None
+) -> tuple[List[Any], float]:
+    started = time.perf_counter()
+    if capability == "ocr":
+        max_dimension = int(os.environ.get("OCR_MAX_DIMENSION", "1024"))
+        quality = int(os.environ.get("OCR_JPEG_QUALITY", "80"))
+    else:
+        max_dimension = int(os.environ.get("STREAMING_VLM_MAX_DIMENSION", "640"))
+        quality = int(os.environ.get("STREAMING_VLM_JPEG_QUALITY", "70"))
+    processed = []
+    for image_index, image in enumerate(images):
+        try:
+            original_dimensions, original_bytes = moondream_provider.image_metrics(image)
+            payload, _mime_type, dimensions = moondream_provider.prepare_rgb_jpeg(
+                image, max_dimension, quality
+            )
+        except Exception as exc:
+            logger.warning("[Streaming Image] preprocessing skipped error=%s", exc)
+            processed.append(image)
+            continue
+        logged_original_bytes = (
+            original_payload_bytes
+            if image_index == 0 and original_payload_bytes is not None
+            else original_bytes
+        )
+        logger.info(
+            "[Streaming Image] original_dimensions=%sx%s original_kb=%.1f",
+            original_dimensions[0], original_dimensions[1], logged_original_bytes / 1024,
+        )
+        logger.info(
+            "[Streaming Image] vlm_dimensions=%sx%s vlm_payload_kb=%.1f quality=%d "
+            "max_dimension=%d",
+            dimensions[0], dimensions[1], len(payload) / 1024, quality, max_dimension,
+        )
+        processed.append(payload)
+    return processed, (time.perf_counter() - started) * 1000
+
+
+def _streaming_cancelled(metadata: Mapping[str, Any]) -> bool:
+    check = metadata.get("_streaming_cancelled")
+    return bool(callable(check) and check())
+
+
+def _raise_if_streaming_cancelled(
+    metadata: Mapping[str, Any], stage: str, streaming: bool
+) -> None:
+    if streaming and _streaming_cancelled(metadata):
+        logger.info("[Streaming] cascade cancelled before=%s", stage)
+        raise StreamingExecutionCancelled(f"Streaming stopped before {stage}")
+
+
+_CARD_RANK_PATTERN = re.compile(
+    r"\b(?:ace|king|queen|jack|ten|nine|eight|seven|six|five|four|three|two|[2-9]|10)\b",
+    re.IGNORECASE,
+)
+_CARD_SUIT_PATTERN = re.compile(r"\b(?:spades?|hearts?|diamonds?|clubs?)\b", re.IGNORECASE)
+_STREAMING_UNCERTAINTY_PATTERN = re.compile(
+    r"\b(?:cannot|can't|unable|not sure|uncertain|unclear|could not|couldn't|cannot determine)\b",
+    re.IGNORECASE,
+)
+
+
+def _streaming_acceptance_guard(goal: Any, response: str) -> bool:
+    text = " ".join(str(response or "").split())
+    goal_text = " ".join(str(goal or "").split()).lower()
+    if not text or len(text) > 320 or len(text.split()) > 55:
+        return False
+    if _STREAMING_UNCERTAINTY_PATTERN.search(text):
+        return False
+    if any(term in goal_text for term in ("card", "rank", "suit", "poker")):
+        return bool(_CARD_RANK_PATTERN.search(text) and _CARD_SUIT_PATTERN.search(text))
+    stopwords = {
+        "what", "which", "where", "please", "briefly", "identify", "describe",
+        "show", "shows", "image", "visible", "using", "this", "that", "with",
+        "from", "task", "answer", "tell", "user", "current",
+    }
+    goal_terms = {
+        token for token in re.findall(r"[a-z0-9]+", goal_text)
+        if len(token) >= 4 and token not in stopwords
+    }
+    response_terms = set(re.findall(r"[a-z0-9]+", text.lower()))
+    return len(text.split()) >= 3 and bool(goal_terms & response_terms)
+
+
 MOONDREAM_BASE_URL = moondream_provider.BASE_URL
 _MOONDREAM_STATE_LOCK = threading.Lock()
 _MOONDREAM_COOLDOWN_UNTIL = 0.0
@@ -536,19 +625,31 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
     model = os.environ.get("MOONDREAM_MODEL", "").strip() or profile.model
     timeout = float(os.environ.get("MOONDREAM_TIMEOUT_SECONDS", "2.0"))
     source_type = moondream_provider.input_type(image_items[0])
-    prompt, short_goal, original_prompt_chars = moondream_provider.adapt_task_prompt(
+    prompt, short_task, original_prompt_chars, prompt_source = moondream_provider.adapt_task_prompt(
         messages, metadata
     )
+    card_mode, card_mode_reason = moondream_provider.card_mode_reason(short_task)
     payload, media_type, dimensions = _prepare_moondream_image(image_items[0])
     data_uri = f"data:{media_type};base64," + base64.b64encode(payload).decode("ascii")
     request_messages = _build_moondream_messages(
         [{"role": "user", "content": prompt}], data_uri
     )
     logger.info(
-        "[Moondream] prompt_adapter=task_short original_prompt_chars=%d "
-        "short_goal_chars=%d prompt_chars_sent=%d",
-        original_prompt_chars, len(short_goal), len(prompt),
+        "[Moondream] prompt_adapter=extractive_short prompt_source=%s "
+        "prompt_chars_original=%d prompt_chars_sent=%d",
+        prompt_source, original_prompt_chars, len(prompt),
     )
+    logger.info(
+        "[Moondream] card_mode=%s reason=%s original_task_goal=%s",
+        str(card_mode).lower(),
+        json.dumps(card_mode_reason, ensure_ascii=False),
+        json.dumps(short_task, ensure_ascii=False),
+    )
+    if card_mode:
+        logger.info(
+            "[Moondream] card_prompt_variant=%s",
+            moondream_provider.CARD_PROMPT_VARIANT,
+        )
     logger.info("[Moondream] prompt_preview=%r", prompt)
     logger.info(
         "[Moondream] request model=%s base_url=%s provider_input_type=%s "
@@ -558,15 +659,42 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
         dimensions[0], dimensions[1], len(payload) / 1024, len(prompt),
         moondream_provider.MESSAGE_FORMAT, timeout,
     )
+    logger.info("[Moondream] final_prompt_sent=%s", json.dumps(prompt, ensure_ascii=False))
     started = time.perf_counter()
     try:
         completion = _create_moondream_client(api_key, timeout).chat.completions.create(
             model=model,
             messages=request_messages,
         )
-        text = _single_line_audio_text(_moondream_response_text(completion))
+        raw_text = _moondream_response_text(completion)
+        logger.info("[Moondream] raw_response=%s", json.dumps(raw_text, ensure_ascii=False))
+        if card_mode:
+            card_details = moondream_provider.card_response_details(raw_text)
+            text = card_details["final_response"]
+            logger.info("[Moondream] extracted_cards=%s", json.dumps(
+                card_details["extracted_cards"], ensure_ascii=False
+            ))
+            logger.info("[Moondream] deduped_cards=%s", json.dumps(
+                card_details["deduped_cards"], ensure_ascii=False
+            ))
+            logger.info(
+                "[Moondream] mirrored_corner_filter_applied=%s",
+                str(card_details["mirrored_corner_filter_applied"]).lower(),
+            )
+            logger.info(
+                "[Moondream] final_card_response=%s",
+                json.dumps(text, ensure_ascii=False),
+            )
+        else:
+            text = " ".join(raw_text.split())
         if not text:
             raise RuntimeError("Moondream returned an empty or malformed response")
+        postprocess = (
+            "card_rank_suit_only"
+            if card_mode
+            else "whitespace_only" if text != raw_text.strip() else "none"
+        )
+        logger.info("[Moondream] postprocess=%s", postprocess)
         _record_moondream_success()
         logger.info(
             "[Moondream] response status=200 request_id=%s latency_ms=%.1f text_chars=%d",
@@ -993,8 +1121,35 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
         implementation,
         profile.model,
     )
-    response = call_model(profile.model, call_messages, images=images, metadata=metadata)
+    call_metadata = dict(metadata or {})
+    call_images = list(images or [])
+    total_started = time.perf_counter()
+    preprocess_ms = 0.0
+    _raise_if_streaming_cancelled(call_metadata, "single_stage", streaming)
+    if streaming and call_images:
+        call_images, preprocess_ms = _preprocess_streaming_images(
+            call_images, DEFAULT_FALLBACK_CAPABILITY,
+            call_metadata.get("streaming_original_payload_bytes"),
+        )
+    model_started = time.perf_counter()
+    response = call_model(
+        profile.model, call_messages, images=call_images, metadata=call_metadata
+    )
+    model_ms = (time.perf_counter() - model_started) * 1000
+    _raise_if_streaming_cancelled(call_metadata, "single_stage_result", streaming)
     text = _single_line_audio_text(_response_text(response))
+    if streaming:
+        normalized_model = profile.model.lower()
+        gemini_ms = model_ms if "gemini" in normalized_model else 0.0
+        gpt4o_ms = model_ms if "gpt-4o" in normalized_model or "gpt4o" in normalized_model else 0.0
+        logger.info(
+            "[Streaming Timing] execution=%s total_ms=%.1f image_preprocess_ms=%.1f "
+            "moondream_ms=0.0 evaluator1_ms=0.0 gemini_ms=%.1f evaluator2_ms=0.0 "
+            "gpt4o_ms=%.1f selected=%s",
+            call_metadata.get("streaming_execution_id", "unknown"),
+            (time.perf_counter() - total_started) * 1000,
+            preprocess_ms, gemini_ms, gpt4o_ms, implementation,
+        )
     return {
         "response": text,
         "artifact": {"text": text},
@@ -1108,12 +1263,58 @@ def copilot_llm_call(
         call_metadata["goal"] = str(goal)
         call_messages.append({"role": "user", "content": str(goal)})
     call_images = list(images or TOOL_EXECUTION_IMAGES.get() or [])
+    cascade_started = time.perf_counter()
+    timing = {
+        "image_preprocess_ms": 0.0,
+        "moondream_ms": 0.0,
+        "evaluator1_ms": 0.0,
+        "gemini_ms": 0.0,
+        "evaluator2_ms": 0.0,
+        "gpt4o_ms": 0.0,
+    }
+    if streaming_log and call_images:
+        candidate_kinds = {
+            implementations[name].kind for name in candidates if name in implementations
+        }
+        if declared == "ocr" or candidate_kinds & {"model", "moondream_cloud"}:
+            call_images, timing["image_preprocess_ms"] = _preprocess_streaming_images(
+                call_images, declared, call_metadata.get("streaming_original_payload_bytes")
+            )
+
+    execution_label = call_metadata.get("streaming_execution_id", "unknown")
+
+    def record_candidate_timing(name: str, elapsed_ms: float) -> None:
+        normalized = name.lower()
+        if "moondream" in normalized:
+            timing["moondream_ms"] += elapsed_ms
+        elif "gemini" in normalized:
+            timing["gemini_ms"] += elapsed_ms
+        elif "gpt4o" in normalized or "gpt-4o" in normalized:
+            timing["gpt4o_ms"] += elapsed_ms
+
+    def log_streaming_timing(selected_name: str) -> None:
+        if not streaming_log:
+            return
+        logger.info(
+            "[Streaming Timing] execution=%s total_ms=%.1f image_preprocess_ms=%.1f "
+            "moondream_ms=%.1f evaluator1_ms=%.1f gemini_ms=%.1f "
+            "evaluator2_ms=%.1f gpt4o_ms=%.1f selected=%s",
+            execution_label, (time.perf_counter() - cascade_started) * 1000,
+            timing["image_preprocess_ms"], timing["moondream_ms"],
+            timing["evaluator1_ms"], timing["gemini_ms"],
+            timing["evaluator2_ms"], timing["gpt4o_ms"], selected_name,
+        )
+
     output = None
     implementation = ""
     best_output = None
     best_implementation = ""
     selected = False
+    evaluator_count = 0
     for index, candidate in enumerate(candidates):
+        if streaming_log and _streaming_cancelled(call_metadata):
+            log_streaming_timing("cancelled")
+        _raise_if_streaming_cancelled(call_metadata, f"candidate:{candidate}", streaming_log)
         if streaming_log:
             logger.info(
                 "[Streaming] implementation candidate=%s capability=%s",
@@ -1134,6 +1335,10 @@ def copilot_llm_call(
                 )
             candidate_output = executor(profile, call_messages, call_images, call_metadata)
         except Exception as exc:
+            record_candidate_timing(candidate, (time.perf_counter() - started_at) * 1000)
+            if isinstance(exc, StreamingExecutionCancelled):
+                log_streaming_timing("cancelled")
+                raise
             if declared == "ocr":
                 logger.info(
                     "[OCR] implementation=%s latency_ms=%.1f",
@@ -1147,6 +1352,12 @@ def copilot_llm_call(
                 exc,
             )
             continue
+        record_candidate_timing(candidate, (time.perf_counter() - started_at) * 1000)
+        if streaming_log and _streaming_cancelled(call_metadata):
+            log_streaming_timing("cancelled")
+        _raise_if_streaming_cancelled(
+            call_metadata, f"evaluator_after:{candidate}", streaming_log
+        )
         response_text = _single_line_audio_text(_response_text(candidate_output.response))
         if declared == "ocr":
             logger.info(
@@ -1173,6 +1384,20 @@ def copilot_llm_call(
         )
 
         if evaluator_name and len(candidates) > 1 and index < len(candidates) - 1:
+            evaluator_count += 1
+            evaluator_started = time.perf_counter()
+            task_goal = goal or call_metadata.get("goal") or call_metadata.get("task_text") or ""
+            debug_reason = os.environ.get("EVALUATOR_DEBUG_REASON", "false").lower() in {
+                "1", "true", "yes", "on",
+            }
+            logger.info("[Evaluator] task_goal=%s", json.dumps(str(task_goal), ensure_ascii=False))
+            logger.info(
+                "[Evaluator] candidate_response=%s",
+                json.dumps(response_text, ensure_ascii=False),
+            )
+            _raise_if_streaming_cancelled(
+                call_metadata, f"evaluator:{evaluator_name}", streaming_log
+            )
             try:
                 evaluator_profile = implementations[evaluator_name]
                 evaluator = IMPLEMENTATION_EXECUTORS.get(evaluator_profile.kind)
@@ -1183,30 +1408,55 @@ def copilot_llm_call(
                 previous_text = _previous_stage_text(call_metadata, previous_artifact)
                 evaluator_metadata = {
                     "temperature": 0,
-                    "max_tokens": 3,
+                    "max_tokens": 80 if debug_reason else 3,
                     "capability": declared,
                     "evaluator": True,
                 }
                 logger.info("[Evaluator] image_included=false")
+                evaluation_prompt = EVALUATION_PROMPT.format(
+                    capability=declared,
+                    goal=task_goal,
+                    previous_text=previous_text,
+                    response=response_text,
+                )
+                if debug_reason:
+                    evaluation_prompt += (
+                        "\nDebug output format:\nDECISION: YES or NO\n"
+                        "REASON: one short sentence"
+                    )
                 evaluation = evaluator(
                     evaluator_profile,
                     [{
                         "role": "user",
-                        "content": EVALUATION_PROMPT.format(
-                            capability=declared,
-                            goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
-                            previous_text=previous_text,
-                            response=response_text,
-                        ),
+                        "content": evaluation_prompt,
                     }],
                     [],
                     evaluator_metadata,
                 )
-                raw_decision = _response_text(evaluation.response).strip().upper()
+                raw_evaluation = _response_text(evaluation.response).strip()
+                if debug_reason:
+                    decision_match = re.search(
+                        r"DECISION:\s*(YES|NO)\b", raw_evaluation, re.IGNORECASE
+                    )
+                    reason_match = re.search(
+                        r"REASON:\s*(.+)", raw_evaluation, re.IGNORECASE | re.DOTALL
+                    )
+                    raw_decision = decision_match.group(1).upper() if decision_match else ""
+                    debug_reason_text = reason_match.group(1).strip() if reason_match else "unavailable"
+                else:
+                    raw_decision = raw_evaluation.upper()
+                    debug_reason_text = ""
                 if raw_decision not in {"YES", "NO"}:
                     raise ValueError("evaluator did not return YES or NO")
                 decision = raw_decision
             except Exception as exc:
+                if evaluator_count <= 2:
+                    timing[f"evaluator{evaluator_count}_ms"] += (
+                        time.perf_counter() - evaluator_started
+                    ) * 1000
+                if isinstance(exc, StreamingExecutionCancelled):
+                    log_streaming_timing("cancelled")
+                    raise
                 logger.warning(
                     "[Execution Policy] capability=%s evaluator=%s decision=FAILED error=%s",
                     declared,
@@ -1215,6 +1465,16 @@ def copilot_llm_call(
                 )
                 continue
 
+            if evaluator_count <= 2:
+                timing[f"evaluator{evaluator_count}_ms"] += (
+                    time.perf_counter() - evaluator_started
+                ) * 1000
+            if streaming_log and _streaming_cancelled(call_metadata):
+                log_streaming_timing("cancelled")
+            _raise_if_streaming_cancelled(
+                call_metadata, f"evaluator_result:{evaluator_name}", streaming_log
+            )
+
             logger.info(
                 "[Execution Policy] capability=%s evaluator=%s decision=%s",
                 declared,
@@ -1222,15 +1482,24 @@ def copilot_llm_call(
                 decision,
             )
             logger.info("[Evaluator] decision=%s", decision)
-            if logger.isEnabledFor(logging.DEBUG):
+            if debug_reason:
+                logger.info(
+                    "[Evaluator] reason=%s",
+                    json.dumps(debug_reason_text, ensure_ascii=False),
+                )
+            elif logger.isEnabledFor(logging.DEBUG):
+                reason_started = time.perf_counter()
                 try:
+                    _raise_if_streaming_cancelled(
+                        call_metadata, f"evaluator_reason:{evaluator_name}", streaming_log
+                    )
                     reason_output = evaluator(
                         evaluator_profile,
                         [{
                             "role": "user",
                             "content": EVALUATION_REASON_PROMPT.format(
                                 capability=declared,
-                                goal=goal or call_metadata.get("goal") or call_metadata.get("task_text") or "",
+                                goal=task_goal,
                                 previous_text=previous_text,
                                 response=response_text,
                                 decision=decision,
@@ -1245,17 +1514,24 @@ def copilot_llm_call(
                         },
                     )
                     reason = " ".join(_response_text(reason_output.response).split())
+                    logger.debug("[Evaluator] reason=%s", json.dumps(reason, ensure_ascii=False))
                     logger.debug(
                         "[Evaluator] decision=%s reason=%s",
-                        decision,
-                        json.dumps(reason, ensure_ascii=False),
+                        decision, json.dumps(reason, ensure_ascii=False),
                     )
                 except Exception as exc:
+                    if isinstance(exc, StreamingExecutionCancelled):
+                        log_streaming_timing("cancelled")
+                        raise
                     logger.debug(
-                        "[Evaluator] decision=%s reason=%s",
-                        decision,
+                        "[Evaluator] reason=%s",
                         json.dumps(f"reason unavailable: {exc}"),
                     )
+                finally:
+                    if evaluator_count <= 2:
+                        timing[f"evaluator{evaluator_count}_ms"] += (
+                            time.perf_counter() - reason_started
+                        ) * 1000
             if streaming_log:
                 logger.info(
                     "[Streaming] evaluator=%s capability=%s decision=%s",
@@ -1263,6 +1539,15 @@ def copilot_llm_call(
                     declared,
                     decision,
                 )
+            if decision == "NO" and streaming_log and _streaming_acceptance_guard(
+                task_goal, response_text
+            ):
+                decision = "YES"
+                logger.info(
+                    "[Streaming] acceptance_guard=accepted capability=%s candidate=%s",
+                    declared, candidate,
+                )
+                logger.info("[Evaluator] decision=YES source=streaming_acceptance_guard")
             if decision == "NO":
                 continue
 
@@ -1297,6 +1582,7 @@ def copilot_llm_call(
     artifact = output.artifact
     if artifact is None:
         artifact = {"text": final_text}
+    log_streaming_timing(implementation)
     return {
         "response": final_text,
         "artifact": artifact,
@@ -1309,7 +1595,7 @@ __all__ = [
     "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
     "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "AUDIO_RESPONSE_PROMPT", "TOOL_EXECUTION_IMAGES",
     "EVALUATION_PROMPT", "EVALUATION_REASON_PROMPT", "STREAMING_RESPONSE_PROMPT",
-    "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError",
+    "ImplementationProfile", "ImplementationResult", "ExecutionPolicyError", "StreamingExecutionCancelled",
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
     "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",

@@ -150,6 +150,22 @@ class TestParserStageIssueIntegration(unittest.TestCase):
             [{"goal": "Locate the exit", "capability": "object_detection_localization"}],
         )
 
+    def test_normalizes_playing_card_stage_goal(self):
+        result = self.normalize({
+            "stages": [{
+                "goal": "Identify the cards and their properties",
+                "capability": "structured_visual_understanding",
+            }],
+        })
+
+        self.assertEqual(
+            result["stages"],
+            [{
+                "goal": "Identify only the playing cards by rank and suit.",
+                "capability": "structured_visual_understanding",
+            }],
+        )
+
     def test_parses_fenced_json_with_trailing_text(self):
         result = self.parse_json(
             '```json\n{"stages":[{"goal":"Guide the user","capability":"navigation"}]}\n```\nDone.'

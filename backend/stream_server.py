@@ -41,9 +41,16 @@ os.environ.setdefault('TRANSFORMERS_NO_ADVISORY_WARNINGS', '1')
 MIN_STREAMING_EXECUTION_INTERVAL = float(
     os.getenv('MIN_STREAMING_EXECUTION_INTERVAL', '2.0')
 )
+STREAMING_STABILITY_DEBOUNCE_SECONDS = float(
+    os.getenv('STREAMING_STABILITY_DEBOUNCE_SECONDS', '0.75')
+)
+STREAMING_CANDIDATE_MAX_AGE_SECONDS = float(
+    os.getenv('STREAMING_CANDIDATE_MAX_AGE_SECONDS', '1')
+)
 
 from model_router import (
     STREAMING_EXECUTION_CONTEXT,
+    StreamingExecutionCancelled,
     TOOL_EXECUTION_IMAGES,
     load_capability_profiles,
     load_global_execution_config,
@@ -817,114 +824,207 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
     logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
-def _single_stage_tool_result(tool_name: str, task: str, image, streaming: bool = False):
+def _single_stage_tool_result(
+    tool_name: str, task: str, image, streaming: bool = False,
+    metadata: Optional[Dict[str, Any]] = None,
+):
     """Return a direct default-model result when planning is disabled."""
     config = load_global_execution_config()
     if config['planner_enabled']:
         return None
     request_text = str(task or '').strip() or str(tool_name).replace('_', ' ')
     logger.info("[Execution Policy] planner disabled -> single-stage execution")
+    call_metadata = dict(metadata or {})
+    call_metadata.update({'streaming': streaming, 'tool_name': tool_name})
     return single_stage_llm_call(
         task=request_text,
         images=[image],
-        metadata={'streaming': streaming, 'tool_name': tool_name},
+        metadata=call_metadata,
     )
 
 
-async def _run_streaming_cascade_worker(
-    websocket, client_id: str, tool_config: Dict[str, Any], frame
+def _streaming_embedding_similarity(
+    first: Optional[np.ndarray], second: Optional[np.ndarray]
+) -> Optional[float]:
+    if first is None or second is None:
+        return None
+    return float(np.dot(
+        _normalize_streaming_embedding(first),
+        _normalize_streaming_embedding(second),
+    ))
+
+
+def _streaming_embeddings_are_similar(
+    tool_config: Dict[str, Any],
+    first: Optional[np.ndarray],
+    second: Optional[np.ndarray],
+) -> bool:
+    similarity = _streaming_embedding_similarity(first, second)
+    if similarity is None:
+        return False
+    return similarity >= tool_config['frame_selector_config']['similarity_threshold']
+
+
+def _cancel_streaming_debounce(tool_config: Dict[str, Any]) -> None:
+    debounce_task = tool_config.get('debounce_task')
+    if debounce_task is not None and not debounce_task.done():
+        debounce_task.cancel()
+
+
+def _start_streaming_debounce(
+    websocket,
+    client_id: str,
+    tool_config: Dict[str, Any],
+    stability_id: int,
+    delay_seconds: Optional[float] = None,
 ) -> None:
-    """Run one cascade at a time while retaining only the newest changed frame."""
-    current = frame
+    _cancel_streaming_debounce(tool_config)
+    if delay_seconds is None:
+        delay_seconds = float(tool_config.get(
+            'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
+        ))
+    tool_config['debounce_task'] = asyncio.create_task(
+        _streaming_debounce_worker(
+            websocket, client_id, tool_config, stability_id, delay_seconds
+        )
+    )
+
+
+async def _streaming_debounce_worker(
+    websocket,
+    client_id: str,
+    tool_config: Dict[str, Any],
+    stability_id: int,
+    delay_seconds: float,
+) -> None:
     try:
-        predecessor = tool_config.pop('predecessor_cascade_task', None)
-        if predecessor is not None and not predecessor.done():
-            try:
-                await asyncio.shield(predecessor)
-            except Exception as exc:
-                logger.warning("Previous streaming cascade ended with an error: %s", exc)
-        while current is not None:
-            if active_streaming_tools.get(client_id) is not tool_config:
-                return
-
-            completed_at = tool_config.get('last_execution_completed_at')
-            if completed_at is not None:
-                interval = float(tool_config.get(
-                    'min_execution_interval', MIN_STREAMING_EXECUTION_INTERVAL
-                ))
-                remaining = interval - (asyncio.get_running_loop().time() - completed_at)
-                if remaining > 0:
-                    logger.info(
-                        "[Streaming] minimum interval active (%.1f s remaining)",
-                        remaining,
-                    )
-                    await asyncio.sleep(remaining)
-                    if active_streaming_tools.get(client_id) is not tool_config:
-                        return
-                    newest = tool_config.pop('pending_key_frame', None)
-                    if newest is not None and newest[0] > current[0]:
-                        current = newest
-
-            # A pending frame may have been compared before the running frame
-            # completed. Recheck it against the newly processed reference.
-            if current[4] != tool_config.get('last_processed_sequence'):
-                if not _streaming_embedding_is_changed(tool_config, current[3]):
-                    current = tool_config.pop('pending_key_frame', None)
-                    continue
-
-            _, image, image_base64, embedding, _ = current
-            logger.info("[Streaming] starting cascade")
-            processed = await run_streaming_tools(
-                websocket, client_id, image, image_base64
-            )
-            if active_streaming_tools.get(client_id) is not tool_config:
-                return
-            if processed and embedding is not None:
-                tool_config['last_processed_embedding'] = embedding
-                tool_config['last_processed_sequence'] = current[0]
-                tool_config['consecutive_skipped_frames'] = 0
-            elif not processed:
-                logger.warning(
-                    "[Streaming] cascade produced no response; similarity reference unchanged"
-                )
-
-            current = tool_config.pop('pending_key_frame', None)
+        await asyncio.sleep(delay_seconds)
+        candidate = tool_config.get('latest_candidate_frame')
+        if candidate is None or candidate['stability_id'] != stability_id:
+            return
+        logger.info(
+            "[Streaming] candidate frame stable sequence=%s stable_ms=%.1f",
+            candidate['sequence'],
+            (asyncio.get_running_loop().time() - candidate['stable_since']) * 1000,
+        )
+        await _try_send_streaming_candidate(websocket, client_id, tool_config)
+    except asyncio.CancelledError:
+        raise
     finally:
         if active_streaming_tools.get(client_id) is tool_config:
-            tool_config['cascade_task'] = None
+            if tool_config.get('debounce_task') is asyncio.current_task():
+                tool_config['debounce_task'] = None
 
 
-def _streaming_embedding_is_changed(
-    tool_config: Dict[str, Any], embedding: Optional[np.ndarray]
-) -> bool:
-    """Compare a frame only with the last successfully processed frame."""
-    last_embedding = tool_config.get('last_processed_embedding')
-    if embedding is None or last_embedding is None:
-        logger.info("[Streaming] similarity(last_processed)=n/a -> changed")
-        return True
+async def _send_streaming_candidate(
+    websocket,
+    client_id: str,
+    tool_config: Dict[str, Any],
+    candidate: Dict[str, Any],
+) -> None:
+    try:
+        logger.info(
+            "[Streaming] sending frame to backend sequence=%s age_ms=%.1f",
+            candidate['sequence'],
+            (asyncio.get_running_loop().time() - candidate['received_at']) * 1000,
+        )
+        processed = await run_streaming_tools(
+            websocket, client_id, candidate['image'], candidate['image_base64']
+        )
+        if active_streaming_tools.get(client_id) is not tool_config:
+            return
+        if processed and candidate.get('embedding') is not None:
+            tool_config['last_processed_embedding'] = candidate['embedding']
+            tool_config['last_processed_sequence'] = candidate['sequence']
+            tool_config['last_sent_embedding'] = candidate['embedding']
+            tool_config['last_sent_sequence'] = candidate['sequence']
+            tool_config['consecutive_skipped_frames'] = 0
+        elif not processed:
+            logger.warning(
+                "[Streaming] cascade produced no response; similarity reference unchanged"
+            )
+    finally:
+        if active_streaming_tools.get(client_id) is tool_config:
+            if tool_config.get('cascade_task') is asyncio.current_task():
+                tool_config['cascade_task'] = None
+            await _try_send_streaming_candidate(websocket, client_id, tool_config)
 
-    similarity = float(np.dot(
-        _normalize_streaming_embedding(embedding),
-        _normalize_streaming_embedding(last_embedding),
+
+async def _try_send_streaming_candidate(
+    websocket, client_id: str, tool_config: Dict[str, Any]
+) -> None:
+    if active_streaming_tools.get(client_id) is not tool_config:
+        return
+    candidate = tool_config.get('latest_candidate_frame')
+    if candidate is None:
+        return
+
+    now = asyncio.get_running_loop().time()
+    max_age_seconds = float(tool_config.get(
+        'candidate_max_age_seconds', STREAMING_CANDIDATE_MAX_AGE_SECONDS
     ))
-    threshold = tool_config['frame_selector_config']['similarity_threshold']
-    if similarity >= threshold:
-        tool_config['consecutive_skipped_frames'] = (
-            tool_config.get('consecutive_skipped_frames', 0) + 1
+    age = now - candidate['received_at']
+    if age > max_age_seconds:
+        logger.info(
+            "[Streaming] dropped stale candidate sequence=%s age_ms=%.1f max_age_ms=%.1f",
+            candidate['sequence'],
+            age * 1000,
+            max_age_seconds * 1000,
+        )
+        if tool_config.get('latest_candidate_frame') is candidate:
+            tool_config['latest_candidate_frame'] = None
+        return
+
+    stable_for = now - candidate['stable_since']
+    debounce_seconds = float(tool_config.get(
+        'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
+    ))
+    if stable_for < debounce_seconds:
+        debounce_task = tool_config.get('debounce_task')
+        if debounce_task is None or debounce_task.done():
+            _start_streaming_debounce(
+                websocket,
+                client_id,
+                tool_config,
+                candidate['stability_id'],
+                debounce_seconds - stable_for,
+            )
+        return
+
+    execution_lock = tool_config.setdefault('execution_lock', asyncio.Lock())
+    cascade_task = tool_config.get('cascade_task')
+    if execution_lock.locked() or (cascade_task is not None and not cascade_task.done()):
+        logger.info(
+            "[Streaming] skipped frame because model is busy sequence=%s",
+            candidate['sequence'],
+        )
+        return
+
+    if _streaming_embeddings_are_similar(
+        tool_config, candidate.get('embedding'), tool_config.get('last_sent_embedding')
+    ):
+        similarity = _streaming_embedding_similarity(
+            candidate.get('embedding'), tool_config.get('last_sent_embedding')
         )
         logger.info(
-            "[Streaming] similarity(last_processed)=%.3f -> skip", similarity
+            "[Streaming] skipped frame too similar to last sent sequence=%s similarity=%.3f",
+            candidate['sequence'],
+            similarity,
         )
-        return False
+        if tool_config.get('latest_candidate_frame') is candidate:
+            tool_config['latest_candidate_frame'] = None
+        return
 
-    logger.info(
-        "[Streaming] similarity(last_processed)=%.3f -> changed", similarity
+    if tool_config.get('latest_candidate_frame') is candidate:
+        tool_config['latest_candidate_frame'] = None
+    task = asyncio.create_task(
+        _send_streaming_candidate(websocket, client_id, tool_config, candidate)
     )
-    return True
+    tool_config['cascade_task'] = task
 
 
 async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
-    """Compute CLIP immediately and return a changed-frame candidate."""
+    """Compute CLIP immediately and return a latest-frame candidate."""
     sequence, image, image_base64 = frame
     selector_config = tool_config.get('frame_selector_config')
     if selector_config is None:
@@ -942,23 +1042,17 @@ async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
     if sequence <= tool_config.get('latest_selector_sequence', 0):
         return None
     tool_config['latest_selector_sequence'] = sequence
-    if not _streaming_embedding_is_changed(tool_config, embedding):
-        pending = tool_config.get('pending_key_frame')
-        if pending is not None and pending[0] < sequence:
-            tool_config.pop('pending_key_frame', None)
-            logger.info("[Streaming] pending frame cleared by newer similar frame")
-        return None
-    return (
-        sequence,
-        image,
-        image_base64,
-        embedding,
-        tool_config.get('last_processed_sequence'),
-    )
+    return {
+        'sequence': sequence,
+        'image': image,
+        'image_base64': image_base64,
+        'embedding': embedding,
+        'received_at': asyncio.get_running_loop().time(),
+    }
 
 
 async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
-    """Run CLIP immediately, then rate-limit only expensive cascade execution."""
+    """Keep only the latest visually stable frame candidate."""
     tool_config = active_streaming_tools.get(client_id)
     if not tool_config or tool_config.get('gemini_live'):
         return
@@ -971,18 +1065,58 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
     if active_streaming_tools.get(client_id) is not tool_config or frame is None:
         return
 
-    cascade_task = tool_config.get('cascade_task')
-    if cascade_task is not None and not cascade_task.done():
-        pending = tool_config.get('pending_key_frame')
-        if pending is None or sequence > pending[0]:
-            tool_config['pending_key_frame'] = frame
-            logger.info("[Streaming] pending frame updated")
+    now = asyncio.get_running_loop().time()
+    current = tool_config.get('latest_candidate_frame')
+    if current is None:
+        stability_id = tool_config.get('candidate_stability_id', 0) + 1
+        tool_config['candidate_stability_id'] = stability_id
+        frame['stable_since'] = now
+        frame['stability_id'] = stability_id
+        tool_config['latest_candidate_frame'] = frame
+        logger.info("[Streaming] candidate frame created sequence=%s", sequence)
+        _start_streaming_debounce(websocket, client_id, tool_config, stability_id)
         return
 
-    task = asyncio.create_task(
-        _run_streaming_cascade_worker(websocket, client_id, tool_config, frame)
+    similarity = _streaming_embedding_similarity(
+        frame.get('embedding'), current.get('embedding')
     )
-    tool_config['cascade_task'] = task
+    if similarity is None:
+        visually_similar = False
+    else:
+        threshold = tool_config['frame_selector_config']['similarity_threshold']
+        visually_similar = similarity >= threshold
+
+    if visually_similar:
+        frame['stable_since'] = current['stable_since']
+        frame['stability_id'] = current['stability_id']
+        tool_config['latest_candidate_frame'] = frame
+        logger.info(
+            "[Streaming] candidate frame stable sequence=%s similarity=%.3f",
+            sequence,
+            similarity,
+        )
+        await _try_send_streaming_candidate(websocket, client_id, tool_config)
+        return
+
+    stability_id = tool_config.get('candidate_stability_id', 0) + 1
+    tool_config['candidate_stability_id'] = stability_id
+    frame['stable_since'] = now
+    frame['stability_id'] = stability_id
+    tool_config['latest_candidate_frame'] = frame
+    logger.info(
+        "[Streaming] candidate frame overwritten old_sequence=%s new_sequence=%s similarity=%s",
+        current['sequence'],
+        sequence,
+        "n/a" if similarity is None else f"{similarity:.3f}",
+    )
+    logger.info(
+        "[Streaming] debounce timer reset sequence=%s debounce_ms=%.1f",
+        sequence,
+        float(tool_config.get(
+            'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
+        )) * 1000,
+    )
+    _start_streaming_debounce(websocket, client_id, tool_config, stability_id)
 
 
 async def run_streaming_tools(websocket, client_id: str, image, image_base64: str):
@@ -1096,9 +1230,20 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
     exec_env = tool_config['exec_env']
     parsed_input = exec_env['parsed_input']  # Make it available as local variable
 
+    def streaming_cancelled() -> bool:
+        current = active_streaming_tools.get(client_id)
+        return current is not tool_config or current.get('generation', 0) != dispatched_generation
+
+    encoded_payload = (image_base64 or '').split(',', 1)[-1]
+    encoded_length = len(encoded_payload)
+    original_payload_bytes = max(0, (encoded_length * 3) // 4 - encoded_payload.count('='))
+
     def streaming_copilot_llm_call(*args, **kwargs):
         metadata = dict(kwargs.get('metadata') or {})
         metadata['streaming'] = True
+        metadata['streaming_execution_id'] = tool_config.get('current_execution_id')
+        metadata['streaming_original_payload_bytes'] = original_payload_bytes
+        metadata['_streaming_cancelled'] = streaming_cancelled
         kwargs['metadata'] = metadata
         if not kwargs.get('images'):
             kwargs['images'] = [image]
@@ -1106,14 +1251,26 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
 
     exec_env['exec_globals_base']['copilot_llm_call'] = streaming_copilot_llm_call
 
-    single_stage_result = await asyncio.to_thread(
-        _single_stage_tool_result,
-        tool_name,
-        tool.get('task', ''),
-        image,
-        True,
-    )
+    try:
+        single_stage_result = await asyncio.to_thread(
+            _single_stage_tool_result,
+            tool_name,
+            tool.get('task', ''),
+            image,
+            True,
+            {
+                'streaming_execution_id': tool_config.get('current_execution_id'),
+                'streaming_original_payload_bytes': original_payload_bytes,
+                '_streaming_cancelled': streaming_cancelled,
+            },
+        )
+    except StreamingExecutionCancelled:
+        logger.info("[Streaming] single-stage execution cancelled client=%s", client_id)
+        return False
     if single_stage_result is not None:
+        if streaming_cancelled():
+            logger.info("[Streaming] result discarded after stop client=%s", client_id)
+            return False
         response_data = _build_mobile_tool_response(
             'tool_stream_result', tool_name, single_stage_result, now
         )
@@ -1329,6 +1486,9 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             response_data = _build_mobile_tool_response(
                 'tool_stream_result', tool_name, result, now, printed_output
             )
+            if streaming_cancelled():
+                logger.info("[Streaming] result discarded after stop client=%s", client_id)
+                return False
             execution_id = tool_config.get('current_execution_id')
             response_data['execution_id'] = execution_id
             _log_final_tool_response(tool_name, response_data)
@@ -1347,6 +1507,11 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             )
             return True
             
+        except StreamingExecutionCancelled:
+            if image_context_token is not None:
+                TOOL_EXECUTION_IMAGES.reset(image_context_token)
+            logger.info("[Streaming] cascade execution cancelled client=%s", client_id)
+            return False
         except Exception as e:
             if image_context_token is not None:
                 TOOL_EXECUTION_IMAGES.reset(image_context_token)
@@ -5315,6 +5480,11 @@ async def handle_client(websocket):
                     
                     previous_config = active_streaming_tools.get(client_id)
                     previous_task = previous_config.get('cascade_task') if previous_config else None
+                    if previous_task is not None and not previous_task.done():
+                        previous_task.cancel()
+                    previous_debounce = previous_config.get('debounce_task') if previous_config else None
+                    if previous_debounce is not None and not previous_debounce.done():
+                        previous_debounce.cancel()
                     active_streaming_tools[client_id] = {
                         'tool': {
                             'name': tool_name,
@@ -5326,11 +5496,18 @@ async def handle_client(websocket):
                         },
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
-                        'predecessor_cascade_task': previous_task,
                         'frame_selector_config': load_streaming_frame_selector_config(),
-                        'min_execution_interval': MIN_STREAMING_EXECUTION_INTERVAL,
+                        'stability_debounce_seconds': STREAMING_STABILITY_DEBOUNCE_SECONDS,
+                        'candidate_max_age_seconds': STREAMING_CANDIDATE_MAX_AGE_SECONDS,
                         'execution_lock': asyncio.Lock(),
                     }
+                    logger.info(
+                        "[Streaming] scheduler configured client=%s debounce_ms=%.1f "
+                        "candidate_max_age_ms=%.1f latest_frame_only=true",
+                        client_id,
+                        active_streaming_tools[client_id]['stability_debounce_seconds'] * 1000,
+                        active_streaming_tools[client_id]['candidate_max_age_seconds'] * 1000,
+                    )
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
                     if custom_gpt and gpt_query and gemini_live_manager:
@@ -5428,7 +5605,14 @@ async def handle_client(websocket):
                         if not old_task.done():
                             old_task.cancel()
                     if client_id in active_streaming_tools:
-                        tool_name = active_streaming_tools[client_id]['tool']['name']
+                        stopping_config = active_streaming_tools[client_id]
+                        tool_name = stopping_config['tool']['name']
+                        cascade_task = stopping_config.get('cascade_task')
+                        if cascade_task is not None and not cascade_task.done():
+                            cascade_task.cancel()
+                        debounce_task = stopping_config.get('debounce_task')
+                        if debounce_task is not None and not debounce_task.done():
+                            debounce_task.cancel()
                         # Clean up Gemini Live session if active
                         if active_streaming_tools[client_id].get('gemini_live') and gemini_live_manager:
                             await gemini_live_manager.stop_session(client_id)
@@ -5911,15 +6095,11 @@ async def handle_client(websocket):
                     # Run active streaming tools asynchronously
                     if last_frame['image'] is not None and client_id in active_streaming_tools:
                         logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
-                        # Only run if no task is already in flight for this client
-                        # (prevents piling up concurrent runs per frame)
-                        existing = active_streaming_tasks.get(client_id)
-                        if existing is None or existing.done():
-                            task = asyncio.create_task(schedule_streaming_frame(
+                        task = asyncio.create_task(schedule_streaming_frame(
                             websocket, client_id, last_frame['image'], last_frame['base64']
                         ))
-                            active_streaming_tasks[client_id] = task
-                            task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if not t.cancelled() and t.exception() else None)
+                        active_streaming_tasks[client_id] = task
+                        task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if not t.cancelled() and t.exception() else None)
                     elif last_frame['image'] is None:
                         logger.debug(f"No image available for {client_id}")
                     elif client_id not in active_streaming_tools:

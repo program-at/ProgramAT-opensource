@@ -93,6 +93,11 @@ Execution modes are distinct:
 - `MOONDREAM_JPEG_QUALITY`: Moondream-only RGB JPEG quality (`75` by default).
 - `MOONDREAM_FAILURE_THRESHOLD`: Consecutive non-500 failures before cooldown (`3` by default).
 - `MOONDREAM_FAILURE_COOLDOWN_SECONDS`: Cooldown after a provider 500 or repeated failures (`60` by default).
+- `STREAMING_VLM_MAX_DIMENSION`: Maximum dimension for streaming VLM images (`640` by default).
+- `STREAMING_VLM_JPEG_QUALITY`: JPEG quality for streaming VLM images (`70` by default).
+- `OCR_MAX_DIMENSION`: Maximum dimension for streaming OCR images (`1024` by default).
+- `OCR_JPEG_QUALITY`: JPEG quality for streaming OCR images (`80` by default).
+- `EVALUATOR_DEBUG_REASON`: Make a second text-only evaluator call and log its reason (`false` by default).
 - `MIN_STREAMING_EXECUTION_INTERVAL`: Minimum seconds between the completion of one streaming execution and the start of the next (default: `2.0`). Frames received while waiting replace the pending frame, so the newest scene is analyzed when the interval expires.
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8081`)

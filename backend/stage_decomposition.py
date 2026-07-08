@@ -5,6 +5,10 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, Optional
 
 from model_router import load_capability_profiles, normalize_capability_name
+from moondream_provider import is_card_identification_task
+
+
+PLAYING_CARD_STAGE_GOAL = "Identify only the playing cards by rank and suit."
 
 
 def _format_capability_profiles(profiles: Dict[str, Dict[str, Any]]) -> str:
@@ -57,6 +61,8 @@ Rules:
 - Each stage must contain exactly two fields: goal and capability.
 - Do not return any fields other than stages, goal, and capability.
 - The execution policy—not this planner—owns implementation details.
+- For playing-card identification tasks, use this exact stage goal:
+  "{PLAYING_CARD_STAGE_GOAL}"
 
 Capability definitions:
 {capability_profiles_text}
@@ -91,6 +97,8 @@ def normalize_stage_plan(
             raise ValueError("Each planner stage must provide a non-empty goal")
         if capability not in supported:
             raise ValueError(f"Planner returned unknown capability: {capability}")
+        if is_card_identification_task(goal):
+            goal = PLAYING_CARD_STAGE_GOAL
         stages.append({"goal": goal, "capability": capability})
     return {"stages": stages}
 
