@@ -182,7 +182,7 @@ export default function TextInputComponent({
 
       if (result.status === 'brainstorm_choice') {
         // Server asking user to choose: keep brainstorming or start building
-        TextToSpeechService.speak('You can keep brainstorming or start building. Say keep brainstorming or start building.');
+        TextToSpeechService.speak('Thanks for that context! You can keep brainstorming or start building by selecting one of the buttons below.');
         setBrainstormChoice({
           token: result.token,
           brainstormHistory: result.brainstorm_history || [],
