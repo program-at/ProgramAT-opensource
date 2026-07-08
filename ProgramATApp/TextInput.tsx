@@ -639,7 +639,7 @@ export default function TextInputComponent({
                 <TouchableOpacity
                   style={[styles.brainstormButton, { backgroundColor: theme.primary }]}
                   onPress={handleKeepBrainstorming}
-                  disabled={isSending || !inputText.trim()}
+                  disabled={isSending}
                   accessible={true}
                   accessibilityLabel="Keep brainstorming"
                   accessibilityHint="Continue asking more questions about your tool design"
@@ -654,7 +654,7 @@ export default function TextInputComponent({
                 <TouchableOpacity
                   style={[styles.brainstormButton, { backgroundColor: theme.success }]}
                   onPress={handleStartBuilding}
-                  disabled={isSending || !inputText.trim()}
+                  disabled={isSending}
                   accessible={true}
                   accessibilityLabel="Start building"
                   accessibilityHint="Create the tool with all the brainstorming information"
