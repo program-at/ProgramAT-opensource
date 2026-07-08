@@ -344,10 +344,15 @@ export default function TextInputComponent({
     setError('');
 
     try {
+      // Get the last answer from brainstorm history to include in the request
+      const lastAnswer = brainstormChoice.brainstormHistory.length > 0 
+        ? brainstormChoice.brainstormHistory[brainstormChoice.brainstormHistory.length - 1].answer
+        : 'Ready to build';
+
       const formData = new FormData();
       formData.append('metadata', JSON.stringify({
-        text: inputText.trim(),
-        ideation_answer: inputText.trim(),
+        text: lastAnswer,  // Send last answer as text (non-empty required by backend)
+        ideation_answer: lastAnswer,
         token: brainstormChoice.token,
         choice: 'start_building',
       }));

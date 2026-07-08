@@ -4777,7 +4777,9 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
 
     if not text or not text.strip():
-        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+        # Allow empty text if user is starting to build (already answered and stored)
+        if choice != 'start_building':
+            return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
 
     # --- Shape B: ideation answer received — store in brainstorm history and offer choice ---
     if token and ideation_answer:
