@@ -60,6 +60,10 @@ export default function TextInputComponent({
   // Cleared once the user submits their answer and the issue is created.
   const [pendingIdeation, setPendingIdeation] = useState<{token: string} | null>(null);
 
+  // Brainstorm choice state: set when server returns {status:'brainstorm_choice'}
+  // Allows user to choose between "Keep Brainstorming" or "Start Building"
+  const [brainstormChoice, setBrainstormChoice] = useState<{token: string; brainstormHistory: Array<{question: string; answer: string}>} | null>(null);
+
   const isCreateMode = !selectedIssue;
 
   /** Convert the WebSocket URL to an HTTP base URL for REST endpoints. */
@@ -159,6 +163,7 @@ export default function TextInputComponent({
         setInputText('');
         setVideoUri(null);
         setPendingIdeation(null);
+        setBrainstormChoice(null);
         Keyboard.dismiss();
         return;
       }
@@ -169,6 +174,20 @@ export default function TextInputComponent({
           TextToSpeechService.speak(result.question);
         }
         setPendingIdeation({ token: result.token });
+        setBrainstormChoice(null);
+        setInputText('');
+        Keyboard.dismiss();
+        return;
+      }
+
+      if (result.status === 'brainstorm_choice') {
+        // Server asking user to choose: keep brainstorming or start building
+        TextToSpeechService.speak('Thanks for that context! You can keep brainstorming or start building by selecting one of the buttons below.');
+        setBrainstormChoice({
+          token: result.token,
+          brainstormHistory: result.brainstorm_history || [],
+        });
+        setPendingIdeation(null);
         setInputText('');
         Keyboard.dismiss();
         return;
@@ -263,6 +282,111 @@ export default function TextInputComponent({
       } else {
         setError('Could not reach the server. Check your connection.');
       }
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleKeepBrainstorming = async () => {
+    if (!brainstormChoice) return;
+    
+    const baseUrl = getHttpBaseUrl();
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    try {
+      const response = await fetch(`${baseUrl}/brainstorm-next-question`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: brainstormChoice.token,
+        }),
+      });
+
+      const result = await response.json();
+      console.log('[TextInput] brainstorm-next-question response:', JSON.stringify(result));
+
+      if (result.status === 'ideation') {
+        // Got the next question — speak it and update state
+        if (result.question) {
+          TextToSpeechService.speak(result.question);
+        }
+        setPendingIdeation({ token: result.token });
+        setBrainstormChoice(null);
+        setInputText('');
+        Keyboard.dismiss();
+      } else {
+        setError(result.error || 'Failed to get next question');
+      }
+    } catch (e) {
+      console.log('[TextInput] brainstorm-next-question threw:', String(e));
+      setError('Network error. Please try again.');
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleStartBuilding = async () => {
+    if (!brainstormChoice) return;
+    
+    const baseUrl = getHttpBaseUrl();
+    if (!baseUrl) {
+      setError('Server URL not configured');
+      return;
+    }
+
+    setIsSending(true);
+    setError('');
+
+    try {
+      // Get the last answer from brainstorm history to include in the request
+      const lastAnswer = brainstormChoice.brainstormHistory.length > 0 
+        ? brainstormChoice.brainstormHistory[brainstormChoice.brainstormHistory.length - 1].answer
+        : 'Ready to build';
+
+      const formData = new FormData();
+      formData.append('metadata', JSON.stringify({
+        text: lastAnswer,  // Send last answer as text (non-empty required by backend)
+        ideation_answer: lastAnswer,
+        token: brainstormChoice.token,
+        choice: 'start_building',
+      }));
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 120_000);
+      let response: Response;
+      try {
+        response = await fetch(`${baseUrl}/submit-creation`, {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+
+      const result = await response.json();
+      console.log('[TextInput] submit-creation (start-building) response:', JSON.stringify(result));
+
+      if (result.status === 'created') {
+        const videoNote = result.video_summary ? '' : videoUri ? ' Video summarization was skipped.' : '';
+        TextToSpeechService.speak(`Issue ${result.issue_number} created.${videoNote}`);
+        setInputText('');
+        setVideoUri(null);
+        setPendingIdeation(null);
+        setBrainstormChoice(null);
+        Keyboard.dismiss();
+      } else {
+        setError(result.error || 'Failed to create issue');
+      }
+    } catch (e) {
+      console.log('[TextInput] submit-creation (start-building) threw:', String(e));
+      setError('Network error. Please try again.');
     } finally {
       setIsSending(false);
     }
@@ -510,40 +634,83 @@ export default function TextInputComponent({
               )}
             </View>
 
-          <View style={styles.buttonContainer}>
-            <TouchableOpacity
-              style={[styles.button, styles.clearButton, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}
-              onPress={handleClear}
-              disabled={!inputText.trim()}
-              accessible={true}
-              accessibilityLabel="Clear text"
-              accessibilityHint="Clears all text from the input field"
-              accessibilityRole="button">
-              <Text style={[styles.buttonText, { color: theme.text }]}>Clear</Text>
-            </TouchableOpacity>
+          {/* Brainstorm choice buttons — shown when user has answered question and needs to choose */}
+          {brainstormChoice && (
+            <View style={styles.brainstormChoiceContainer}>
+              <Text style={[styles.brainstormChoiceText, { color: theme.text }]} accessible={true} accessibilityRole="header">
+                What would you like to do next?
+              </Text>
+              <View style={styles.brainstormChoiceButtons}>
+                <TouchableOpacity
+                  style={[styles.brainstormButton, { backgroundColor: theme.primary }]}
+                  onPress={handleKeepBrainstorming}
+                  disabled={isSending}
+                  accessible={true}
+                  accessibilityLabel="Keep brainstorming"
+                  accessibilityHint="Continue asking more questions about your tool design"
+                  accessibilityRole="button">
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.brainstormButtonText}>🧠 Keep Brainstorming</Text>
+                  )}
+                </TouchableOpacity>
 
-            <TouchableOpacity
-              style={[
-                styles.button, 
-                styles.sendButton, 
-                { backgroundColor: theme.primary }, 
-                (!inputText.trim() || isSending) && styles.buttonDisabled
-              ]}
-              onPress={handleSend}
-              disabled={!inputText.trim() || isSending}
-              accessible={true}
-              accessibilityLabel={isSending ? 'Submitting…' : (isCreateMode && videoUri ? 'Submit with video' : 'Send text')}
-              accessibilityHint="Sends the text to the server"
-              accessibilityRole="button"
-              accessibilityState={{ disabled: !inputText.trim() || isSending }}>
-              {isSending
-                ? <ActivityIndicator size="small" color="#fff" />
-                : <Text style={[styles.buttonText, styles.sendButtonText]}>
-                    {isCreateMode && videoUri ? 'Submit' : 'Send'}
-                  </Text>
-              }
-            </TouchableOpacity>
-          </View>
+                <TouchableOpacity
+                  style={[styles.brainstormButton, { backgroundColor: theme.success }]}
+                  onPress={handleStartBuilding}
+                  disabled={isSending}
+                  accessible={true}
+                  accessibilityLabel="Start building"
+                  accessibilityHint="Create the tool with all the brainstorming information"
+                  accessibilityRole="button">
+                  {isSending ? (
+                    <ActivityIndicator size="small" color="#fff" />
+                  ) : (
+                    <Text style={styles.brainstormButtonText}>🚀 Start Building</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* Regular buttons — shown when NOT in brainstorm choice mode */}
+          {!brainstormChoice && (
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={[styles.button, styles.clearButton, { backgroundColor: theme.backgroundSecondary, borderColor: theme.border }]}
+                onPress={handleClear}
+                disabled={!inputText.trim()}
+                accessible={true}
+                accessibilityLabel="Clear text"
+                accessibilityHint="Clears all text from the input field"
+                accessibilityRole="button">
+                <Text style={[styles.buttonText, { color: theme.text }]}>Clear</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.button, 
+                  styles.sendButton, 
+                  { backgroundColor: theme.primary }, 
+                  (!inputText.trim() || isSending) && styles.buttonDisabled
+                ]}
+                onPress={handleSend}
+                disabled={!inputText.trim() || isSending}
+                accessible={true}
+                accessibilityLabel={isSending ? 'Submitting…' : (isCreateMode && videoUri ? 'Submit with video' : 'Send text')}
+                accessibilityHint="Sends the text to the server"
+                accessibilityRole="button"
+                accessibilityState={{ disabled: !inputText.trim() || isSending }}>
+                {isSending
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={[styles.buttonText, styles.sendButtonText]}>
+                      {isCreateMode && videoUri ? 'Submit' : 'Send'}
+                    </Text>
+                }
+              </TouchableOpacity>
+            </View>
+          )}
         </ScrollView>
 
         {/* Video recorder overlay — create mode only */}
@@ -796,6 +963,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   videoSourceButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  brainstormChoiceContainer: {
+    paddingVertical: 16,
+    paddingHorizontal: 0,
+    gap: 12,
+  },
+  brainstormChoiceText: {
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 8,
+  },
+  brainstormChoiceButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  brainstormButton: {
+    flex: 1,
+    paddingVertical: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 56,
+  },
+  brainstormButtonText: {
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',

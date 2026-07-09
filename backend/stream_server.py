@@ -695,6 +695,10 @@ def warm_streaming_frame_selector() -> None:
 # Format: {conversation_id: PIL.Image}
 conversation_images = {}
 
+# Brainstorm history - stores Q&A pairs for iterative brainstorming
+# Format: {conversation_id: [{"question": str, "answer": str}, ...]}
+brainstorm_history = {}
+
 # YOLO model cache for tool executions - shared across all tool runs
 # This prevents reloading models on every frame, enabling true real-time performance
 yolo_model_cache = {}
@@ -4095,18 +4099,20 @@ def generate_feedback_message(missing_fields: list, issue_type: str) -> str:
     return f"I need {friendly_name}."
 
 
-async def generate_ideation_question(parsed_data: dict, video_summary: str, model: str) -> str:
+async def generate_ideation_question(parsed_data: dict, video_summary: str, brainstorm_context: list = None) -> str:
     """
-    Ask an LLM to generate one open-ended ideation question based on the filled issue
-    fields and optional video summary. The question is meant to help the user think
-    through an edge case, environmental constraint, or failure behavior they may not
-    have considered.
+    Ask the system LLM (Gemini) to generate one open-ended ideation question based on
+    the filled issue fields and optional video summary. The question is meant to help
+    the user think through an edge case, environmental constraint, or failure behavior
+    they may not have considered.
+
+    Args:
+        parsed_data: The parsed issue data
+        video_summary: Optional video summary
+        brainstorm_context: Optional list of {"question": str, "answer": str} dicts for previous brainstorming rounds
 
     Returns a plain question string, or a sensible fallback on any error.
     """
-    import litellm
-    from litellm_utils import resolve_model_name, resolve_api_key, extract_text
-
     title = parsed_data.get('title', '')
     description = parsed_data.get('description', '')
     solution = parsed_data.get('solution', '')
@@ -4116,29 +4122,36 @@ async def generate_ideation_question(parsed_data: dict, video_summary: str, mode
     if video_summary:
         video_section = f"\n\nVideo demonstration summary:\n{video_summary}"
 
+    brainstorm_section = ''
+    if brainstorm_context:
+        brainstorm_pairs = []
+        for qa_pair in brainstorm_context:
+            q = qa_pair.get('question', '').strip()
+            a = qa_pair.get('answer', '').strip()
+            if q and a:
+                brainstorm_pairs.append(f"Q: {q}\nA: {a}")
+        if brainstorm_pairs:
+            brainstorm_section = "\n\nPrevious brainstorming rounds:\n" + "\n\n".join(brainstorm_pairs)
+
     prompt = (
         "You are helping a blind or low-vision user design a camera-based assistive tool. "
         "They have described the tool they want. Your job is to ask them ONE concise, "
         "open-ended question that helps them think more deeply about their idea — "
         "such as an edge case, an environmental condition, or how the tool should behave "
-        "when something goes wrong. Do not ask about things already answered below. "
+        "when something goes wrong. Do not ask about things already answered below or in previous rounds. "
         "Return only the question itself, nothing else.\n\n"
         f"Tool title: {title}\n"
         f"Description: {description}\n"
         f"Proposed solution: {solution}\n"
         f"Example usage: {example_usage}"
         f"{video_section}"
+        f"{brainstorm_section}"
     )
 
     try:
-        resolved_model = resolve_model_name(model)
-        api_key = resolve_api_key(resolved_model)
         response = await asyncio.to_thread(
-            litellm.completion,
-            model=resolved_model,
+            system_llm_call,
             messages=[{'role': 'user', 'content': prompt}],
-            api_key=api_key,
-
         )
         question = extract_text(response).strip()
         if question:
@@ -4740,6 +4753,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
     video_suffix = '.mp4'
     ideation_answer = ''
     token = ''
+    choice = ''  # 'keep_brainstorming' or 'start_building'
 
     try:
         reader = await request.multipart()
@@ -4751,6 +4765,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                     text = meta.get('text', '')
                     ideation_answer = meta.get('ideation_answer', '')
                     token = meta.get('token', '')
+                    choice = meta.get('choice', '')  # 'keep_brainstorming' or 'start_building'
                 except Exception:
                     text = raw.decode('utf-8', errors='replace')
             elif part.name == 'video':
@@ -4762,24 +4777,57 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         return web.json_response({'status': 'error', 'error': 'Malformed request'}, status=400)
 
     if not text or not text.strip():
-        return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
+        # Allow empty text if user is starting to build (already answered and stored)
+        if choice != 'start_building':
+            return web.json_response({'status': 'error', 'error': 'No text provided'}, status=400)
 
-    # --- Shape B: ideation answer received — look up stored state and create issue ---
+    # --- Shape B: ideation answer received — store in brainstorm history and offer choice ---
     if token and ideation_answer:
-        entry = pending_ideation_http.pop(token, None)
+        entry = pending_ideation_http.get(token)  # Don't pop yet; keep it for next round
         if entry is None:
             return web.json_response(
                 {'status': 'error', 'error': 'Ideation session expired or not found'},
                 status=400,
             )
-        parsed_data = entry['parsed_data']
-        video_summary = entry['video_summary']
-        if ideation_answer.strip():
-            parsed_data['additional'] = (
-                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer.strip()
-            ).strip()
-        logger.info("Received ideation answer via HTTP — proceeding to issue creation")
-        await _broadcast_ws({'type': 'progress', 'message': 'Creating your GitHub issue…'})
+        
+        # Store the Q&A pair in brainstorm history
+        last_question = entry.get('last_question', '')
+        brainstorm_history = entry.get('brainstorm_history', [])
+        if last_question and ideation_answer.strip():
+            brainstorm_history.append({
+                'question': last_question,
+                'answer': ideation_answer.strip()
+            })
+            entry['brainstorm_history'] = brainstorm_history
+            logger.info("Stored brainstorming Q&A pair (total: %d)", len(brainstorm_history))
+        
+        # If user is starting to build, remove token and proceed to issue creation
+        if choice == 'start_building':
+            logger.info("User chose to start building with brainstorm history (token=%s)", token)
+            pending_ideation_http.pop(token, None)
+            parsed_data = entry['parsed_data']
+            video_summary = entry['video_summary']
+            
+            # Add brainstorm context to parsed data
+            brainstorm_summary = '\n\n'.join([
+                f"Q: {qa.get('question')}\nA: {qa.get('answer')}"
+                for qa in brainstorm_history
+            ])
+            if brainstorm_summary:
+                parsed_data['additional'] = (
+                    (parsed_data.get('additional') or '') + '\n\n## Brainstorming Session\n\n' + brainstorm_summary
+                ).strip()
+            
+            # Store the parsed_data and video_summary for the issue creation below
+            # Fall through to the template fill + issue creation logic
+        else:
+            # User chose to keep brainstorming; return choice
+            logger.info("Sending user choice: keep brainstorming (token=%s)", token)
+            return web.json_response({
+                'status': 'brainstorm_choice',
+                'token': token,
+                'brainstorm_history': brainstorm_history,
+            })
         # Fall through to template fill + issue creation below using this parsed_data.
     else:
         # --- Shape A: first call — summarize video, parse transcript ---
@@ -4817,9 +4865,8 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
             )
 
         try:
-            active_model = LLM_MODEL
             parsed_data = await asyncio.to_thread(
-                parse_transcript_with_ai, parse_input, None, active_model
+                parse_transcript_with_ai, parse_input, None
             )
         except Exception as e:
             logger.error("AI parsing failed in /submit-creation: %s", e, exc_info=True)
@@ -4832,8 +4879,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         # Generate ideation question and return it for the client to present.
         await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
         try:
-            active_model = LLM_MODEL
-            question = await generate_ideation_question(parsed_data, video_summary, active_model)
+            question = await generate_ideation_question(parsed_data, video_summary)
         except Exception:
             logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
             question = "Is there anything specific about how the tool should behave in difficult conditions?"
@@ -4842,6 +4888,8 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
         pending_ideation_http[new_token] = {
             'parsed_data': parsed_data,
             'video_summary': video_summary,
+            'brainstorm_history': [],  # Will accumulate Q&A pairs
+            'last_question': question,  # Track the question we just asked
             'created_at': datetime.now(),
         }
         logger.info("Sending ideation question via HTTP (token=%s)", new_token)
@@ -4897,6 +4945,59 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
     except Exception as e:
         logger.error("GitHub issue creation failed in /submit-creation: %s", e, exc_info=True)
         return web.json_response({'status': 'error', 'error': str(e)}, status=500)
+
+
+async def handle_brainstorm_next_question(request: web.Request) -> web.Response:
+    """
+    POST /brainstorm-next-question
+    Accepts JSON with:
+      - 'token': the ideation session token
+
+    Generates the next brainstorming question based on existing brainstorm history.
+    The answer to the current question was already stored when /submit-creation was called.
+    Returns the next question and updated brainstorm history.
+    """
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({'status': 'error', 'error': 'Invalid JSON'}, status=400)
+
+    token = data.get('token', '')
+
+    if not token:
+        return web.json_response({'status': 'error', 'error': 'Missing token'}, status=400)
+
+    entry = pending_ideation_http.get(token)
+    if entry is None:
+        return web.json_response(
+            {'status': 'error', 'error': 'Brainstorm session expired or not found'},
+            status=400,
+        )
+
+    # Brainstorm history already contains all previous Q&A pairs
+    brainstorm_history = entry.get('brainstorm_history', [])
+
+    # Generate next question with brainstorm context
+    parsed_data = entry['parsed_data']
+    video_summary = entry['video_summary']
+    await _broadcast_ws({'type': 'progress', 'message': 'Generating next brainstorming question…'})
+    
+    try:
+        next_question = await generate_ideation_question(parsed_data, video_summary, brainstorm_history)
+    except Exception:
+        logger.warning("generate_ideation_question failed in /brainstorm-next-question", exc_info=True)
+        next_question = "What other features or behaviors would be helpful for this tool?"
+
+    # Store the new question for next round
+    entry['last_question'] = next_question
+    
+    logger.info("Sending next brainstorming question (token=%s, history size=%d)", token, len(brainstorm_history))
+    return web.json_response({
+        'status': 'ideation',
+        'question': next_question,
+        'token': token,
+        'brainstorm_history': brainstorm_history,
+    })
 
 
 async def handle_update_submit(request: web.Request) -> web.Response:
@@ -6751,6 +6852,7 @@ async def main():
     app.router.add_get('/ws', websocket_handler)
     app.router.add_post('/test-door-recognition', test_door_recognition)
     app.router.add_post('/submit-creation', handle_creation_submit)
+    app.router.add_post('/brainstorm-next-question', handle_brainstorm_next_question)
     app.router.add_post('/submit-update', handle_update_submit)
     app.router.add_post('/test-video-summary', handle_test_video_summary)
     app.router.add_post('/offer', webrtc_offer_handler)  # WebRTC signaling
