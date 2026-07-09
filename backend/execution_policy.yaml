@@ -63,7 +63,6 @@ cascade_profiles:
   ocr:
     candidates:
       - mistral_ocr
-      - google_vision
     evaluator: gpt4o-mini
 
 general_reasoning:

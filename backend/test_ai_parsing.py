@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
+from stage_decomposition import (
+    PLAYING_CARD_STAGE_GOAL,
+    build_stage_decomposition_prompt,
+    normalize_stage_plan,
+)
 
 
 def load_stream_server_function(name: str):
@@ -344,6 +348,64 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertNotIn("select_model(", create_source)
         self.assertNotIn("final_execution_plan", create_source)
         self.assertNotIn("stage_model_selection", create_source)
+
+    def test_mail_sorter_drops_hallucinated_playing_card_stage(self):
+        plan = self.normalize(
+            {
+                "stages": [
+                    {
+                        "goal": "Identify the importance of each piece of mail.",
+                        "capability": "structured_visual_understanding",
+                    },
+                    {
+                        "goal": "Detect playing cards by rank and suit.",
+                        "capability": "structured_visual_understanding",
+                    },
+                    {
+                        "goal": "Read the contents of each letter or package.",
+                        "capability": "ocr",
+                    },
+                ],
+            },
+            ["structured_visual_understanding", "ocr"],
+            source_task="Sort my mail by importance and read each letter or package.",
+        )
+
+        self.assertEqual(
+            plan["stages"],
+            [
+                {
+                    "goal": "Identify the importance of each piece of mail.",
+                    "capability": "structured_visual_understanding",
+                },
+                {
+                    "goal": "Read the contents of each letter or package.",
+                    "capability": "ocr",
+                },
+            ],
+        )
+
+    def test_card_identifier_still_uses_exact_card_stage_goal(self):
+        plan = self.normalize(
+            {
+                "stages": [
+                    {
+                        "goal": "Detect playing cards by rank and suit.",
+                        "capability": "structured_visual_understanding",
+                    },
+                ],
+            },
+            ["structured_visual_understanding"],
+            source_task="Identify the playing cards by rank and suit.",
+        )
+
+        self.assertEqual(
+            plan["stages"],
+            [{
+                "goal": PLAYING_CARD_STAGE_GOAL,
+                "capability": "structured_visual_understanding",
+            }],
+        )
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

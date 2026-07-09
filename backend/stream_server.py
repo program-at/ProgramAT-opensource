@@ -42,7 +42,7 @@ MIN_STREAMING_EXECUTION_INTERVAL = float(
     os.getenv('MIN_STREAMING_EXECUTION_INTERVAL', '2.0')
 )
 STREAMING_STABILITY_DEBOUNCE_SECONDS = float(
-    os.getenv('STREAMING_STABILITY_DEBOUNCE_SECONDS', '0.6')
+    os.getenv('STREAMING_STABILITY_DEBOUNCE_SECONDS', '0.3')
 )
 STREAMING_CANDIDATE_MAX_AGE_SECONDS = float(
     os.getenv('STREAMING_CANDIDATE_MAX_AGE_SECONDS', '1')
@@ -1658,6 +1658,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
     def streaming_copilot_llm_call(*args, **kwargs):
         metadata = dict(kwargs.get('metadata') or {})
         metadata['streaming'] = True
+        metadata.setdefault('tool_name', tool_name)
         metadata['streaming_execution_id'] = tool_config.get('current_execution_id')
         metadata['streaming_original_payload_bytes'] = original_payload_bytes
         metadata['streaming_original_image'] = image_base64
@@ -1678,6 +1679,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             True,
             {
                 'streaming_execution_id': tool_config.get('current_execution_id'),
+                'tool_name': tool_name,
                 'streaming_original_payload_bytes': original_payload_bytes,
                 'streaming_original_image': image_base64,
                 '_streaming_cancelled': streaming_cancelled,
@@ -4479,6 +4481,7 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         normalized_decomposition = normalize_stage_plan(
             decomposition_data,
             capability_names,
+            source_task=decomposition_input,
         )
         parsed_data = _merge_issue_and_stage_outputs(issue_data, normalized_decomposition)
         logger.info(
@@ -6761,6 +6764,7 @@ async def handle_client(websocket):
                                 data.get('task', ''),
                                 frame_image,
                                 False,
+                                {'tool_name': tool_name},
                             )
                             if single_stage_result is not None:
                                 response_data = _build_mobile_tool_response(
@@ -6776,6 +6780,9 @@ async def handle_client(websocket):
                             
                             # Create a sandboxed execution environment with image data
                             def frame_copilot_llm_call(*args, **kwargs):
+                                metadata = dict(kwargs.get('metadata') or {})
+                                metadata.setdefault('tool_name', tool_name)
+                                kwargs['metadata'] = metadata
                                 if not kwargs.get('images'):
                                     kwargs['images'] = [frame_image]
                                 return tool_copilot_llm_call(*args, **kwargs)

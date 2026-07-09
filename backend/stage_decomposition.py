@@ -61,6 +61,8 @@ Rules:
 - Each stage must contain exactly two fields: goal and capability.
 - Do not return any fields other than stages, goal, and capability.
 - The execution policy—not this planner—owns implementation details.
+- Apply the playing-card rule only when the user request explicitly asks to
+  identify playing cards, poker cards, card rank, or card suit.
 - For playing-card identification tasks, use this exact stage goal:
   "{PLAYING_CARD_STAGE_GOAL}"
 
@@ -75,6 +77,7 @@ User request:
 def normalize_stage_plan(
     raw_plan: Any,
     supported_capabilities: Optional[Iterable[str]] = None,
+    source_task: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Validate the strict semantic planner schema."""
     if not isinstance(raw_plan, dict) or set(raw_plan) != {"stages"}:
@@ -87,6 +90,7 @@ def normalize_stage_plan(
         for name in (supported_capabilities or load_capability_profiles().keys())
         if str(name).strip()
     }
+    source_is_card_task = is_card_identification_task(source_task) if source_task is not None else None
     stages = []
     for raw_stage in raw_plan["stages"]:
         if not isinstance(raw_stage, dict) or set(raw_stage) != {"goal", "capability"}:
@@ -98,8 +102,12 @@ def normalize_stage_plan(
         if capability not in supported:
             raise ValueError(f"Planner returned unknown capability: {capability}")
         if is_card_identification_task(goal):
+            if source_is_card_task is False:
+                continue
             goal = PLAYING_CARD_STAGE_GOAL
         stages.append({"goal": goal, "capability": capability})
+    if not stages:
+        raise ValueError("Planner returned no stages relevant to the source task")
     return {"stages": stages}
 
 

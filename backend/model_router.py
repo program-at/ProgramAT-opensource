@@ -551,6 +551,138 @@ _STREAMING_UNCERTAINTY_PATTERN = re.compile(
     r"\b(?:cannot|can't|unable|not sure|uncertain|unclear|could not|couldn't|cannot determine)\b",
     re.IGNORECASE,
 )
+_SINGLE_CARD_UNCERTAINTY_PATTERN = re.compile(
+    r"\b(?:cannot|can't|unable|not sure|uncertain|unclear|could not|couldn't|"
+    r"cannot determine|cannot tell|can't tell|possibly|maybe|might be|"
+    r"appears to be|looks like|likely)\b",
+    re.IGNORECASE,
+)
+_CARD_COUNT_WORDS = {
+    "one": 1,
+    "a": 1,
+    "single": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "multiple": 2,
+    "several": 2,
+}
+_CARD_COUNT_PATTERN = re.compile(
+    r"\b(?P<count>one|a|single|two|three|four|five|six|seven|eight|nine|ten|multiple|several|\d+)\s+"
+    r"(?:visible\s+)?(?:playing\s+)?cards?\b",
+    re.IGNORECASE,
+)
+_CARD_LIST_TERMS = ("cards", "visible cards", "playing cards")
+
+
+def _parse_json_like(value: Any) -> Optional[Any]:
+    if isinstance(value, (dict, list)):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        pass
+    match = re.search(r"(\{.*\}|\[.*\])", text, re.DOTALL)
+    if not match:
+        return None
+    try:
+        return json.loads(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _card_count_from_text(text: str) -> Optional[int]:
+    counts = []
+    for match in _CARD_COUNT_PATTERN.finditer(text):
+        raw_count = match.group("count").lower()
+        count = int(raw_count) if raw_count.isdigit() else _CARD_COUNT_WORDS.get(raw_count)
+        if count is not None:
+            counts.append(count)
+    if not counts:
+        return None
+    return counts[0] if len(set(counts)) == 1 else -1
+
+
+def _count_cards_in_json(value: Any) -> Optional[int]:
+    parsed = _parse_json_like(value)
+    if parsed is None:
+        return None
+    if isinstance(parsed, list):
+        return len(parsed)
+    if not isinstance(parsed, dict):
+        return None
+    for key in ("cards", "visible_cards", "playing_cards"):
+        cards = parsed.get(key)
+        if isinstance(cards, list):
+            return len(cards)
+    for key in ("card_count", "count", "visible_card_count"):
+        raw_count = parsed.get(key)
+        if isinstance(raw_count, int):
+            return raw_count
+        if isinstance(raw_count, str) and raw_count.strip().isdigit():
+            return int(raw_count.strip())
+    if parsed.get("rank") and parsed.get("suit"):
+        return 1
+    return None
+
+
+def _is_single_card_task(tool_name: Any, task_type: Any) -> bool:
+    normalized_tool = str(tool_name or "").strip().lower()
+    normalized_task = normalize_capability_name(str(task_type or "").strip().lower())
+    return (
+        normalized_task in {
+            "visual_representation_understanding",
+            "structured_visual_understanding",
+        }
+        or normalized_tool == "playing_card_reader"
+    )
+
+
+def _single_card_evaluator_skip_reason(
+    result: Any, tool_name: Any, task_type: Any
+) -> tuple[bool, str]:
+    if not _is_single_card_task(tool_name, task_type):
+        return False, "not visual card reader task"
+    text = " ".join(str(result or "").split())
+    if not text:
+        return False, "empty main model output"
+    if _SINGLE_CARD_UNCERTAINTY_PATTERN.search(text):
+        return False, "uncertain main model output"
+    normalized_text = text.lower()
+    if re.search(r"\b(?:multiple|several)\s+(?:visible\s+)?(?:playing\s+)?cards?\b", normalized_text):
+        return False, "main model output indicates multiple cards"
+    json_count = _count_cards_in_json(result)
+    card_details = moondream_provider.card_response_details(result)
+    extracted_count = len(card_details.get("deduped_cards") or [])
+    count = json_count if json_count is not None else _card_count_from_text(normalized_text)
+    if count is not None and count != 1:
+        return False, f"main model output indicates {count} cards"
+    if json_count == 1:
+        return True, "json indicates exactly one visible card"
+    if count == 1 and extracted_count <= 1:
+        return True, "text says exactly one visible card"
+    if extracted_count == 1 and card_details.get("card_result_clean"):
+        return True, "model output clearly identifies exactly one card"
+    if extracted_count > 1:
+        return False, "main model output lists more than one card"
+    if any(term in normalized_text for term in _CARD_LIST_TERMS):
+        return False, "card count missing from card-list output"
+    return False, "no clear single-card identification"
+
+
+def should_skip_evaluator_for_single_card(
+    result: Any, tool_name: Any, task_type: Any
+) -> bool:
+    return _single_card_evaluator_skip_reason(result, tool_name, task_type)[0]
 
 
 def _streaming_acceptance_guard(goal: Any, response: str) -> bool:
@@ -1409,6 +1541,9 @@ def copilot_llm_call(
             call_metadata, f"evaluator_after:{candidate}", streaming_log
         )
         response_text = _single_line_audio_text(_response_text(candidate_output.response))
+        raw_main_model_output = response_text
+        tool_name = call_metadata.get("tool_name", "")
+        task_type = call_metadata.get("task_type") or declared
         card_result_valid = False
         card_result_clean = False
         if card_task_mode:
@@ -1418,6 +1553,7 @@ def copilot_llm_call(
                 else {}
             )
             raw_card_response = upstream_artifact.get("raw_response", response_text)
+            raw_main_model_output = raw_card_response
             logger.info(
                 "[Card Normalizer] implementation=%s raw_response=%s",
                 candidate,
@@ -1481,17 +1617,26 @@ def copilot_llm_call(
         evaluator_available = bool(
             evaluator_name and len(candidates) > 1 and index < len(candidates) - 1
         )
-        fallback_skipped_for_valid_card = bool(
-            card_task_mode and card_result_valid and card_result_clean and evaluator_available
+        skip_evaluator_for_single_card, single_card_skip_reason = (
+            _single_card_evaluator_skip_reason(raw_main_model_output, tool_name, task_type)
         )
-        if card_task_mode:
+        evaluator_skipped = bool(evaluator_available and skip_evaluator_for_single_card)
+        if not evaluator_available:
+            single_card_skip_reason = "evaluator unavailable for this candidate"
+        logger.info(
+            "[Evaluator] tool_name=%s task_type=%s raw_main_model_output=%s "
+            "skipped=%s reason=%s",
+            json.dumps(str(tool_name), ensure_ascii=False),
+            json.dumps(str(task_type), ensure_ascii=False),
+            json.dumps(raw_main_model_output, ensure_ascii=False),
+            str(evaluator_skipped).lower(),
+            single_card_skip_reason,
+        )
+        if evaluator_skipped:
             logger.info(
-                "[Card Normalizer] fallback_skipped_for_valid_card=%s",
-                str(fallback_skipped_for_valid_card).lower(),
+                "[Evaluator] skipped: single visible card for visual_representation_understanding"
             )
-        if card_task_mode and evaluator_available and not fallback_skipped_for_valid_card:
-            continue
-        if evaluator_available and not fallback_skipped_for_valid_card:
+        if evaluator_available and not evaluator_skipped:
             evaluator_count += 1
             evaluator_started = time.perf_counter()
             task_goal = goal or call_metadata.get("goal") or call_metadata.get("task_text") or ""
@@ -1716,4 +1861,5 @@ __all__ = [
     "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
     "validate_execution_configuration",
     "system_llm_call", "single_stage_llm_call", "copilot_llm_call",
+    "should_skip_evaluator_for_single_card",
 ]

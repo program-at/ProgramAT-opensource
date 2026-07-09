@@ -364,7 +364,8 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
         output = "\n".join(logs.output)
         self.assertIn("compact_notation_detected=true", output)
         self.assertIn("card_result_valid=true", output)
-        self.assertIn("fallback_skipped_for_valid_card=true", output)
+        self.assertIn("skipped=true", output)
+        self.assertIn("[Evaluator] skipped: single visible card for visual_representation_understanding", output)
 
     def test_gemini_fallback_card_response_uses_shared_normalizer(self):
         calls = []
@@ -395,11 +396,11 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                 goal="Identify only the playing cards by rank and suit.",
             )
 
-        self.assertEqual(calls, ["moondream", "gemini"])
+        self.assertEqual(calls, ["moondream", "judge", "gemini"])
         self.assertEqual(result["implementation"], "gemini")
         self.assertEqual(result["response"], "Jack of diamonds.")
 
-    def test_unclean_moondream_card_result_goes_directly_to_gemini(self):
+    def test_unclean_moondream_card_result_keeps_evaluator_behavior(self):
         calls = []
 
         def fake_executor(profile, _messages, _images, _metadata):
@@ -412,7 +413,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                     response(details["final_response"]), details
                 )
             if profile.name == "judge":
-                self.fail("unclean card output must not be accepted by the evaluator")
+                return model_router.ImplementationResult(response("NO"))
             return model_router.ImplementationResult(response("Jack of diamonds"))
 
         policies = {"structured_visual_understanding": {
@@ -432,13 +433,57 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                 goal="Identify only the playing cards by rank and suit.",
             )
 
-        self.assertEqual(calls, ["moondream", "gemini"])
+        self.assertEqual(calls, ["moondream", "judge", "gemini"])
         self.assertEqual(result["response"], "Jack of diamonds.")
         output = "\n".join(logs.output)
         self.assertIn('conflicting_suits=["Hearts", "Clubs", "Diamonds"]', output)
         self.assertIn("card_result_valid=false", output)
         self.assertIn("card_result_clean=false", output)
-        self.assertIn("fallback_skipped_for_valid_card=false", output)
+        self.assertIn("skipped=false", output)
+        self.assertIn("reason=no clear single-card identification", output)
+
+    def test_single_card_evaluator_skip_helper_examples(self):
+        should_skip = model_router.should_skip_evaluator_for_single_card
+        self.assertTrue(should_skip(
+            "ten of diamonds", "anything", "visual_representation_understanding"
+        ))
+        self.assertTrue(should_skip(
+            "The card is the ten of diamonds.", "anything", "visual_representation_understanding"
+        ))
+        self.assertTrue(should_skip(
+            '{"cards": [{"rank": "10", "suit": "diamonds"}]}',
+            "anything",
+            "visual_representation_understanding",
+        ))
+        self.assertTrue(should_skip(
+            '{"card_count": 1, "rank": "10", "suit": "diamonds"}',
+            "anything",
+            "visual_representation_understanding",
+        ))
+        self.assertTrue(should_skip(
+            "The card is the ten of diamonds.", "playing_card_reader", "general_reasoning"
+        ))
+        self.assertFalse(should_skip(
+            "The card is the ten of diamonds.", "anything", "general_reasoning"
+        ))
+        self.assertFalse(should_skip(
+            "I see multiple cards.", "anything", "visual_representation_understanding"
+        ))
+        self.assertFalse(should_skip(
+            "There are two cards.", "anything", "visual_representation_understanding"
+        ))
+        self.assertFalse(should_skip(
+            "unclear", "anything", "visual_representation_understanding"
+        ))
+        self.assertFalse(should_skip(
+            "I cannot tell", "anything", "visual_representation_understanding"
+        ))
+        self.assertFalse(should_skip(
+            "possibly ten of diamonds", "anything", "visual_representation_understanding"
+        ))
+        self.assertFalse(should_skip(
+            "ten of diamonds, jack of clubs", "anything", "visual_representation_understanding"
+        ))
 
     def test_non_moondream_model_receives_original_messages(self):
         messages = [{"role": "user", "content": "Keep this complete original prompt."}]
@@ -656,10 +701,10 @@ class TestStreamingLatencyControls(unittest.TestCase):
                 metadata={"streaming": True, "streaming_execution_id": 7},
             )
 
-        self.assertEqual(calls, ["moondream"])
+        self.assertEqual(calls, ["moondream", "judge"])
         self.assertEqual(result["implementation"], "moondream")
         output = "\n".join(logs.output)
-        self.assertIn("fallback_skipped_for_valid_card=true", output)
+        self.assertIn("[Evaluator] decision=YES source=streaming_acceptance_guard", output)
         self.assertIn("[Streaming Timing] execution=7", output)
         self.assertIn("selected=moondream", output)
 
