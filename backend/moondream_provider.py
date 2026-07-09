@@ -14,16 +14,36 @@ MESSAGE_FORMAT = "nested_image_url_url"
 SHORT_GOAL_MAX_CHARS = 160
 PROMPT_MAX_CHARS = 250
 CARD_IDENTIFICATION_PROMPT = (
-    "Identify playing cards. Read each physical card once. Use the top-left/main "
-    "card identity; ignore upside-down lower-right corner indexes. Return "
-    "rank+suit only."
+    "Read only the top-left index of each physical card. Ignore all other corners. "
+    "Rank+suit only. Multiple cards: left to right."
 )
-CARD_PROMPT_VARIANT = "physical_card_once"
+CARD_PROMPT_VARIANT = "multi_card_left_to_right"
 CARD_FALSE_POSITIVE_TERMS = ("credit card", "id card", "business card", "gift card")
 CARD_RANK_PATTERN = r"(?:ace|king|queen|jack|ten|nine|eight|seven|six|five|four|three|two|10|[2-9]|[akqj])"
 CARD_SUIT_PATTERN = r"(?:spades?|hearts?|diamonds?|clubs?)"
 CARD_PAIR_RE = re.compile(
     rf"\b(?P<rank>{CARD_RANK_PATTERN})\s+of\s+(?P<suit>{CARD_SUIT_PATTERN})\b",
+    re.IGNORECASE,
+)
+COMPACT_CARD_SYMBOL_RE = re.compile(
+    r"(?<!\w)(?P<rank>10|[2-9AKQJ])\s*(?P<suit>[♠♥♦♣])(?!\w)",
+    re.IGNORECASE,
+)
+COMPACT_CARD_LETTER_RE = re.compile(
+    r"(?<!\w)(?P<rank>10|[2-9AKQJ])\s*(?:-\s*)?(?P<suit>[SHDC])(?!\w)",
+)
+COMPACT_CARD_WORD_RE = re.compile(
+    r"(?<!\w)(?P<rank>10|[2-9AKQJ])(?:\s*-\s*|\s+)"
+    r"(?P<suit>spades?|hearts?|diamonds?|clubs?)(?!\w)",
+    re.IGNORECASE,
+)
+CARD_RANK_WORD_TOKEN_RE = re.compile(
+    r"\b(?:ace|king|queen|jack|ten|nine|eight|seven|six|five|four|three|two|10|[2-9])\b",
+    re.IGNORECASE,
+)
+CARD_RANK_LETTER_TOKEN_RE = re.compile(r"(?<!\w)[AKQJ](?!\w)")
+CARD_SUIT_TOKEN_RE = re.compile(
+    r"\b(?:spades?|hearts?|diamonds?|clubs?)\b|[♠♥♦♣]",
     re.IGNORECASE,
 )
 CARD_RANK_LABELS = {
@@ -34,6 +54,14 @@ CARD_RANK_LABELS = {
     "two": "Two", "three": "Three", "four": "Four", "five": "Five",
     "six": "Six", "seven": "Seven", "eight": "Eight", "nine": "Nine",
     "ten": "Ten",
+    "2": "Two", "3": "Three", "4": "Four", "5": "Five", "6": "Six",
+    "7": "Seven", "8": "Eight", "9": "Nine", "10": "Ten",
+}
+CARD_SUIT_LABELS = {
+    "s": "spades", "spade": "spades", "spades": "spades", "♠": "spades",
+    "h": "hearts", "heart": "hearts", "hearts": "hearts", "♥": "hearts",
+    "d": "diamonds", "diamond": "diamonds", "diamonds": "diamonds", "♦": "diamonds",
+    "c": "clubs", "club": "clubs", "clubs": "clubs", "♣": "clubs",
 }
 MIRRORED_CORNER_TERMS = (
     "lower-right", "lower right", "lower corner", "bottom-right", "bottom right",
@@ -62,13 +90,15 @@ def image_bytes(image: Any) -> bytes:
 
 
 def to_rgb_image(image: Any):
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     if isinstance(image, str):
         payload = image.split(",", 1)[1] if image.startswith("data:image") and "," in image else image
-        return Image.open(io.BytesIO(base64.b64decode(payload))).convert("RGB")
+        return ImageOps.exif_transpose(
+            Image.open(io.BytesIO(base64.b64decode(payload)))
+        ).convert("RGB")
     if isinstance(image, (bytes, bytearray)):
-        return Image.open(io.BytesIO(bytes(image))).convert("RGB")
+        return ImageOps.exif_transpose(Image.open(io.BytesIO(bytes(image)))).convert("RGB")
     import numpy as np
     if isinstance(image, np.ndarray):
         array = image
@@ -88,7 +118,7 @@ def to_rgb_image(image: Any):
             raise TypeError(f"Unsupported ndarray image shape: {array.shape}")
         return pil_image.convert("RGB")
     if isinstance(image, Image.Image):
-        return image.convert("RGB")
+        return ImageOps.exif_transpose(image).convert("RGB")
     raise TypeError(f"Unsupported image type: {type(image).__name__}")
 
 
@@ -245,14 +275,19 @@ def is_card_identification_task(value: Any) -> bool:
 
 def card_response_details(value: Any) -> Dict[str, Any]:
     text = str(value or "")
-    extracted_cards = []
+    matches = []
     for match in CARD_PAIR_RE.finditer(text):
-        rank = match.group("rank").lower()
-        suit = match.group("suit").lower().rstrip("s") + "s"
-        rank_label = CARD_RANK_LABELS.get(rank, rank)
-        if rank_label.isdigit():
-            rank_label = str(int(rank_label))
-        extracted_cards.append(f"{rank_label} of {suit}")
+        matches.append((match.start(), match.group("rank"), match.group("suit"), False))
+    for pattern in (COMPACT_CARD_SYMBOL_RE, COMPACT_CARD_LETTER_RE, COMPACT_CARD_WORD_RE):
+        for match in pattern.finditer(text):
+            matches.append((match.start(), match.group("rank"), match.group("suit"), True))
+    matches.sort(key=lambda item: item[0])
+
+    extracted_cards = []
+    for _start, rank, suit, _compact in matches:
+        rank_label = CARD_RANK_LABELS.get(rank.lower(), rank.capitalize())
+        suit_label = CARD_SUIT_LABELS.get(suit.lower(), suit.lower().rstrip("s") + "s")
+        extracted_cards.append(f"{rank_label} of {suit_label}")
 
     deduped_cards = []
     seen = set()
@@ -267,19 +302,48 @@ def card_response_details(value: Any) -> Dict[str, Any]:
     final_cards = deduped_cards
     if len(deduped_cards) == 2:
         has_corner_cue = any(term in lowered for term in MIRRORED_CORNER_TERMS)
-        first_match = CARD_PAIR_RE.search(text)
+        first_match_start = matches[0][0] if matches else None
         singular_card_intro = bool(
-            first_match and re.search(r"\bthe card\b", lowered[:first_match.start()])
+            first_match_start is not None
+            and re.search(r"\bthe card\b", lowered[:first_match_start])
         )
         if has_corner_cue or singular_card_intro:
             final_cards = deduped_cards[:1]
             mirrored_corner_filter_applied = True
 
     final_response = ", ".join(final_cards) + "." if final_cards else "Uncertain."
+    rank_tokens = [match.group(0) for match in CARD_RANK_WORD_TOKEN_RE.finditer(text)]
+    rank_tokens.extend(match.group(0) for match in CARD_RANK_LETTER_TOKEN_RE.finditer(text))
+    suit_tokens = [match.group(0) for match in CARD_SUIT_TOKEN_RE.finditer(text)]
+    suit_tokens.extend(
+        match.group("suit") for match in COMPACT_CARD_LETTER_RE.finditer(text)
+    )
+    conflicting_suits = suit_tokens if len(suit_tokens) > len(matches) else []
+    discarded_card_tokens = []
+    if len(rank_tokens) > len(matches):
+        discarded_card_tokens.extend(rank_tokens)
+    if conflicting_suits:
+        discarded_card_tokens.extend(conflicting_suits)
+    explicit_uncertainty = bool(re.search(r"\buncertain\b", text, re.IGNORECASE))
+    card_result_valid = bool(
+        final_cards and not explicit_uncertainty and not discarded_card_tokens
+    )
+    card_result_clean = bool(
+        card_result_valid
+        and not discarded_card_tokens
+        and len(rank_tokens) == len(matches)
+        and len(suit_tokens) == len(matches)
+    )
     return {
+        "raw_response": text,
         "extracted_cards": extracted_cards,
         "deduped_cards": deduped_cards,
+        "discarded_card_tokens": discarded_card_tokens,
+        "conflicting_suits": conflicting_suits,
+        "compact_notation_detected": any(match[3] for match in matches),
         "mirrored_corner_filter_applied": mirrored_corner_filter_applied,
+        "card_result_valid": card_result_valid,
+        "card_result_clean": card_result_clean,
         "final_response": final_response,
     }
 

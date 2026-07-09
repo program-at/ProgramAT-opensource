@@ -25,6 +25,8 @@ from litellm_utils import call_model, extract_text
 
 
 logger = logging.getLogger(__name__)
+_STREAMING_VLM_DEBUG_LOCK = threading.Lock()
+_STREAMING_VLM_DEBUG_SAVED = False
 BACKEND_DIR = Path(__file__).resolve().parent
 CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 EXECUTION_POLICY_PATH = BACKEND_DIR / "execution_policy.yaml"
@@ -466,8 +468,10 @@ def _image_bytes(image: Any) -> bytes:
 
 
 def _preprocess_streaming_images(
-    images: Iterable[Any], capability: str, original_payload_bytes: Optional[int] = None
+    images: Iterable[Any], capability: str, original_payload_bytes: Optional[int] = None,
+    original_image: Any = None,
 ) -> tuple[List[Any], float]:
+    global _STREAMING_VLM_DEBUG_SAVED
     started = time.perf_counter()
     if capability == "ocr":
         max_dimension = int(os.environ.get("OCR_MAX_DIMENSION", "1024"))
@@ -477,10 +481,11 @@ def _preprocess_streaming_images(
         quality = int(os.environ.get("STREAMING_VLM_JPEG_QUALITY", "70"))
     processed = []
     for image_index, image in enumerate(images):
+        preprocess_source = original_image if image_index == 0 and original_image else image
         try:
-            original_dimensions, original_bytes = moondream_provider.image_metrics(image)
+            original_dimensions, original_bytes = moondream_provider.image_metrics(preprocess_source)
             payload, _mime_type, dimensions = moondream_provider.prepare_rgb_jpeg(
-                image, max_dimension, quality
+                preprocess_source, max_dimension, quality
             )
         except Exception as exc:
             logger.warning("[Streaming Image] preprocessing skipped error=%s", exc)
@@ -500,6 +505,26 @@ def _preprocess_streaming_images(
             "max_dimension=%d",
             dimensions[0], dimensions[1], len(payload) / 1024, quality, max_dimension,
         )
+        if capability != "ocr" and not _STREAMING_VLM_DEBUG_SAVED:
+            with _STREAMING_VLM_DEBUG_LOCK:
+                if not _STREAMING_VLM_DEBUG_SAVED:
+                    debug_path = Path(os.environ.get(
+                        "MOONDREAM_DEBUG_IMAGE_PATH",
+                        "/tmp/moondream_streaming_debug.jpg",
+                    ))
+                    try:
+                        debug_path.parent.mkdir(parents=True, exist_ok=True)
+                        debug_path.write_bytes(payload)
+                        _STREAMING_VLM_DEBUG_SAVED = True
+                        logger.info(
+                            "[Streaming Image] corrected_debug_image=%s dimensions=%sx%s",
+                            debug_path, dimensions[0], dimensions[1],
+                        )
+                    except OSError as exc:
+                        logger.warning(
+                            "[Streaming Image] debug image save failed path=%s error=%s",
+                            debug_path, exc,
+                        )
         processed.append(payload)
     return processed, (time.perf_counter() - started) * 1000
 
@@ -671,6 +696,10 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
         if card_mode:
             card_details = moondream_provider.card_response_details(raw_text)
             text = card_details["final_response"]
+            logger.info(
+                "[Moondream] compact_notation_detected=%s",
+                str(card_details["compact_notation_detected"]).lower(),
+            )
             logger.info("[Moondream] extracted_cards=%s", json.dumps(
                 card_details["extracted_cards"], ensure_ascii=False
             ))
@@ -678,12 +707,22 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
                 card_details["deduped_cards"], ensure_ascii=False
             ))
             logger.info(
+                "[Moondream] discarded_card_tokens=%s conflicting_suits=%s",
+                json.dumps(card_details["discarded_card_tokens"], ensure_ascii=False),
+                json.dumps(card_details["conflicting_suits"], ensure_ascii=False),
+            )
+            logger.info(
                 "[Moondream] mirrored_corner_filter_applied=%s",
                 str(card_details["mirrored_corner_filter_applied"]).lower(),
             )
             logger.info(
                 "[Moondream] final_card_response=%s",
                 json.dumps(text, ensure_ascii=False),
+            )
+            logger.info(
+                "[Moondream] card_result_valid=%s card_result_clean=%s",
+                str(card_details["card_result_valid"]).lower(),
+                str(card_details["card_result_clean"]).lower(),
             )
         else:
             text = " ".join(raw_text.split())
@@ -702,7 +741,10 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
             (time.perf_counter() - started) * 1000,
             len(text),
         )
-        return ImplementationResult(_simple_response(text), {"text": text})
+        artifact = {"text": text}
+        if card_mode:
+            artifact.update(card_details)
+        return ImplementationResult(_simple_response(text), artifact)
     except Exception as exc:
         status, request_id, error_body = _moondream_error_context(exc)
         cooldown_seconds, failures = _record_moondream_failure(status)
@@ -1130,6 +1172,7 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
         call_images, preprocess_ms = _preprocess_streaming_images(
             call_images, DEFAULT_FALLBACK_CAPABILITY,
             call_metadata.get("streaming_original_payload_bytes"),
+            call_metadata.get("streaming_original_image"),
         )
     model_started = time.perf_counter()
     response = call_model(
@@ -1218,6 +1261,11 @@ def copilot_llm_call(
     target_labels = _target_labels(call_metadata)
     grounding_context = [goal, task, call_metadata.get("goal"), call_metadata.get("task_text")]
     grounding_context.extend(message.get("content") for message in call_messages if isinstance(message, dict))
+    card_task_mode, card_task_reason = moondream_provider.card_mode_reason(
+        " ".join(str(value) for value in grounding_context if value)
+    )
+    if card_task_mode:
+        logger.info("[Card Normalizer] card_mode=true reason=%s", card_task_reason)
     if not target_labels and any(_mentions_exit(value) for value in grounding_context):
         target_labels = list(EXIT_TARGET_LABELS)
         call_metadata["target_labels"] = target_labels
@@ -1278,7 +1326,9 @@ def copilot_llm_call(
         }
         if declared == "ocr" or candidate_kinds & {"model", "moondream_cloud"}:
             call_images, timing["image_preprocess_ms"] = _preprocess_streaming_images(
-                call_images, declared, call_metadata.get("streaming_original_payload_bytes")
+                call_images, declared,
+                call_metadata.get("streaming_original_payload_bytes"),
+                call_metadata.get("streaming_original_image"),
             )
 
     execution_label = call_metadata.get("streaming_execution_id", "unknown")
@@ -1359,6 +1409,51 @@ def copilot_llm_call(
             call_metadata, f"evaluator_after:{candidate}", streaming_log
         )
         response_text = _single_line_audio_text(_response_text(candidate_output.response))
+        card_result_valid = False
+        card_result_clean = False
+        if card_task_mode:
+            upstream_artifact = (
+                dict(candidate_output.artifact)
+                if isinstance(candidate_output.artifact, dict)
+                else {}
+            )
+            raw_card_response = upstream_artifact.get("raw_response", response_text)
+            logger.info(
+                "[Card Normalizer] implementation=%s raw_response=%s",
+                candidate,
+                json.dumps(raw_card_response, ensure_ascii=False),
+            )
+            if "card_result_clean" in upstream_artifact:
+                card_details = {
+                    key: upstream_artifact[key]
+                    for key in (
+                        "raw_response", "extracted_cards", "deduped_cards",
+                        "discarded_card_tokens", "conflicting_suits",
+                        "compact_notation_detected", "mirrored_corner_filter_applied",
+                        "card_result_valid", "card_result_clean", "final_response",
+                    )
+                    if key in upstream_artifact
+                }
+            else:
+                card_details = moondream_provider.card_response_details(raw_card_response)
+            response_text = card_details["final_response"]
+            card_result_valid = card_details["card_result_valid"]
+            card_result_clean = card_details["card_result_clean"]
+            logger.info(
+                "[Card Normalizer] compact_notation_detected=%s extracted_cards=%s "
+                "discarded_card_tokens=%s conflicting_suits=%s final_card_response=%s "
+                "card_result_valid=%s card_result_clean=%s",
+                str(card_details["compact_notation_detected"]).lower(),
+                json.dumps(card_details["extracted_cards"], ensure_ascii=False),
+                json.dumps(card_details["discarded_card_tokens"], ensure_ascii=False),
+                json.dumps(card_details["conflicting_suits"], ensure_ascii=False),
+                json.dumps(response_text, ensure_ascii=False),
+                str(card_result_valid).lower(),
+                str(card_result_clean).lower(),
+            )
+            artifact = upstream_artifact
+            artifact.update(card_details)
+            candidate_output = ImplementationResult(_simple_response(response_text), artifact)
         if declared == "ocr":
             logger.info(
                 "[OCR] implementation=%s latency_ms=%.1f text_chars=%s",
@@ -1383,7 +1478,20 @@ def copilot_llm_call(
             response_text,
         )
 
-        if evaluator_name and len(candidates) > 1 and index < len(candidates) - 1:
+        evaluator_available = bool(
+            evaluator_name and len(candidates) > 1 and index < len(candidates) - 1
+        )
+        fallback_skipped_for_valid_card = bool(
+            card_task_mode and card_result_valid and card_result_clean and evaluator_available
+        )
+        if card_task_mode:
+            logger.info(
+                "[Card Normalizer] fallback_skipped_for_valid_card=%s",
+                str(fallback_skipped_for_valid_card).lower(),
+            )
+        if card_task_mode and evaluator_available and not fallback_skipped_for_valid_card:
+            continue
+        if evaluator_available and not fallback_skipped_for_valid_card:
             evaluator_count += 1
             evaluator_started = time.perf_counter()
             task_goal = goal or call_metadata.get("goal") or call_metadata.get("task_text") or ""
@@ -1579,6 +1687,13 @@ def copilot_llm_call(
             implementation = "fallback"
             logger.warning("[Execution Policy] capability=%s fallback=none", declared)
     final_text = _single_line_audio_text(_response_text(output.response))
+    if card_task_mode:
+        final_details = moondream_provider.card_response_details(final_text)
+        if final_details["card_result_valid"]:
+            final_text = final_details["final_response"]
+            artifact = dict(output.artifact) if isinstance(output.artifact, dict) else {}
+            artifact.update(final_details)
+            output = ImplementationResult(_simple_response(final_text), artifact)
     artifact = output.artifact
     if artifact is None:
         artifact = {"text": final_text}

@@ -42,10 +42,16 @@ MIN_STREAMING_EXECUTION_INTERVAL = float(
     os.getenv('MIN_STREAMING_EXECUTION_INTERVAL', '2.0')
 )
 STREAMING_STABILITY_DEBOUNCE_SECONDS = float(
-    os.getenv('STREAMING_STABILITY_DEBOUNCE_SECONDS', '0.75')
+    os.getenv('STREAMING_STABILITY_DEBOUNCE_SECONDS', '0.6')
 )
 STREAMING_CANDIDATE_MAX_AGE_SECONDS = float(
     os.getenv('STREAMING_CANDIDATE_MAX_AGE_SECONDS', '1')
+)
+STREAMING_MAX_SIMILARITY_TO_LAST_SENT = float(
+    os.getenv('STREAMING_MAX_SIMILARITY_TO_LAST_SENT', '0.95')
+)
+STREAMING_MIN_STABLE_CONFIRMATIONS = max(
+    1, int(os.getenv('STREAMING_MIN_STABLE_CONFIRMATIONS', '2'))
 )
 
 from model_router import (
@@ -574,17 +580,28 @@ def load_streaming_frame_selector_config(path=EXECUTION_POLICY_PATH) -> Dict[str
         raise ValueError("streaming.frame_selector.implementation must be 'clip'")
     model = str(selector.get('model') or '').strip()
     threshold = float(selector.get('similarity_threshold'))
+    last_sent_threshold = float(os.getenv(
+        'STREAMING_MAX_SIMILARITY_TO_LAST_SENT',
+        selector.get(
+            'max_similarity_to_last_sent', STREAMING_MAX_SIMILARITY_TO_LAST_SENT
+        ),
+    ))
     max_skip_frames = int(selector.get('max_skip_frames'))
     if not model:
         raise ValueError('streaming.frame_selector.model is required')
     if not -1.0 <= threshold <= 1.0:
         raise ValueError('streaming.frame_selector.similarity_threshold must be between -1 and 1')
+    if not -1.0 <= last_sent_threshold <= 1.0:
+        raise ValueError(
+            'streaming.frame_selector.max_similarity_to_last_sent must be between -1 and 1'
+        )
     if max_skip_frames < 0:
         raise ValueError('streaming.frame_selector.max_skip_frames must be non-negative')
     return {
         'implementation': 'clip',
         'model': model,
         'similarity_threshold': threshold,
+        'max_similarity_to_last_sent': last_sent_threshold,
         'max_skip_frames': max_skip_frames,
     }
 
@@ -854,17 +871,6 @@ def _streaming_embedding_similarity(
     ))
 
 
-def _streaming_embeddings_are_similar(
-    tool_config: Dict[str, Any],
-    first: Optional[np.ndarray],
-    second: Optional[np.ndarray],
-) -> bool:
-    similarity = _streaming_embedding_similarity(first, second)
-    if similarity is None:
-        return False
-    return similarity >= tool_config['frame_selector_config']['similarity_threshold']
-
-
 def _cancel_streaming_debounce(tool_config: Dict[str, Any]) -> None:
     debounce_task = tool_config.get('debounce_task')
     if debounce_task is not None and not debounce_task.done():
@@ -875,7 +881,7 @@ def _start_streaming_debounce(
     websocket,
     client_id: str,
     tool_config: Dict[str, Any],
-    stability_id: int,
+    state_id: int,
     delay_seconds: Optional[float] = None,
 ) -> None:
     _cancel_streaming_debounce(tool_config)
@@ -885,7 +891,7 @@ def _start_streaming_debounce(
         ))
     tool_config['debounce_task'] = asyncio.create_task(
         _streaming_debounce_worker(
-            websocket, client_id, tool_config, stability_id, delay_seconds
+            websocket, client_id, tool_config, state_id, delay_seconds
         )
     )
 
@@ -894,20 +900,34 @@ async def _streaming_debounce_worker(
     websocket,
     client_id: str,
     tool_config: Dict[str, Any],
-    stability_id: int,
+    state_id: int,
     delay_seconds: float,
 ) -> None:
     try:
         await asyncio.sleep(delay_seconds)
-        candidate = tool_config.get('latest_candidate_frame')
-        if candidate is None or candidate['stability_id'] != stability_id:
+        state = tool_config.get('active_visual_state')
+        if state is None or state['state_id'] != state_id:
             return
+        stable_ms = (
+            asyncio.get_running_loop().time() - state['started_at']
+        ) * 1000
         logger.info(
-            "[Streaming] candidate frame stable sequence=%s stable_ms=%.1f",
-            candidate['sequence'],
-            (asyncio.get_running_loop().time() - candidate['stable_since']) * 1000,
+            "[Streaming] visual_state_stable state_id=%s sequence=%s stable_ms=%.1f "
+            "stability_threshold_ms=%.1f confirmation_count=%d "
+            "min_stable_confirmations=%d embedding_source=%s",
+            state['state_id'],
+            state['sequence'],
+            stable_ms,
+            float(tool_config.get(
+                'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
+            )) * 1000,
+            state.get('confirmation_count', 1),
+            int(tool_config.get(
+                'min_stable_confirmations', STREAMING_MIN_STABLE_CONFIRMATIONS
+            )),
+            tool_config['frame_selector_config']['implementation'],
         )
-        await _try_send_streaming_candidate(websocket, client_id, tool_config)
+        await _try_send_visual_state(websocket, client_id, tool_config, state, 'active')
     except asyncio.CancelledError:
         raise
     finally:
@@ -916,28 +936,32 @@ async def _streaming_debounce_worker(
                 tool_config['debounce_task'] = None
 
 
-async def _send_streaming_candidate(
+async def _send_visual_state(
     websocket,
     client_id: str,
     tool_config: Dict[str, Any],
-    candidate: Dict[str, Any],
+    state: Dict[str, Any],
 ) -> None:
     try:
+        tool_config['in_flight_state_embedding'] = state.get('embedding')
+        tool_config['in_flight_state_id'] = state.get('state_id')
         logger.info(
-            "[Streaming] sending frame to backend sequence=%s age_ms=%.1f",
-            candidate['sequence'],
-            (asyncio.get_running_loop().time() - candidate['received_at']) * 1000,
+            "[Streaming] visual_state_sent state_id=%s sequence=%s age_ms=%.1f",
+            state['state_id'],
+            state['sequence'],
+            (asyncio.get_running_loop().time() - state['last_seen_at']) * 1000,
         )
         processed = await run_streaming_tools(
-            websocket, client_id, candidate['image'], candidate['image_base64']
+            websocket, client_id, state['image'], state['image_base64']
         )
         if active_streaming_tools.get(client_id) is not tool_config:
             return
-        if processed and candidate.get('embedding') is not None:
-            tool_config['last_processed_embedding'] = candidate['embedding']
-            tool_config['last_processed_sequence'] = candidate['sequence']
-            tool_config['last_sent_embedding'] = candidate['embedding']
-            tool_config['last_sent_sequence'] = candidate['sequence']
+        if processed and state.get('embedding') is not None:
+            tool_config['last_processed_embedding'] = state['embedding']
+            tool_config['last_processed_sequence'] = state['sequence']
+            tool_config['last_sent_embedding'] = state['embedding']
+            tool_config['last_sent_sequence'] = state['sequence']
+            tool_config['last_sent_result'] = processed
             tool_config['consecutive_skipped_frames'] = 0
         elif not processed:
             logger.warning(
@@ -947,80 +971,376 @@ async def _send_streaming_candidate(
         if active_streaming_tools.get(client_id) is tool_config:
             if tool_config.get('cascade_task') is asyncio.current_task():
                 tool_config['cascade_task'] = None
-            await _try_send_streaming_candidate(websocket, client_id, tool_config)
+            tool_config['in_flight_state_embedding'] = None
+            tool_config['in_flight_state_id'] = None
+            await _try_send_deferred_visual_state_after_in_flight(
+                websocket, client_id, tool_config
+            )
 
 
-async def _try_send_streaming_candidate(
-    websocket, client_id: str, tool_config: Dict[str, Any]
+def _streaming_model_busy(tool_config: Dict[str, Any]) -> bool:
+    execution_lock = tool_config.setdefault('execution_lock', asyncio.Lock())
+    cascade_task = tool_config.get('cascade_task')
+    return execution_lock.locked() or (
+        cascade_task is not None and not cascade_task.done()
+    )
+
+
+def _optional_state(tool_config: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+    state = tool_config.get(key)
+    return state if isinstance(state, dict) else None
+
+
+def _streaming_state_age_seconds(state: Dict[str, Any], now: float) -> float:
+    return now - state['last_seen_at']
+
+
+def _log_visual_state_decision(
+    tool_config: Dict[str, Any],
+    state: Dict[str, Any],
+    decision: str,
+    source: str,
+    now: float,
+    similarity_to_last_sent: Optional[float],
+    similarity_to_in_flight: Optional[float],
 ) -> None:
+    stable_for = now - state['started_at']
+    age = _streaming_state_age_seconds(state, now)
+    logger.info(
+        "[Streaming] decision=%s source=%s state_id=%s sequence=%s age_ms=%.1f "
+        "stable_ms=%.1f confirmation_count=%d min_stable_confirmations=%d "
+        "similarity_to_active_state=%s similarity_to_last_sent=%s "
+        "similarity_to_in_flight=%s stability_threshold=%.3f "
+        "max_similarity_to_last_sent=%.3f model_busy=%s deferred_state_exists=%s",
+        decision,
+        source,
+        state.get('state_id'),
+        state.get('sequence'),
+        age * 1000,
+        stable_for * 1000,
+        int(state.get('confirmation_count', 1)),
+        int(tool_config.get(
+            'min_stable_confirmations', STREAMING_MIN_STABLE_CONFIRMATIONS
+        )),
+        "n/a" if state.get('similarity_to_active_state') is None else (
+            f"{state.get('similarity_to_active_state'):.3f}"
+        ),
+        "n/a" if similarity_to_last_sent is None else (
+            f"{similarity_to_last_sent:.3f}"
+        ),
+        "n/a" if similarity_to_in_flight is None else (
+            f"{similarity_to_in_flight:.3f}"
+        ),
+        tool_config['frame_selector_config']['similarity_threshold'],
+        float(tool_config['frame_selector_config'].get(
+            'max_similarity_to_last_sent',
+            tool_config['frame_selector_config']['similarity_threshold'],
+        )),
+        str(_streaming_model_busy(tool_config)).lower(),
+        str(tool_config.get('deferred_visual_state') is not None).lower(),
+    )
+
+
+def _log_streaming_task_error(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exception = task.exception()
+    if exception is not None:
+        logger.error(
+            "Streaming tool task error",
+            exc_info=(type(exception), exception, exception.__traceback__),
+        )
+
+
+async def _try_send_visual_state(
+    websocket,
+    client_id: str,
+    tool_config: Dict[str, Any],
+    state: Dict[str, Any],
+    source: str,
+) -> bool:
     if active_streaming_tools.get(client_id) is not tool_config:
-        return
-    candidate = tool_config.get('latest_candidate_frame')
-    if candidate is None:
-        return
+        return False
+    if state is None:
+        return False
 
     now = asyncio.get_running_loop().time()
     max_age_seconds = float(tool_config.get(
         'candidate_max_age_seconds', STREAMING_CANDIDATE_MAX_AGE_SECONDS
     ))
-    age = now - candidate['received_at']
-    if age > max_age_seconds:
-        logger.info(
-            "[Streaming] dropped stale candidate sequence=%s age_ms=%.1f max_age_ms=%.1f",
-            candidate['sequence'],
-            age * 1000,
-            max_age_seconds * 1000,
-        )
-        if tool_config.get('latest_candidate_frame') is candidate:
-            tool_config['latest_candidate_frame'] = None
-        return
-
-    stable_for = now - candidate['stable_since']
+    age = _streaming_state_age_seconds(state, now)
+    stable_for = now - state['started_at']
     debounce_seconds = float(tool_config.get(
         'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
     ))
+    confirmation_count = int(state.get('confirmation_count', 1))
+    min_confirmations = int(tool_config.get(
+        'min_stable_confirmations', STREAMING_MIN_STABLE_CONFIRMATIONS
+    ))
+    state_embedding = state.get('embedding')
+    last_sent_embedding = tool_config.get('last_sent_embedding')
+    in_flight_embedding = tool_config.get('in_flight_state_embedding')
+    difference_threshold = float(tool_config['frame_selector_config'].get(
+        'max_similarity_to_last_sent',
+        tool_config['frame_selector_config']['similarity_threshold'],
+    ))
+    last_sent_similarity = _streaming_embedding_similarity(state_embedding, last_sent_embedding)
+    in_flight_similarity = _streaming_embedding_similarity(state_embedding, in_flight_embedding)
+    logger.info(
+        "[Streaming] key_frame_check source=%s state_id=%s sequence=%s age_ms=%.1f "
+        "stable_ms=%.1f confirmation_count=%d min_stable_confirmations=%d "
+        "similarity_to_active_state=%s similarity_to_last_sent=%s "
+        "similarity_to_in_flight=%s max_similarity_to_last_sent=%.3f",
+        source, state['state_id'], state['sequence'], age * 1000,
+        stable_for * 1000, confirmation_count, min_confirmations,
+        "n/a" if state.get('similarity_to_active_state') is None else (
+            f"{state.get('similarity_to_active_state'):.3f}"
+        ),
+        "n/a" if last_sent_similarity is None else f"{last_sent_similarity:.3f}",
+        "n/a" if in_flight_similarity is None else f"{in_flight_similarity:.3f}",
+        difference_threshold,
+    )
+    if state.get('sent'):
+        _log_visual_state_decision(
+            tool_config, state, 'visual_state_already_sent_skip', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    if state_embedding is None:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_embedding_unavailable', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        if tool_config.get('active_visual_state') is state:
+            tool_config['active_visual_state'] = None
+        if tool_config.get('deferred_visual_state') is state:
+            tool_config['deferred_visual_state'] = None
+        return False
+    if age > max_age_seconds:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_stale', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        if tool_config.get('active_visual_state') is state:
+            tool_config['active_visual_state'] = None
+        if tool_config.get('deferred_visual_state') is state:
+            tool_config['deferred_visual_state'] = None
+        return
     if stable_for < debounce_seconds:
-        debounce_task = tool_config.get('debounce_task')
-        if debounce_task is None or debounce_task.done():
-            _start_streaming_debounce(
-                websocket,
-                client_id,
-                tool_config,
-                candidate['stability_id'],
-                debounce_seconds - stable_for,
-            )
-        return
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_not_stable', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        if source == 'active':
+            debounce_task = tool_config.get('debounce_task')
+            if debounce_task is None or debounce_task.done():
+                _start_streaming_debounce(
+                    websocket,
+                    client_id,
+                    tool_config,
+                    state['state_id'],
+                    debounce_seconds - stable_for,
+                )
+        return False
 
-    execution_lock = tool_config.setdefault('execution_lock', asyncio.Lock())
-    cascade_task = tool_config.get('cascade_task')
-    if execution_lock.locked() or (cascade_task is not None and not cascade_task.done()):
+    if confirmation_count < min_confirmations:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_not_enough_confirmations', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    if last_sent_similarity is not None and last_sent_similarity >= difference_threshold:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_too_similar_to_last_sent', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        if tool_config.get('deferred_visual_state') is state:
+            tool_config['deferred_visual_state'] = None
+        else:
+            deferred_state = _optional_state(tool_config, 'deferred_visual_state')
+            if (
+                deferred_state is not None
+                and deferred_state.get('state_id') == state.get('state_id')
+            ):
+                tool_config['deferred_visual_state'] = None
+        if tool_config.get('active_visual_state') is state:
+            state['sent'] = True
+        return False
+    if in_flight_similarity is not None and in_flight_similarity >= difference_threshold:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_too_similar_to_in_flight', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        if tool_config.get('deferred_visual_state') is state:
+            tool_config['deferred_visual_state'] = None
+        return False
+
+    if _streaming_model_busy(tool_config):
+        _store_deferred_visual_state(tool_config, state, now)
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_model_busy', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+
+    # Re-run final gates immediately before dispatch.
+    now = asyncio.get_running_loop().time()
+    if _streaming_model_busy(tool_config):
+        _store_deferred_visual_state(tool_config, state, now)
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_model_busy', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    if _streaming_state_age_seconds(state, now) > max_age_seconds:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_stale', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    if now - state['started_at'] < debounce_seconds:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_not_stable', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    if int(state.get('confirmation_count', 1)) < min_confirmations:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_not_enough_confirmations', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+    last_sent_similarity = _streaming_embedding_similarity(
+        state.get('embedding'), tool_config.get('last_sent_embedding')
+    )
+    in_flight_similarity = _streaming_embedding_similarity(
+        state.get('embedding'), tool_config.get('in_flight_state_embedding')
+    )
+    if last_sent_similarity is not None and last_sent_similarity >= difference_threshold:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_too_similar_to_last_sent', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        deferred_state = _optional_state(tool_config, 'deferred_visual_state')
+        if (
+            deferred_state is not None
+            and deferred_state.get('state_id') == state.get('state_id')
+        ):
+            tool_config['deferred_visual_state'] = None
+        if tool_config.get('active_visual_state') is state:
+            state['sent'] = True
+        return False
+    if in_flight_similarity is not None and in_flight_similarity >= difference_threshold:
+        _log_visual_state_decision(
+            tool_config, state, 'skipped_too_similar_to_in_flight', source,
+            now, last_sent_similarity, in_flight_similarity,
+        )
+        return False
+
+    state['sent'] = True
+    if tool_config.get('deferred_visual_state') is state:
+        tool_config['deferred_visual_state'] = None
+    if source == 'deferred':
         logger.info(
-            "[Streaming] skipped frame because model is busy sequence=%s",
-            candidate['sequence'],
+            "[Streaming] deferred_state_sent_after_in_flight_finished "
+            "state_id=%s sequence=%s",
+            state['state_id'],
+            state['sequence'],
         )
-        return
-
-    if _streaming_embeddings_are_similar(
-        tool_config, candidate.get('embedding'), tool_config.get('last_sent_embedding')
-    ):
-        similarity = _streaming_embedding_similarity(
-            candidate.get('embedding'), tool_config.get('last_sent_embedding')
-        )
-        logger.info(
-            "[Streaming] skipped frame too similar to last sent sequence=%s similarity=%.3f",
-            candidate['sequence'],
-            similarity,
-        )
-        if tool_config.get('latest_candidate_frame') is candidate:
-            tool_config['latest_candidate_frame'] = None
-        return
-
-    if tool_config.get('latest_candidate_frame') is candidate:
-        tool_config['latest_candidate_frame'] = None
+    _log_visual_state_decision(
+        tool_config, state, 'sent_key_frame', source,
+        now, last_sent_similarity, in_flight_similarity,
+    )
     task = asyncio.create_task(
-        _send_streaming_candidate(websocket, client_id, tool_config, candidate)
+        _send_visual_state(websocket, client_id, tool_config, state)
     )
     tool_config['cascade_task'] = task
+    return True
+
+
+def _clone_visual_state_for_deferred(state: Dict[str, Any]) -> Dict[str, Any]:
+    clone = dict(state)
+    clone['sent'] = False
+    return clone
+
+
+def _store_deferred_visual_state(
+    tool_config: Dict[str, Any],
+    state: Dict[str, Any],
+    now: float,
+) -> None:
+    current = _optional_state(tool_config, 'deferred_visual_state')
+    if current is not None and current.get('state_id') == state.get('state_id'):
+        current.update({
+            'sequence': state['sequence'],
+            'image': state['image'],
+            'image_base64': state['image_base64'],
+            'embedding': state['embedding'],
+            'last_seen_at': state['last_seen_at'],
+            'confirmation_count': state.get('confirmation_count', 1),
+            'similarity_to_active_state': state.get('similarity_to_active_state'),
+        })
+        logger.info(
+            "[Streaming] deferred_state_updated_same_state state_id=%s sequence=%s "
+            "stable_ms=%.1f confirmation_count=%d",
+            current['state_id'],
+            current['sequence'],
+            (now - current['started_at']) * 1000,
+            int(current.get('confirmation_count', 1)),
+        )
+        return
+    deferred = _clone_visual_state_for_deferred(state)
+    tool_config['deferred_visual_state'] = deferred
+    event = (
+        'deferred_state_replaced_by_newer_stable_state'
+        if current is not None else 'deferred_state_created_while_busy'
+    )
+    logger.info(
+        "[Streaming] %s state_id=%s sequence=%s previous_state_id=%s "
+        "stable_ms=%.1f confirmation_count=%d",
+        event,
+        deferred['state_id'],
+        deferred['sequence'],
+        current.get('state_id') if current is not None else 'none',
+        (now - deferred['started_at']) * 1000,
+        int(deferred.get('confirmation_count', 1)),
+    )
+
+
+async def _try_send_deferred_visual_state_after_in_flight(
+    websocket,
+    client_id: str,
+    tool_config: Dict[str, Any],
+) -> None:
+    deferred = _optional_state(tool_config, 'deferred_visual_state')
+    if deferred is None:
+        return
+    active_state = _optional_state(tool_config, 'active_visual_state')
+    if (
+        active_state is not None
+        and active_state.get('state_id') != deferred.get('state_id')
+    ):
+        tool_config['deferred_visual_state'] = None
+        logger.info(
+            "[Streaming] deferred_state_dropped_after_in_flight_finished "
+            "state_id=%s sequence=%s reason=replaced_by_current_active_state "
+            "active_state_id=%s active_sequence=%s",
+            deferred.get('state_id'),
+            deferred.get('sequence'),
+            active_state.get('state_id'),
+            active_state.get('sequence'),
+        )
+        return
+    sent = await _try_send_visual_state(
+        websocket, client_id, tool_config, deferred, 'deferred'
+    )
+    if not sent and _optional_state(tool_config, 'deferred_visual_state') is not deferred:
+        logger.info(
+            "[Streaming] deferred_state_dropped_after_in_flight_finished "
+            "state_id=%s sequence=%s",
+            deferred.get('state_id'),
+            deferred.get('sequence'),
+        )
 
 
 async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
@@ -1035,8 +1355,17 @@ async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
             encode_streaming_frame, image_base64, selector_config
         )
         embedding = _normalize_streaming_embedding(embedding)
+        logger.info(
+            "[Streaming] embedding_ready sequence=%s gating_enabled=true "
+            "embedding_source=%s dimensions=%d",
+            sequence, selector_config['implementation'], embedding.size,
+        )
     except Exception as exc:
-        logger.warning("[Streaming] frame embedding failed -> process: %s", exc)
+        logger.warning(
+            "[Streaming] embedding_ready sequence=%s gating_enabled=true "
+            "embedding_source=%s success=false error=%s",
+            sequence, selector_config['implementation'], exc,
+        )
         embedding = None
 
     if sequence <= tool_config.get('latest_selector_sequence', 0):
@@ -1052,7 +1381,7 @@ async def _encode_streaming_candidate(tool_config: Dict[str, Any], frame):
 
 
 async def schedule_streaming_frame(websocket, client_id: str, image, image_base64: str) -> None:
-    """Keep only the latest visually stable frame candidate."""
+    """Track visual states and send each stable new state at most once."""
     tool_config = active_streaming_tools.get(client_id)
     if not tool_config or tool_config.get('gemini_live'):
         return
@@ -1066,15 +1395,36 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
         return
 
     now = asyncio.get_running_loop().time()
-    current = tool_config.get('latest_candidate_frame')
+    current = tool_config.get('active_visual_state')
     if current is None:
-        stability_id = tool_config.get('candidate_stability_id', 0) + 1
-        tool_config['candidate_stability_id'] = stability_id
-        frame['stable_since'] = now
-        frame['stability_id'] = stability_id
-        tool_config['latest_candidate_frame'] = frame
-        logger.info("[Streaming] candidate frame created sequence=%s", sequence)
-        _start_streaming_debounce(websocket, client_id, tool_config, stability_id)
+        state_id = tool_config.get('visual_state_id', 0) + 1
+        tool_config['visual_state_id'] = state_id
+        state = {
+            'state_id': state_id,
+            'sequence': sequence,
+            'image': frame['image'],
+            'image_base64': frame['image_base64'],
+            'embedding': frame.get('embedding'),
+            'started_at': now,
+            'last_seen_at': now,
+            'confirmation_count': 1,
+            'sent': False,
+            'similarity_to_active_state': None,
+        }
+        tool_config['active_visual_state'] = state
+        logger.info(
+            "[Streaming] visual_state_created state_id=%s sequence=%s stable_ms=0.0 "
+            "confirmation_count=1 similarity_to_active_state=n/a "
+            "stability_threshold=%.3f embedding_source=%s model_busy=%s "
+            "deferred_state_exists=%s",
+            state_id,
+            sequence,
+            tool_config['frame_selector_config']['similarity_threshold'],
+            tool_config['frame_selector_config']['implementation'],
+            str(_streaming_model_busy(tool_config)).lower(),
+            str(tool_config.get('deferred_visual_state') is not None).lower(),
+        )
+        _start_streaming_debounce(websocket, client_id, tool_config, state_id)
         return
 
     similarity = _streaming_embedding_similarity(
@@ -1085,38 +1435,105 @@ async def schedule_streaming_frame(websocket, client_id: str, image, image_base6
     else:
         threshold = tool_config['frame_selector_config']['similarity_threshold']
         visually_similar = similarity >= threshold
+    logger.info(
+        "[Streaming] visual_state_similarity sequence=%s active_state_id=%s "
+        "active_sequence=%s similarity_to_active_state=%s stability_threshold=%.3f "
+        "embedding_source=%s",
+        sequence, current['state_id'], current['sequence'],
+        "n/a" if similarity is None else f"{similarity:.3f}",
+        tool_config['frame_selector_config']['similarity_threshold'],
+        tool_config['frame_selector_config']['implementation'],
+    )
 
     if visually_similar:
-        frame['stable_since'] = current['stable_since']
-        frame['stability_id'] = current['stability_id']
-        tool_config['latest_candidate_frame'] = frame
+        current.update({
+            'sequence': sequence,
+            'image': frame['image'],
+            'image_base64': frame['image_base64'],
+            'embedding': frame.get('embedding'),
+            'last_seen_at': now,
+            'confirmation_count': int(current.get('confirmation_count', 1)) + 1,
+            'similarity_to_active_state': similarity,
+        })
         logger.info(
-            "[Streaming] candidate frame stable sequence=%s similarity=%.3f",
+            "[Streaming] visual_state_updated_same_state state_id=%s sequence=%s "
+            "stable_ms=%.1f confirmation_count=%d similarity_to_active_state=%.3f "
+            "model_busy=%s deferred_state_exists=%s",
+            current['state_id'],
             sequence,
+            (now - current['started_at']) * 1000,
+            int(current.get('confirmation_count', 1)),
             similarity,
+            str(_streaming_model_busy(tool_config)).lower(),
+            str(tool_config.get('deferred_visual_state') is not None).lower(),
         )
-        await _try_send_streaming_candidate(websocket, client_id, tool_config)
+        if current.get('sent'):
+            _log_visual_state_decision(
+                tool_config,
+                current,
+                'visual_state_already_sent_skip',
+                'active',
+                now,
+                _streaming_embedding_similarity(
+                    current.get('embedding'), tool_config.get('last_sent_embedding')
+                ),
+                _streaming_embedding_similarity(
+                    current.get('embedding'), tool_config.get('in_flight_state_embedding')
+                ),
+            )
+            return
+        deferred_state = _optional_state(tool_config, 'deferred_visual_state')
+        if deferred_state is not None and deferred_state.get('state_id') == current['state_id']:
+            _store_deferred_visual_state(tool_config, current, now)
+        await _try_send_visual_state(websocket, client_id, tool_config, current, 'active')
         return
 
-    stability_id = tool_config.get('candidate_stability_id', 0) + 1
-    tool_config['candidate_stability_id'] = stability_id
-    frame['stable_since'] = now
-    frame['stability_id'] = stability_id
-    tool_config['latest_candidate_frame'] = frame
+    if not current.get('sent'):
+        logger.info(
+            "[Streaming] visual_state_replaced_due_to_low_similarity "
+            "old_state_id=%s old_sequence=%s old_confirmation_count=%d "
+            "old_sent=false old_stable_ms=%.1f replacement_reason=discard_unstable",
+            current['state_id'],
+            current['sequence'],
+            int(current.get('confirmation_count', 1)),
+            (now - current['started_at']) * 1000,
+        )
+    state_id = tool_config.get('visual_state_id', 0) + 1
+    tool_config['visual_state_id'] = state_id
+    state = {
+        'state_id': state_id,
+        'sequence': sequence,
+        'image': frame['image'],
+        'image_base64': frame['image_base64'],
+        'embedding': frame.get('embedding'),
+        'started_at': now,
+        'last_seen_at': now,
+        'confirmation_count': 1,
+        'sent': False,
+        'similarity_to_active_state': similarity,
+    }
+    tool_config['active_visual_state'] = state
     logger.info(
-        "[Streaming] candidate frame overwritten old_sequence=%s new_sequence=%s similarity=%s",
-        current['sequence'],
+        "[Streaming] visual_state_replaced_due_to_low_similarity old_state_id=%s "
+        "new_state_id=%s new_sequence=%s similarity_to_active_state=%s "
+        "stability_threshold=%.3f model_busy=%s deferred_state_exists=%s",
+        current['state_id'],
+        state_id,
         sequence,
         "n/a" if similarity is None else f"{similarity:.3f}",
+        tool_config['frame_selector_config']['similarity_threshold'],
+        str(_streaming_model_busy(tool_config)).lower(),
+        str(tool_config.get('deferred_visual_state') is not None).lower(),
     )
     logger.info(
-        "[Streaming] debounce timer reset sequence=%s debounce_ms=%.1f",
+        "[Streaming] debounce timer reset state_id=%s sequence=%s debounce_ms=%.1f",
+        state_id,
         sequence,
         float(tool_config.get(
             'stability_debounce_seconds', STREAMING_STABILITY_DEBOUNCE_SECONDS
         )) * 1000,
     )
-    _start_streaming_debounce(websocket, client_id, tool_config, stability_id)
+    _start_streaming_debounce(websocket, client_id, tool_config, state_id)
 
 
 async def run_streaming_tools(websocket, client_id: str, image, image_base64: str):
@@ -1243,6 +1660,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         metadata['streaming'] = True
         metadata['streaming_execution_id'] = tool_config.get('current_execution_id')
         metadata['streaming_original_payload_bytes'] = original_payload_bytes
+        metadata['streaming_original_image'] = image_base64
         metadata['_streaming_cancelled'] = streaming_cancelled
         kwargs['metadata'] = metadata
         if not kwargs.get('images'):
@@ -1261,6 +1679,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             {
                 'streaming_execution_id': tool_config.get('current_execution_id'),
                 'streaming_original_payload_bytes': original_payload_bytes,
+                'streaming_original_image': image_base64,
                 '_streaming_cancelled': streaming_cancelled,
             },
         )
@@ -5499,14 +5918,27 @@ async def handle_client(websocket):
                         'frame_selector_config': load_streaming_frame_selector_config(),
                         'stability_debounce_seconds': STREAMING_STABILITY_DEBOUNCE_SECONDS,
                         'candidate_max_age_seconds': STREAMING_CANDIDATE_MAX_AGE_SECONDS,
+                        'min_stable_confirmations': STREAMING_MIN_STABLE_CONFIRMATIONS,
                         'execution_lock': asyncio.Lock(),
+                        'active_visual_state': None,
+                        'deferred_visual_state': None,
+                        'in_flight_state_embedding': None,
+                        'in_flight_state_id': None,
                     }
                     logger.info(
                         "[Streaming] scheduler configured client=%s debounce_ms=%.1f "
-                        "candidate_max_age_ms=%.1f latest_frame_only=true",
+                        "candidate_max_age_ms=%.1f visual_state_tracker=true "
+                        "latest_frame_only=true deferred_state_slots=1 "
+                        "embedding_gating_enabled=true embedding_source=%s "
+                        "stability_threshold=%.3f difference_threshold=%.3f "
+                        "min_stable_confirmations=%d",
                         client_id,
                         active_streaming_tools[client_id]['stability_debounce_seconds'] * 1000,
                         active_streaming_tools[client_id]['candidate_max_age_seconds'] * 1000,
+                        active_streaming_tools[client_id]['frame_selector_config']['implementation'],
+                        active_streaming_tools[client_id]['frame_selector_config']['similarity_threshold'],
+                        active_streaming_tools[client_id]['frame_selector_config']['max_similarity_to_last_sent'],
+                        active_streaming_tools[client_id]['min_stable_confirmations'],
                     )
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
@@ -6099,7 +6531,7 @@ async def handle_client(websocket):
                             websocket, client_id, last_frame['image'], last_frame['base64']
                         ))
                         active_streaming_tasks[client_id] = task
-                        task.add_done_callback(lambda t: logger.error(f"Streaming tool task error: {t.exception()}") if not t.cancelled() and t.exception() else None)
+                        task.add_done_callback(_log_streaming_task_error)
                     elif last_frame['image'] is None:
                         logger.debug(f"No image available for {client_id}")
                     elif client_id not in active_streaming_tools:
