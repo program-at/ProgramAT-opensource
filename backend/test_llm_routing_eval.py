@@ -70,7 +70,7 @@ def eval_task(task: str, sleep_seconds: float) -> Dict[str, Any]:
     )
     raw = extract_text(response)
     parsed = parse_json_text(raw)
-    planner_output = normalize_stage_plan(parsed)
+    planner_output = normalize_stage_plan(parsed, source_task=task)
     stages = planner_output["stages"]
     capability_sequence = [
         stage["capability"] for stage in stages

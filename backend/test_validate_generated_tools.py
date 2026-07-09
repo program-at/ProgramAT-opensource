@@ -81,6 +81,20 @@ def main(image, input_data=None):
 
         self.assertEqual(validate_generated_tools.validate_files([path]), [])
 
+    def test_allows_detector_agnostic_ocr_capability_call(self):
+        path = self._write_temp_tool(
+            "good_ocr_tool.py",
+            '''
+from model_router_client import copilot_llm_call
+
+def main(image, input_data=None):
+    result = copilot_llm_call(capability="ocr", images=[image])
+    return result["response"]
+''',
+        )
+
+        self.assertEqual(validate_generated_tools.validate_files([path]), [])
+
     def test_rejects_stringified_capability_result(self):
         for expression in ("str(guidance)", "repr(guidance)", 'f"{guidance}"'):
             path = self._write_temp_tool(
