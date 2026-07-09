@@ -17,6 +17,19 @@ WebSocket server for receiving camera frames and audio transcriptions from the P
 pip install -r requirements.txt
 ```
 
+2. Optional: install the Tesseract system binary if you configure
+   `tesseract_local` as an OCR candidate:
+
+   Ubuntu/WSL:
+   ```bash
+   sudo apt-get install -y tesseract-ocr
+   ```
+
+   macOS:
+   ```bash
+   brew install tesseract
+   ```
+
 ## Configuration
 
 The server uses environment variables for configuration:
@@ -33,9 +46,9 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; execution policies use `GEMINI_API_KEY`, `OPENAI_API_KEY`, and Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for Vision OCR.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; reasoning uses `MOONDREAM_API_KEY`, `GEMINI_API_KEY`, and `OPENAI_API_KEY`; OCR uses `MISTRAL_API_KEY` and optionally `MISTRAL_OCR_MODEL` (default `mistral-ocr-latest`), with Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for the Google Vision fallback.
   - System calls use the fixed system model.
-  - Detection and OCR use one implementation. Reasoning capabilities try Gemini Flash Lite and GPT-4o in order, escalating only when the evaluator finds the current response insufficient.
+  - Detection uses one implementation. OCR tries Mistral OCR before Google Vision. Reasoning capabilities try Moondream Cloud, Gemini Flash Lite, and GPT-4o in order, escalating on provider failure or when the evaluator finds a response insufficient.
 
 ### LLM Interfaces
 
@@ -48,14 +61,17 @@ Take-photo model-backed work should call `copilot_llm_call(...)` through `model_
 ```yaml
 cascade_profiles:
   default_reasoning:
-    candidates: [gemini_flash_lite, gpt4o]
+    candidates: [moondream_cloud, gemini_flash_lite, gpt4o]
+    evaluator: gpt4o-mini
+  ocr:
+    candidates: [mistral_ocr, google_vision]
     evaluator: gpt4o-mini
 
 navigation:
   cascade: default_reasoning
 
 ocr:
-  implementation: google_vision
+  cascade: ocr
 ```
 
 Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
@@ -70,12 +86,31 @@ Execution modes are distinct:
 
 ### Optional
 
+- `ENABLE_MOONDREAM_CLOUD`: Enable the execution-policy candidate (`true` by default).
+- `MOONDREAM_MODEL`: Cloud model (`moondream/moondream3-preview` from `execution_policy.yaml` by default).
+- `MOONDREAM_TIMEOUT_SECONDS`: Per-request timeout (`2.0` by default).
+- `MOONDREAM_MAX_IMAGE_DIMENSION`: Moondream-only resize bound (`768` by default).
+- `MOONDREAM_JPEG_QUALITY`: Moondream-only RGB JPEG quality (`75` by default).
+- `MOONDREAM_FAILURE_THRESHOLD`: Consecutive non-500 failures before cooldown (`3` by default).
+- `MOONDREAM_FAILURE_COOLDOWN_SECONDS`: Cooldown after a provider 500 or repeated failures (`60` by default).
+- `STREAMING_VLM_MAX_DIMENSION`: Maximum dimension for streaming VLM images (`640` by default).
+- `STREAMING_VLM_JPEG_QUALITY`: JPEG quality for streaming VLM images (`70` by default).
+- `OCR_MAX_DIMENSION`: Maximum dimension for streaming OCR images (`1024` by default).
+- `OCR_JPEG_QUALITY`: JPEG quality for streaming OCR images (`80` by default).
+- `EVALUATOR_DEBUG_REASON`: Make a second text-only evaluator call and log its reason (`false` by default).
 - `MIN_STREAMING_EXECUTION_INTERVAL`: Minimum seconds between the completion of one streaming execution and the start of the next (default: `2.0`). Frames received while waiting replace the pending frame, so the newest scene is analyzed when the interval expires.
 - `HOST`: Server host (default: `0.0.0.0`)
 - `PORT`: Server port (default: `8081`)
 - `PAUSE_DURATION`: Seconds to wait before creating issue (default: `5.0`)
 
 ## Usage
+
+Run one direct smoke test using the same image preprocessing, short prompt adapter, request builder, and response parser as production:
+
+```bash
+cd backend
+./.venv/bin/python scripts/test_moondream_provider.py
+```
 
 ### Basic Usage
 
