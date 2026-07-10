@@ -107,7 +107,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         "implementation": "clip",
         "model": "openai/clip-vit-base-patch32",
         "similarity_threshold": 0.985,
-        "max_similarity_to_last_sent": 0.95,
+        "max_similarity_to_last_sent": 0.990,
         "max_skip_frames": 20,
     }
 
@@ -125,7 +125,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             await asyncio.gather(*tasks, return_exceptions=True)
         stream_server.active_streaming_tools.clear()
 
-    async def test_single_flight_keeps_only_newest_deferred_state(self):
+    async def test_schedule_uses_clip_gating_without_debounce_timer(self):
         stream_server.active_streaming_tools["client"] = {
             "tool": {"name": "tool"},
             "frame_selector_config": dict(self.selector_config),
@@ -134,11 +134,6 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             "min_stable_confirmations": 1,
         }
         calls = []
-        embeddings = {
-            "b64-1": np.array([1.0, 0.0], dtype=np.float32),
-            "b64-2": np.array([0.0, 1.0], dtype=np.float32),
-            "b64-3": np.array([-1.0, 0.0], dtype=np.float32),
-        }
 
         async def run(_websocket, _client_id, image, _image_base64):
             calls.append(image)
@@ -146,9 +141,16 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
                 await asyncio.sleep(0.1)
             return True
 
+        embeddings = {
+            "b64-1": np.array([1.0, 0.0], dtype=np.float32),
+            "b64-2": np.array([0.0, 1.0], dtype=np.float32),
+            "b64-3": np.array([-1.0, 0.0], dtype=np.float32),
+        }
+
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
-             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]), \
-             patch.object(stream_server, "run_streaming_tools", side_effect=run):
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]) as encode, \
+             patch.object(stream_server, "run_streaming_tools", side_effect=run), \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
             await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
             await asyncio.sleep(0.01)
             await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
@@ -156,10 +158,14 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             task = stream_server.active_streaming_tools["client"]["cascade_task"]
             await asyncio.wait_for(task, 1)
 
+        self.assertEqual(encode.call_count, 3)
         self.assertEqual(calls, ["frame-1", "frame-3"])
         self.assertIsNone(
             stream_server.active_streaming_tools["client"].get("deferred_visual_state")
         )
+        output = "\n".join(logs.output)
+        self.assertIn("debounce_zero=true", output)
+        self.assertIn("decision=skipped_model_busy", output)
 
     async def test_execution_lock_prevents_overlapping_direct_runs(self):
         stream_server.active_streaming_tools["client"] = {
@@ -278,7 +284,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("decision=skipped_too_similar_to_last_sent", output)
         self.assertIsNone(tool_config.get("deferred_visual_state"))
 
-    async def test_missing_clip_embedding_does_not_send(self):
+    async def test_missing_clip_embedding_fails_open_and_sends(self):
         now = asyncio.get_running_loop().time()
         state = {
             "state_id": 1,
@@ -303,14 +309,20 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         }
         stream_server.active_streaming_tools["client"] = tool_config
 
-        with patch.object(stream_server, "run_streaming_tools") as run, \
+        async def run_tool(_websocket, _client_id, _image, _image_base64):
+            return True
+
+        with patch.object(stream_server, "run_streaming_tools", side_effect=run_tool) as run, \
              self.assertLogs(stream_server.logger, level="INFO") as logs:
             await stream_server._try_send_visual_state(
                 None, "client", tool_config, state, "active"
             )
+            await tool_config["cascade_task"]
 
-        run.assert_not_called()
-        self.assertIn("decision=skipped_embedding_unavailable", "\n".join(logs.output))
+        run.assert_called_once()
+        output = "\n".join(logs.output)
+        self.assertIn("[Streaming] clip_gating_failed_open", output)
+        self.assertIn("decision=clip_gating_failed_open", output)
 
     async def test_stable_duration_without_confirmations_does_not_send(self):
         now = asyncio.get_running_loop().time()
@@ -351,47 +363,47 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             "\n".join(logs.output),
         )
 
-    async def test_similar_frames_increment_confirmations_and_change_resets_them(self):
-        embeddings = {
-            "b64-1": np.array([1.0, 0.0], dtype=np.float32),
-            "b64-2": np.array([0.999, 0.001], dtype=np.float32),
-            "b64-3": np.array([0.0, 1.0], dtype=np.float32),
-        }
+    async def test_sequential_changed_frames_are_dispatched_with_clip_gating(self):
         tool_config = {
             "tool": {"name": "tool"},
             "frame_selector_config": dict(self.selector_config),
-            "stability_debounce_seconds": 10.0,
+            "stability_debounce_seconds": 0.0,
             "candidate_max_age_seconds": 20.0,
             "min_stable_confirmations": 2,
         }
         stream_server.active_streaming_tools["client"] = tool_config
+        calls = []
 
-        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
-             patch.object(
-                 stream_server,
-                 "encode_streaming_frame",
-                 side_effect=lambda frame, _: embeddings[frame],
-             ):
-            await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
-            await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
-            self.assertEqual(
-                tool_config["active_visual_state"]["confirmation_count"], 2
-            )
-            await stream_server.schedule_streaming_frame(None, "client", "frame-3", "b64-3")
+        async def run(_websocket, _client_id, image, _image_base64):
+            calls.append(image)
+            return True
 
-        self.assertEqual(
-            tool_config["active_visual_state"]["confirmation_count"], 1
-        )
-
-    async def test_same_state_confirmation_with_no_deferred_state_does_not_crash(self):
         embeddings = {
             "b64-1": np.array([1.0, 0.0], dtype=np.float32),
-            "b64-2": np.array([0.999, 0.001], dtype=np.float32),
+            "b64-2": np.array([0.0, 1.0], dtype=np.float32),
+            "b64-3": np.array([-1.0, 0.0], dtype=np.float32),
         }
+
+        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]) as encode, \
+             patch.object(stream_server, "run_streaming_tools", side_effect=run):
+            await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
+            await tool_config["cascade_task"]
+            await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
+            second_task = tool_config.get("cascade_task")
+            if second_task is not None:
+                await second_task
+            await stream_server.schedule_streaming_frame(None, "client", "frame-3", "b64-3")
+            await tool_config["cascade_task"]
+
+        self.assertEqual(encode.call_count, 3)
+        self.assertEqual(calls, ["frame-1", "frame-2", "frame-3"])
+
+    async def test_zero_debounce_does_not_create_timer(self):
         tool_config = {
             "tool": {"name": "tool"},
             "frame_selector_config": dict(self.selector_config),
-            "stability_debounce_seconds": 10.0,
+            "stability_debounce_seconds": 0.0,
             "candidate_max_age_seconds": 20.0,
             "min_stable_confirmations": 2,
             "active_visual_state": None,
@@ -401,27 +413,33 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         }
         stream_server.active_streaming_tools["client"] = tool_config
 
-        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
-             patch.object(
-                 stream_server,
-                 "encode_streaming_frame",
-                 side_effect=lambda frame, _: embeddings[frame],
-             ), patch.object(stream_server, "run_streaming_tools") as run, \
-             self.assertLogs(stream_server.logger, level="INFO") as logs:
-            await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
-            await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
+        async def run(_websocket, _client_id, _image, _image_base64):
+            return True
 
-        run.assert_not_called()
-        self.assertEqual(tool_config["active_visual_state"]["confirmation_count"], 2)
-        output = "\n".join(logs.output)
-        self.assertIn("visual_state_updated_same_state", output)
-        self.assertIn("decision=skipped_not_stable", output)
-
-    async def test_sent_visual_state_is_not_sent_again_for_similar_frames(self):
         embeddings = {
             "b64-1": np.array([1.0, 0.0], dtype=np.float32),
-            "b64-2": np.array([0.999, 0.001], dtype=np.float32),
+            "b64-2": np.array([0.0, 1.0], dtype=np.float32),
         }
+
+        with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]) as encode, \
+             patch.object(stream_server, "run_streaming_tools", side_effect=run), \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
+            await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
+            await tool_config["cascade_task"]
+            await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
+            second_task = tool_config.get("cascade_task")
+            if second_task is not None:
+                await second_task
+
+        self.assertEqual(encode.call_count, 2)
+        self.assertIsNone(tool_config.get("deferred_visual_state"))
+        self.assertIsNone(tool_config.get("debounce_task"))
+        output = "\n".join(logs.output)
+        self.assertIn("debounce_zero=true", output)
+        self.assertNotIn("visual_state_stable", output)
+
+    async def test_almost_identical_frames_are_suppressed_by_clip_gating(self):
         tool_config = {
             "tool": {"name": "tool"},
             "frame_selector_config": dict(self.selector_config),
@@ -436,22 +454,70 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             calls.append(image)
             return True
 
+        embeddings = {
+            "b64-1": np.array([1.0, 0.0], dtype=np.float32),
+            "b64-2": np.array([1.0, 0.001], dtype=np.float32),
+        }
+
         with patch.object(stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline), \
-             patch.object(
-                 stream_server,
-                 "encode_streaming_frame",
-                 side_effect=lambda frame, _: embeddings[frame],
-             ), patch.object(stream_server, "run_streaming_tools", side_effect=run), \
+             patch.object(stream_server, "encode_streaming_frame", side_effect=lambda frame, _: embeddings[frame]) as encode, \
+             patch.object(stream_server, "run_streaming_tools", side_effect=run), \
              self.assertLogs(stream_server.logger, level="INFO") as logs:
             await stream_server.schedule_streaming_frame(None, "client", "frame-1", "b64-1")
-            await asyncio.sleep(0.01)
-            first_task = tool_config.get("cascade_task")
-            if first_task is not None:
-                await first_task
+            await tool_config["cascade_task"]
             await stream_server.schedule_streaming_frame(None, "client", "frame-2", "b64-2")
+            second_task = tool_config.get("cascade_task")
+            if second_task is not None:
+                await second_task
 
+        self.assertEqual(encode.call_count, 2)
         self.assertEqual(calls, ["frame-1"])
-        self.assertIn("visual_state_already_sent_skip", "\n".join(logs.output))
+        output = "\n".join(logs.output)
+        self.assertIn("decision=skipped_too_similar_to_last_sent", output)
+        self.assertIn("max_similarity_to_last_sent=0.990", output)
+
+    async def test_forced_key_frame_interval_sends_similar_frame(self):
+        now = asyncio.get_running_loop().time()
+        embedding = np.array([1.0, 0.0], dtype=np.float32)
+        state = {
+            "state_id": 1,
+            "sequence": 6,
+            "image": "frame-6",
+            "image_base64": "b64-6",
+            "embedding": embedding,
+            "started_at": now,
+            "last_seen_at": now,
+            "confirmation_count": 1,
+            "sent": False,
+            "similarity_to_active_state": None,
+        }
+        tool_config = {
+            "tool": {"name": "tool"},
+            "frame_selector_config": dict(self.selector_config),
+            "stability_debounce_seconds": 0.0,
+            "candidate_max_age_seconds": 2.0,
+            "forced_key_frame_interval_seconds": 5.0,
+            "min_stable_confirmations": 1,
+            "last_sent_embedding": embedding,
+            "last_sent_at": now - 5.1,
+            "active_visual_state": state,
+            "execution_lock": asyncio.Lock(),
+        }
+        stream_server.active_streaming_tools["client"] = tool_config
+
+        async def run_tool(_websocket, _client_id, _image, _image_base64):
+            return True
+
+        with patch.object(stream_server, "run_streaming_tools", side_effect=run_tool), \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
+            await stream_server._try_send_visual_state(
+                None, "client", tool_config, state, "active"
+            )
+            await tool_config["cascade_task"]
+
+        output = "\n".join(logs.output)
+        self.assertIn("decision=forced_key_frame_interval_elapsed", output)
+        self.assertIn("forced_interval_seconds=5.0", output)
 
     async def test_deferred_state_dropped_if_active_state_moved_on_before_finish(self):
         now = asyncio.get_running_loop().time()
