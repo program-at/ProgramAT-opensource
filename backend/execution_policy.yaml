@@ -11,7 +11,7 @@ streaming:
     implementation: clip
     model: openai/clip-vit-base-patch32
     similarity_threshold: 0.985
-    max_similarity_to_last_sent: 0.95
+    max_similarity_to_last_sent: 0.990
     max_skip_frames: 20
 
 implementations:
