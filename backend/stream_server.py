@@ -4754,6 +4754,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
     ideation_answer = ''
     token = ''
     choice = ''  # 'keep_brainstorming' or 'start_building'
+    brainstormingEnabled = True  # default to True for backward compatibility
 
     try:
         reader = await request.multipart()
@@ -4766,6 +4767,7 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                     ideation_answer = meta.get('ideation_answer', '')
                     token = meta.get('token', '')
                     choice = meta.get('choice', '')  # 'keep_brainstorming' or 'start_building'
+                    brainstormingEnabled = meta.get('brainstormingEnabled', True)
                 except Exception:
                     text = raw.decode('utf-8', errors='replace')
             elif part.name == 'video':
@@ -4876,24 +4878,29 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                 status=500,
             )
 
-        # Generate ideation question and return it for the client to present.
-        await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
-        try:
-            question = await generate_ideation_question(parsed_data, video_summary)
-        except Exception:
-            logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
-            question = "Is there anything specific about how the tool should behave in difficult conditions?"
+        # Check if brainstorming is enabled
+        if brainstormingEnabled and not choice:
+            # Generate ideation question and return it for the client to present.
+            await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
+            try:
+                question = await generate_ideation_question(parsed_data, video_summary)
+            except Exception:
+                logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
+                question = "Is there anything specific about how the tool should behave in difficult conditions?"
 
-        new_token = secrets.token_urlsafe(12)
-        pending_ideation_http[new_token] = {
-            'parsed_data': parsed_data,
-            'video_summary': video_summary,
-            'brainstorm_history': [],  # Will accumulate Q&A pairs
-            'last_question': question,  # Track the question we just asked
-            'created_at': datetime.now(),
-        }
-        logger.info("Sending ideation question via HTTP (token=%s)", new_token)
-        return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
+            new_token = secrets.token_urlsafe(12)
+            pending_ideation_http[new_token] = {
+                'parsed_data': parsed_data,
+                'video_summary': video_summary,
+                'brainstorm_history': [],  # Will accumulate Q&A pairs
+                'last_question': question,  # Track the question we just asked
+                'created_at': datetime.now(),
+            }
+            logger.info("Sending ideation question via HTTP (token=%s)", new_token)
+            return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
+        elif not brainstormingEnabled:
+            # Brainstorming disabled; proceed directly to issue creation
+            logger.info("Brainstorming disabled; proceeding directly to issue creation")
 
     # --- Fill template and create GitHub issue (reached from Shape B) ---
     try:
