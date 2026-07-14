@@ -70,6 +70,8 @@ class WebSocketService {
 
   // Server capabilities cached from the 'server_capabilities' message.
   private defaultModel: string = '';
+  private nvidiaStreamingMode: string = 'disabled';
+  private streamingFrameIntervalMs: number | null = null;
 
   constructor(serverUrl?: string) {
     if (serverUrl) {
@@ -102,6 +104,14 @@ class WebSocketService {
 
   getDefaultModel(): string {
     return this.defaultModel;
+  }
+
+  getNvidiaStreamingMode(): string {
+    return this.nvidiaStreamingMode;
+  }
+
+  getStreamingFrameIntervalMs(): number | null {
+    return this.streamingFrameIntervalMs;
   }
 
   /**
@@ -340,6 +350,11 @@ class WebSocketService {
             if (message.type === 'server_capabilities') {
               const caps = message.capabilities || {};
               this.defaultModel = caps.model_routing ? 'Semantic routing' : caps.default_model || '';
+              this.nvidiaStreamingMode = caps.nvidia_streaming_mode || 'disabled';
+              this.streamingFrameIntervalMs =
+                typeof caps.streaming_frame_interval_ms === 'number'
+                  ? caps.streaming_frame_interval_ms
+                  : null;
             }
 
             // Extra logging for production_tools messages

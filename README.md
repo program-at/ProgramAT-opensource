@@ -12,6 +12,10 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 
 ## Getting Started
 
+For the isolated NVIDIA hosted-multiframe and RTVI streaming experiments, see
+[docs/NVIDIA_RTVI_STREAMING.md](docs/NVIDIA_RTVI_STREAMING.md). It is disabled by
+default and does not alter the normal streaming path unless explicitly enabled.
+
 ### Prerequisites
 
 - A [GitHub account](https://github.com/). Refer to [screen reader friendly instructions by Jeff Bishop](https://community-access.org/git-going-with-github/docs/00-pre-workshop-setup.html).

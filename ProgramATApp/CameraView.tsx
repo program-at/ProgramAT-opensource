@@ -206,10 +206,17 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     frameSkipCounterRef.current = 0; // Reset frame skip counter when starting
     setError('');
     
+    // The hosted multiframe experiment needs enough source frames to populate
+    // its short rolling window. Other modes retain the existing cadence.
+    const captureIntervalMs =
+      WebSocketService.getNvidiaStreamingMode() === 'hosted_multiframe'
+        ? WebSocketService.getStreamingFrameIntervalMs() || Config.FRAME_CAPTURE_INTERVAL_MS
+        : Config.FRAME_CAPTURE_INTERVAL_MS;
+
     // Capture frames using configured interval
     frameIntervalRef.current = setInterval(() => {
       captureAndSendFrame();
-    }, Config.FRAME_CAPTURE_INTERVAL_MS);
+    }, captureIntervalMs);
   };
 
   const stopFrameStreaming = () => {
@@ -236,8 +243,12 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     // Increment frame skip counter
     frameSkipCounterRef.current += 1;
 
-    // Only process every 3rd frame to reduce API calls and prevent disconnects
-    if (frameSkipCounterRef.current % 3 !== 0) {
+    const hostedMultiframe =
+      !inReviewMode && WebSocketService.getNvidiaStreamingMode() === 'hosted_multiframe';
+
+    // Preserve the existing every-third-frame behavior outside the isolated
+    // hosted experiment. hosted_multiframe sends each capture into its buffer.
+    if (!hostedMultiframe && frameSkipCounterRef.current % 3 !== 0) {
       console.log(`[CameraView] Skipping frame ${frameSkipCounterRef.current} (only sending every 3rd frame)`);
       return;
     }
