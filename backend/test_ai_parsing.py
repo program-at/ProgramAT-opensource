@@ -56,22 +56,16 @@ def load_stream_server_function(name: str):
 class TestIssueTemplateGuidance(unittest.TestCase):
     """Test Copilot-facing issue template guidance."""
 
-    def test_visual_at_template_uses_capability_routing(self):
+    def test_visual_at_template_uses_take_photo_baseline(self):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
-        self.assertIn("one user-facing task", template)
-        self.assertIn("If this issue enumerates multiple stages", template)
-        self.assertIn("one ordered `copilot_llm_call(...)` per stage", template)
-        self.assertIn("evaluate and escalate reasoning capabilities", template)
-        self.assertIn("pass useful structured artifacts to later calls", template)
-        self.assertIn("spatial_reasoning", template)
-        self.assertIn("Choose only from these capabilities", template)
-        self.assertNotIn("Capability Pipeline", template)
-        self.assertNotIn("should either utilize Yolo11", template)
-        self.assertNotIn("Google Vision", template)
-        self.assertIn("must not choose implementations", template)
-        self.assertIn("provider-specific `DEFAULT_MODEL` constants", template)
+        for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
+            self.assertIn(f"## {heading}", template)
+        self.assertIn("call_take_photo_baseline_vlm", template)
+        self.assertIn("TOOL_PROMPT", template)
+        self.assertNotIn("Task Stages", template)
+        self.assertNotIn("copilot_llm_call", template)
 
 
 class TestParserStageIssueIntegration(unittest.TestCase):
@@ -319,7 +313,7 @@ class TestParserStageIssueIntegration(unittest.TestCase):
 
         complete = self.normalize_requirements(
             {
-                "problem": "Crowded pickup areas make the correct car difficult to find.",
+                "description": "Find the user's Uber and guide them to it.",
                 "example_usage": "Find my Uber, locate its passenger door, and guide me to it.",
                 "implementation_details": "",
                 "custom_gpt": "no",

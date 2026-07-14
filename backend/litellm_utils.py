@@ -133,7 +133,7 @@ def _completion_kwargs(metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     kwargs: Dict[str, Any] = {}
     if not isinstance(metadata, dict):
         return kwargs
-    for key in ("temperature", "max_tokens", "top_p", "stop", "timeout", "response_format", "stream", "api_base", "base_url"):
+    for key in ("temperature", "max_tokens", "top_p", "stop", "timeout", "num_retries", "response_format", "stream", "api_base", "base_url"):
         if key in metadata and metadata[key] is not None:
             kwargs["api_base" if key == "base_url" else key] = metadata[key]
     return kwargs
@@ -159,3 +159,17 @@ def call_model(
         api_key=resolve_api_key(model_name, explicit_key if isinstance(explicit_key, str) else ""),
         **_completion_kwargs(metadata),
     )
+
+
+TAKE_PHOTO_BASELINE_MODEL = "gemini/gemini-3.1-flash-lite-preview"
+
+
+def call_take_photo_baseline_vlm(image: Any, prompt: str) -> str:
+    """Make the single fixed Gemini Flash Lite call used by take-photo P1."""
+    response = call_model(
+        model_name=TAKE_PHOTO_BASELINE_MODEL,
+        messages=[{"role": "user", "content": str(prompt).strip()}],
+        images=[image],
+        metadata={"num_retries": 0},
+    )
+    return extract_text(response)

@@ -194,6 +194,40 @@ def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) 
     return failures
 
 
+def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
+    """Enforce the E1/P1 generation contract for take-photo issues."""
+    if not re.search(
+        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take-photo\s*$",
+        issue_text,
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        return []
+    try:
+        tree = ast.parse(tool_text)
+    except SyntaxError:
+        return []
+
+    baseline_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "call_take_photo_baseline_vlm"
+        )
+    ]
+    failures = []
+    if len(baseline_calls) != 1:
+        failures.append(
+            f"{rel_path}: take-photo P1 requires exactly one call_take_photo_baseline_vlm() call; "
+            f"found {len(baseline_calls)}."
+        )
+    if "TOOL_PROMPT" not in _extract_string_constants(tree):
+        failures.append(f"{rel_path}: take-photo P1 requires one string TOOL_PROMPT constant.")
+    if extract_copilot_llm_task_categories(tool_text):
+        failures.append(f"{rel_path}: take-photo P1 must not call copilot_llm_call().")
+    return failures
+
+
 def validate_canonical_task_categories(tool_text: str, rel_path: Path) -> List[str]:
     failures: List[str] = []
     categories = extract_copilot_llm_task_categories(tool_text)
@@ -260,6 +294,7 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
         failures.extend(validate_no_stringified_copilot_results(text, rel_path))
         if issue_text:
             failures.extend(validate_stage_enforcement(text, issue_text, rel_path))
+            failures.extend(validate_take_photo_baseline(text, issue_text, rel_path))
 
     return failures
 
@@ -286,17 +321,13 @@ def main(argv: List[str] | None = None) -> int:
 
     failures = validate_files(paths, issue_text=issue_text)
     if failures:
-        print("Generated tools must use model_router_client capability interfaces for LLM/VLM operations.")
-        print("Do not implement detection, OCR, VLM, LLM, model loading, provider calls, or model discovery in tool files.")
-        print(
-            "When Task Stages are provided, compose one ordered copilot_llm_call() per stage."
-        )
+        print("Generated tool validation failed.")
         print()
         for failure in failures:
             print(failure)
         return 1
 
-    print("Generated tool router guardrails passed.")
+    print("Generated tool guardrails passed.")
     return 0
 
 

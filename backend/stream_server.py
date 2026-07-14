@@ -73,6 +73,8 @@ from model_router import (
     system_llm_call,
 )
 from litellm_utils import (
+    TAKE_PHOTO_BASELINE_MODEL,
+    call_take_photo_baseline_vlm,
     extract_text,
 )
 from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
@@ -114,6 +116,22 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+TAKE_PHOTO_PLANNING_MODE = os.environ.get(
+    'TAKE_PHOTO_PLANNING_MODE', 'no_planner'
+).strip().lower()
+SUPPORTED_TAKE_PHOTO_PLANNING_MODES = {
+    'no_planner', 'fused_prompt', 'separate_steps',
+}
+if TAKE_PHOTO_PLANNING_MODE not in SUPPORTED_TAKE_PHOTO_PLANNING_MODES:
+    raise ValueError(
+        f"Unsupported TAKE_PHOTO_PLANNING_MODE={TAKE_PHOTO_PLANNING_MODE!r}; "
+        f"expected one of {sorted(SUPPORTED_TAKE_PHOTO_PLANNING_MODES)}"
+    )
+
+BRAINSTORMING_ENABLED = os.environ.get(
+    'BRAINSTORMING_ENABLED', 'false'
+).strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _normalize_custom_gpt_value(value) -> str:
@@ -1540,6 +1558,34 @@ def _single_stage_tool_result(
         images=[image],
         metadata=call_metadata,
     )
+
+
+def _take_photo_tool_prompt(tool_name: str, task: str, tool_code: str) -> str:
+    """Read a generated TOOL_PROMPT without executing the tool; support old tools via task metadata."""
+    try:
+        tree = ast.parse(tool_code or '')
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == 'TOOL_PROMPT' for target in targets):
+                value = ast.literal_eval(node.value)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except (SyntaxError, ValueError, TypeError):
+        logger.debug("Could not extract TOOL_PROMPT from %s", tool_name, exc_info=True)
+    return str(task or '').strip() or str(tool_name).replace('_', ' ')
+
+
+def _run_take_photo_no_planner(tool_name: str, task: str, tool_code: str, image) -> str:
+    """Execute E1/P1 with exactly one direct Gemini Flash Lite inference."""
+    prompt = _take_photo_tool_prompt(tool_name, task, tool_code)
+    logger.info(
+        "[Take Photo E1] planning_mode=no_planner model=Gemini Flash Lite model_id=%s total_model_calls=1 "
+        "planner_calls=0 router_calls=0 cascade_calls=0 evaluator_calls=0",
+        TAKE_PHOTO_BASELINE_MODEL,
+    )
+    return call_take_photo_baseline_vlm(image=image, prompt=prompt)
 
 
 def _streaming_embedding_similarity(
@@ -4961,46 +5007,31 @@ Fields previously missing: {existing_data.get('missing_fields', [])}
 Merge the new transcript into those issue fields.
 """
 
-    return f"""Parse the following voice transcript and extract information for a visual assistive technology (AT) tool request.
+    return f"""Parse the following voice transcript for a visual assistive technology tool request.
 
 CRITICAL: Do not make up, infer, or extrapolate content that was not explicitly provided. Leave unmentioned fields empty.
 
-Extract only these issue fields:
-- title: concise summary, maximum 100 characters
-- description: description of the desired visual assistive technology
-- problem: problem it solves
-- solution: proposed solution
-- implementation_details: requested implementation details
-- example_usage: concrete example and expected behavior
-- alternatives: alternatives considered
-- live_mode: exactly "yes", "no", or empty when not explicitly stated
-- live_query: repeated live-mode query, otherwise empty
-- additional: other context
+Extract only these user-facing fields:
+- title: tool name, maximum 100 characters
+- description: the task the tool performs
+- example_usage: expected output
+- additional: constraints and examples
+- execution_mode: exactly "take-photo", "streaming", or empty when unstated
 - missing_fields: only missing important fields
 
 Only block creation when the core task is genuinely unclear.
-- Core context: problem or description.
-- Core goal: example_usage or another clear task goal in solution/description.
-- Derive a concise title, description, and solution from an explicit problem or example when possible without inventing new requirements.
-- implementation_details, alternatives, and additional are optional.
-- live_mode is optional when not explicitly stated.
-- If live_mode is "yes" and live_query is empty, include "live_query" in missing_fields.
-- If live_mode is "no", live_query is optional and must not be included in missing_fields.
-- Do not return stages; task decomposition is handled separately.
+- Tool name, task, and expected output are the core fields.
+- Constraints/examples and execution_mode may be empty when unstated.
+- Do not return any planning fields.
 
 Return ONLY this JSON object:
 {{
   "type": "visual AT",
   "title": "...",
   "description": "...",
-  "problem": "...",
-  "solution": "...",
-  "implementation_details": "...",
   "example_usage": "...",
-  "alternatives": "...",
-  "live_mode": "...",
-  "live_query": "...",
   "additional": "...",
+  "execution_mode": "...",
   "missing_fields": []
 }}
 {context_info}
@@ -5029,7 +5060,9 @@ def _normalize_issue_creation_requirements(
 ) -> Dict[str, Any]:
     normalized = dict(parsed_data)
     explicit_custom_gpt = _explicit_custom_gpt_value(transcript)
-    parsed_custom_gpt = _normalize_custom_gpt_value(
+    execution_mode = str(normalized.get('execution_mode') or '').strip().lower()
+    mode_custom_gpt = 'yes' if execution_mode == 'streaming' else ('no' if execution_mode == 'take-photo' else '')
+    parsed_custom_gpt = mode_custom_gpt or _normalize_custom_gpt_value(
         normalized.get('custom_gpt') or normalized.get('live_mode')
     )
     custom_gpt = explicit_custom_gpt or parsed_custom_gpt
@@ -5038,13 +5071,8 @@ def _normalize_issue_creation_requirements(
     normalized['custom_gpt'] = custom_gpt
     normalized['gpt_query'] = '' if custom_gpt == 'no' else gpt_query
 
-    has_context = bool(str(normalized.get('problem') or normalized.get('description') or '').strip())
-    has_goal = bool(str(
-        normalized.get('example_usage')
-        or normalized.get('solution')
-        or normalized.get('description')
-        or ''
-    ).strip())
+    has_context = bool(str(normalized.get('description') or '').strip())
+    has_goal = bool(str(normalized.get('example_usage') or '').strip())
 
     missing_fields = []
     if not has_context:
@@ -5080,6 +5108,16 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             "Issue extraction output=%s",
             json.dumps(issue_data, ensure_ascii=False),
         )
+
+        execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
+        if TAKE_PHOTO_PLANNING_MODE == 'no_planner' and execution_mode != 'streaming':
+            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
+            parsed_data['stages'] = []
+            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
+            logger.info("Take-photo planning_mode=no_planner; skipping stage decomposition")
+            return parsed_data
 
         planner_enabled = load_global_execution_config()['planner_enabled']
         if not planner_enabled:
@@ -5207,6 +5245,17 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
         elif value is None:
             return ''
         return str(value)
+
+    filled = filled.replace('<!-- A short Python-friendly name for the tool. -->',
+                            ensure_string(parsed_data.get('title', '')))
+    filled = filled.replace('<!-- What should the tool determine from the camera image? -->',
+                            ensure_string(parsed_data.get('description', '')))
+    filled = filled.replace('<!-- What should the spoken answer contain? -->',
+                            ensure_string(parsed_data.get('example_usage', '')))
+    filled = filled.replace('<!-- Important constraints, edge cases, and example inputs or answers. -->',
+                            ensure_string(parsed_data.get('additional', '')))
+    filled = filled.replace('<!-- Enter exactly: take-photo or streaming. -->',
+                            ensure_string(parsed_data.get('execution_mode', '')))
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])
@@ -5571,31 +5620,31 @@ async def create_github_issue(text: str):
         incomplete_issue['missing_fields'] = []
         incomplete_issue['timestamp'] = None
 
-        # --- Ideation turn ---
-        # If not yet done, send one open-ended question to help the user flesh out
-        # their idea, then wait for their answer before creating the issue.
-        if not pending_ideation['active']:
-            logger.info("Sending ideation question before issue creation")
-            _log_to_all_sessions("INFO", "Sending ideation question")
-            question = await generate_ideation_question(parsed_data, '')
-            pending_ideation['active'] = True
-            pending_ideation['parsed_data'] = parsed_data
-            pending_ideation['video_summary'] = ''
-            await _broadcast_ws({'type': 'ideation_question', 'message': question})
-            return  # wait for user's answer
+        if BRAINSTORMING_ENABLED:
+            # Send one open-ended question, then fold the answer into the issue.
+            if not pending_ideation['active']:
+                logger.info("Sending ideation question before issue creation")
+                _log_to_all_sessions("INFO", "Sending ideation question")
+                question = await generate_ideation_question(parsed_data, '')
+                pending_ideation['active'] = True
+                pending_ideation['parsed_data'] = parsed_data
+                pending_ideation['video_summary'] = ''
+                await _broadcast_ws({'type': 'ideation_question', 'message': question})
+                return
 
-        # Ideation answer has arrived — fold it into the parsed data and proceed.
-        logger.info("Received ideation answer, proceeding to issue creation")
-        _log_to_all_sessions("INFO", "Received ideation answer")
-        parsed_data = pending_ideation['parsed_data']
-        ideation_answer = text.strip()
-        if ideation_answer:
-            parsed_data['additional'] = (
-                (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer
-            ).strip()
-        pending_ideation['active'] = False
-        pending_ideation['parsed_data'] = None
-        pending_ideation['video_summary'] = ''
+            logger.info("Received ideation answer, proceeding to issue creation")
+            _log_to_all_sessions("INFO", "Received ideation answer")
+            parsed_data = pending_ideation['parsed_data']
+            ideation_answer = text.strip()
+            if ideation_answer:
+                parsed_data['additional'] = (
+                    (parsed_data.get('additional') or '') + '\n\nUser ideation response: ' + ideation_answer
+                ).strip()
+            pending_ideation['active'] = False
+            pending_ideation['parsed_data'] = None
+            pending_ideation['video_summary'] = ''
+        else:
+            logger.info("Brainstorming disabled; proceeding directly to issue creation")
 
         logger.info("Creating issue after ideation turn")
         _log_to_all_sessions("INFO", "Creating issue after ideation turn")
@@ -6099,24 +6148,26 @@ async def handle_creation_submit(request: web.Request) -> web.Response:
                 status=500,
             )
 
-        # Generate ideation question and return it for the client to present.
-        await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
-        try:
-            question = await generate_ideation_question(parsed_data, video_summary)
-        except Exception:
-            logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
-            question = "Is there anything specific about how the tool should behave in difficult conditions?"
+        if BRAINSTORMING_ENABLED:
+            await _broadcast_ws({'type': 'progress', 'message': 'Description parsed. Coming up with a follow-up question…'})
+            try:
+                question = await generate_ideation_question(parsed_data, video_summary)
+            except Exception:
+                logger.warning("generate_ideation_question failed in HTTP path", exc_info=True)
+                question = "Is there anything specific about how the tool should behave in difficult conditions?"
 
-        new_token = secrets.token_urlsafe(12)
-        pending_ideation_http[new_token] = {
-            'parsed_data': parsed_data,
-            'video_summary': video_summary,
-            'brainstorm_history': [],  # Will accumulate Q&A pairs
-            'last_question': question,  # Track the question we just asked
-            'created_at': datetime.now(),
-        }
-        logger.info("Sending ideation question via HTTP (token=%s)", new_token)
-        return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
+            new_token = secrets.token_urlsafe(12)
+            pending_ideation_http[new_token] = {
+                'parsed_data': parsed_data,
+                'video_summary': video_summary,
+                'brainstorm_history': [],
+                'last_question': question,
+                'created_at': datetime.now(),
+            }
+            logger.info("Sending ideation question via HTTP (token=%s)", new_token)
+            return web.json_response({'status': 'ideation', 'question': question, 'token': new_token})
+
+        logger.info("Brainstorming disabled for HTTP creation; creating issue directly")
 
     # --- Fill template and create GitHub issue (reached from Shape B) ---
     try:
@@ -6180,6 +6231,12 @@ async def handle_brainstorm_next_question(request: web.Request) -> web.Response:
     The answer to the current question was already stored when /submit-creation was called.
     Returns the next question and updated brainstorm history.
     """
+    if not BRAINSTORMING_ENABLED:
+        return web.json_response(
+            {'status': 'disabled', 'error': 'Brainstorming is temporarily disabled'},
+            status=503,
+        )
+
     try:
         data = await request.json()
     except Exception:
@@ -7604,17 +7661,16 @@ async def handle_client(websocket):
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
 
-                            single_stage_result = await asyncio.to_thread(
-                                _single_stage_tool_result,
-                                tool_name,
-                                data.get('task', ''),
-                                frame_image,
-                                False,
-                                {'tool_name': tool_name},
-                            )
-                            if single_stage_result is not None:
+                            if TAKE_PHOTO_PLANNING_MODE == 'no_planner':
+                                baseline_result = await asyncio.to_thread(
+                                    _run_take_photo_no_planner,
+                                    tool_name,
+                                    data.get('task', ''),
+                                    tool_code,
+                                    frame_image,
+                                )
                                 response_data = _build_mobile_tool_response(
-                                    'tool_result', tool_name, single_stage_result, datetime.now()
+                                    'tool_result', tool_name, baseline_result, datetime.now()
                                 )
                                 _log_final_tool_response(tool_name, response_data)
                                 await websocket.send(json.dumps(response_data))

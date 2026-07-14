@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite the code for this tool inside the tools folder. Assume the tool implements one user-facing task. For a Task Stages section, make one ordered `copilot_llm_call(...)` per stage and explicitly pass useful artifacts to later calls. Use only these capabilities: `general_reasoning`, `ocr`, `object_detection_localization`, `structured_visual_understanding`, `spatial_reasoning`, `navigation`, `camera_motion`, `temporal_reasoning`. Never use `visual_reasoning`. Do not import `litellm`, call `litellm.completion()`, create new model-router clients, create ModelRouter classes, resolve model names, resolve API keys, import detector libraries/provider SDKs/`YOLO`, define `COCO_CLASSES`, hardcode model names, load `.pt` files, or call `YOLO(...)`. Do not select implementations, providers, fallback order, retries, or verification logic in generated tools.";
+            const extraLine = "\n\nWrite this Python tool inside `tools/`. For take-photo mode, define one concise task-specific `TOOL_PROMPT`, import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with the supplied image and prompt, and return its answer directly. Do not make any other model or specialist calls.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,
