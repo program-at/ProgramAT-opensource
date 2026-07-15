@@ -64,6 +64,8 @@ class TestIssueTemplateGuidance(unittest.TestCase):
             self.assertIn(f"## {heading}", template)
         self.assertIn("call_take_photo_baseline_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
+        self.assertIn("Fused VLM Prompt", template)
+        self.assertIn("FUSED_VLM_PROMPT", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
 
@@ -122,6 +124,22 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn('"capability"', decomposition)
         self.assertIn("Each stage must contain exactly two fields: goal and capability", decomposition)
         self.assertNotIn('"missing_fields"', decomposition)
+
+    def test_fused_mode_adds_one_creation_time_vlm_prompt_to_parser_contract(self):
+        extraction = self.extraction_prompt(
+            "Identify the playing card. Only say rank and suit.",
+            planning_mode="fused_prompt",
+        )
+
+        self.assertIn('"fused_vlm_prompt"', extraction)
+        self.assertIn("preserve every task constraint and the requested output format", extraction)
+        self.assertIn("ordered logical sequence inside the single prompt", extraction)
+        self.assertIn("request only the final", extraction)
+        self.assertNotIn('"stages"', extraction)
+
+    def test_no_planner_parser_contract_remains_without_fused_prompt(self):
+        extraction = self.extraction_prompt("Read the medication label.")
+        self.assertNotIn('"fused_vlm_prompt"', extraction)
 
     def test_merges_only_stages_into_issue_data(self):
         issue_data = {"title": "Find my Uber", "missing_fields": []}

@@ -121,7 +121,7 @@ TAKE_PHOTO_PLANNING_MODE = os.environ.get(
     'TAKE_PHOTO_PLANNING_MODE', 'no_planner'
 ).strip().lower()
 SUPPORTED_TAKE_PHOTO_PLANNING_MODES = {
-    'no_planner', 'fused_prompt', 'separate_steps',
+    'no_planner', 'fused_prompt',
 }
 if TAKE_PHOTO_PLANNING_MODE not in SUPPORTED_TAKE_PHOTO_PLANNING_MODES:
     raise ValueError(
@@ -1577,12 +1577,47 @@ def _take_photo_tool_prompt(tool_name: str, task: str, tool_code: str) -> str:
     return str(task or '').strip() or str(tool_name).replace('_', ' ')
 
 
+def _take_photo_fused_prompt(tool_name: str, tool_code: str) -> str:
+    """Read the creation-time fused prompt without executing generated tool code."""
+    try:
+        tree = ast.parse(tool_code or '')
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(target, ast.Name) and target.id == 'FUSED_VLM_PROMPT'
+                for target in targets
+            ):
+                value = ast.literal_eval(node.value)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+    except (SyntaxError, ValueError, TypeError):
+        logger.debug("Could not extract FUSED_VLM_PROMPT from %s", tool_name, exc_info=True)
+    raise ValueError(
+        f"Take-photo tool {tool_name!r} has no persisted FUSED_VLM_PROMPT; "
+        "recreate or migrate the tool before using fused_prompt mode."
+    )
+
+
 def _run_take_photo_no_planner(tool_name: str, task: str, tool_code: str, image) -> str:
     """Execute E1/P1 with exactly one direct Gemini Flash Lite inference."""
     prompt = _take_photo_tool_prompt(tool_name, task, tool_code)
     logger.info(
         "[Take Photo E1] planning_mode=no_planner model=Gemini Flash Lite model_id=%s total_model_calls=1 "
         "planner_calls=0 router_calls=0 cascade_calls=0 evaluator_calls=0",
+        TAKE_PHOTO_BASELINE_MODEL,
+    )
+    return call_take_photo_baseline_vlm(image=image, prompt=prompt)
+
+
+def _run_take_photo_fused_prompt(tool_name: str, tool_code: str, image) -> str:
+    """Execute E1/P2 using only the creation-time fused prompt."""
+    prompt = _take_photo_fused_prompt(tool_name, tool_code)
+    logger.info(
+        "[Take Photo E1] planning_mode=fused_prompt model=Gemini Flash Lite model_id=%s "
+        "total_model_calls=1 planner_calls=0 router_calls=0 cascade_calls=0 "
+        "evaluator_calls=0 stage_executions=0",
         TAKE_PHOTO_BASELINE_MODEL,
     )
     return call_take_photo_baseline_vlm(image=image, prompt=prompt)
@@ -4986,7 +5021,11 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         logger.error(tb)
 
 
-def _build_issue_extraction_prompt(transcript: str, existing_data: Optional[dict] = None) -> str:
+def _build_issue_extraction_prompt(
+    transcript: str,
+    existing_data: Optional[dict] = None,
+    planning_mode: str = 'no_planner',
+) -> str:
     context_info = ""
     if existing_data:
         issue_fields = {
@@ -5007,6 +5046,24 @@ Fields previously missing: {existing_data.get('missing_fields', [])}
 Merge the new transcript into those issue fields.
 """
 
+    fused_prompt_contract = ""
+    fused_prompt_schema = ""
+    planning_fields_rule = "- Do not return any planning fields."
+    if planning_mode == 'fused_prompt':
+        fused_prompt_contract = """
+- fused_vlm_prompt: for take-photo requests, one concise direct instruction for a VLM; empty for streaming
+
+For fused_vlm_prompt, preserve every task constraint and the requested output format. Include an
+ordered logical sequence inside the single prompt when useful, but request only the final
+user-facing answer. Do not mention ProgramAT, planners, routing, capabilities, stages, cascades,
+evaluators, or model names. Do not invent requirements beyond the user's request.
+"""
+        fused_prompt_schema = '\n  "fused_vlm_prompt": "...",'
+        planning_fields_rule = (
+            "- Return fused_vlm_prompt, but do not return stages, capabilities, "
+            "routes, models, or any other planning fields."
+        )
+
     return f"""Parse the following voice transcript for a visual assistive technology tool request.
 
 CRITICAL: Do not make up, infer, or extrapolate content that was not explicitly provided. Leave unmentioned fields empty.
@@ -5018,11 +5075,12 @@ Extract only these user-facing fields:
 - additional: constraints and examples
 - execution_mode: exactly "take-photo", "streaming", or empty when unstated
 - missing_fields: only missing important fields
+{fused_prompt_contract}
 
 Only block creation when the core task is genuinely unclear.
 - Tool name, task, and expected output are the core fields.
 - Constraints/examples and execution_mode may be empty when unstated.
-- Do not return any planning fields.
+{planning_fields_rule}
 
 Return ONLY this JSON object:
 {{
@@ -5032,6 +5090,7 @@ Return ONLY this JSON object:
   "example_usage": "...",
   "additional": "...",
   "execution_mode": "...",
+{fused_prompt_schema}
   "missing_fields": []
 }}
 {context_info}
@@ -5097,7 +5156,9 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         Dictionary with parsed fields including 'missing_fields' list
     """
     try:
-        issue_prompt = _build_issue_extraction_prompt(transcript, existing_data)
+        issue_prompt = _build_issue_extraction_prompt(
+            transcript, existing_data, TAKE_PHOTO_PLANNING_MODE
+        )
         issue_response = system_llm_call(
             messages=[{'role': 'user', 'content': issue_prompt}],
             metadata={'response_format': {'type': 'json_object'}},
@@ -5110,6 +5171,21 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         )
 
         execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
+        if TAKE_PHOTO_PLANNING_MODE == 'fused_prompt' and execution_mode != 'streaming':
+            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
+            fused_prompt = str(parsed_data.get('fused_vlm_prompt') or '').strip()
+            parsed_data['fused_vlm_prompt'] = fused_prompt
+            parsed_data['stages'] = []
+            if not fused_prompt:
+                parsed_data['missing_fields'] = [
+                    *parsed_data.get('missing_fields', []), 'fused_vlm_prompt'
+                ]
+            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
+            logger.info("Take-photo planning_mode=fused_prompt; persisted fused prompt and skipped stages")
+            return parsed_data
+
         if TAKE_PHOTO_PLANNING_MODE == 'no_planner' and execution_mode != 'streaming':
             parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
             parsed_data['stages'] = []
@@ -5256,6 +5332,8 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                             ensure_string(parsed_data.get('additional', '')))
     filled = filled.replace('<!-- Enter exactly: take-photo or streaming. -->',
                             ensure_string(parsed_data.get('execution_mode', '')))
+    filled = filled.replace('<!-- Creation-time fused prompt; leave empty outside fused_prompt mode. -->',
+                            ensure_string(parsed_data.get('fused_vlm_prompt', '')))
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])
@@ -7671,6 +7749,19 @@ async def handle_client(websocket):
                                 )
                                 response_data = _build_mobile_tool_response(
                                     'tool_result', tool_name, baseline_result, datetime.now()
+                                )
+                                _log_final_tool_response(tool_name, response_data)
+                                await websocket.send(json.dumps(response_data))
+                                continue
+                            if TAKE_PHOTO_PLANNING_MODE == 'fused_prompt':
+                                fused_result = await asyncio.to_thread(
+                                    _run_take_photo_fused_prompt,
+                                    tool_name,
+                                    tool_code,
+                                    frame_image,
+                                )
+                                response_data = _build_mobile_tool_response(
+                                    'tool_result', tool_name, fused_result, datetime.now()
                                 )
                                 _log_final_tool_response(tool_name, response_data)
                                 await websocket.send(json.dumps(response_data))

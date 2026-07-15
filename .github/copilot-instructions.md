@@ -8,25 +8,29 @@ not print results, connect to the backend, or use WebSockets.
 
 ## Take-photo tools
 
-Implement one user-facing task with one concise task-specific prompt:
+When the issue's `Fused VLM Prompt` section is populated, use it verbatim:
 
 ```python
 from litellm_utils import call_take_photo_baseline_vlm
 
-TOOL_PROMPT = "Describe exactly what this tool should determine from the image."
+FUSED_VLM_PROMPT = "Copy the exact text from the issue's Fused VLM Prompt section."
 
 
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    answer = call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT)
+    answer = call_take_photo_baseline_vlm(image=image, prompt=FUSED_VLM_PROMPT)
     return answer
 ```
 
 Make exactly one `call_take_photo_baseline_vlm` call and return its answer
-directly. Do not add any other model calls, specialist calls, fallback logic,
+directly. Do not author, rewrite, or decompose the prompt. Do not add any other
+model calls, planner or router calls, stages, specialist calls, fallback logic,
 verification passes, or provider SDKs. Do not hardcode a model name in the tool;
 the shared helper owns the fixed Gemini Flash Lite model.
+
+When that issue section is empty, preserve the existing P1 behavior: define one
+concise task-specific `TOOL_PROMPT` and pass it to the same helper exactly once.
 
 ## Streaming tools
 

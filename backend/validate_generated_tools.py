@@ -80,6 +80,17 @@ def extract_stage_capabilities(issue_text: str) -> List[str]:
     return capabilities
 
 
+def extract_fused_vlm_prompt(issue_text: str) -> str:
+    match = re.search(r"^##\s+Fused\s+VLM\s+Prompt\s*$", issue_text, re.IGNORECASE | re.MULTILINE)
+    if not match:
+        return ""
+    remainder = issue_text[match.end():]
+    next_header = re.search(r"^##\s+", remainder, re.MULTILINE)
+    section = remainder[:next_header.start()] if next_header else remainder
+    section = re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL)
+    return section.strip()
+
+
 def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
     constants: dict[str, str] = {}
     if not isinstance(tree, ast.Module):
@@ -195,7 +206,7 @@ def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) 
 
 
 def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
-    """Enforce the E1/P1 generation contract for take-photo issues."""
+    """Enforce the E1/P1 or E1/P2 generation contract for take-photo issues."""
     if not re.search(
         r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take-photo\s*$",
         issue_text,
@@ -221,7 +232,27 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
             f"{rel_path}: take-photo P1 requires exactly one call_take_photo_baseline_vlm() call; "
             f"found {len(baseline_calls)}."
         )
-    if "TOOL_PROMPT" not in _extract_string_constants(tree):
+    constants = _extract_string_constants(tree)
+    fused_prompt = extract_fused_vlm_prompt(issue_text)
+    if fused_prompt:
+        if constants.get("FUSED_VLM_PROMPT") != fused_prompt:
+            failures.append(
+                f"{rel_path}: take-photo P2 requires FUSED_VLM_PROMPT to exactly match "
+                "the issue's Fused VLM Prompt section."
+            )
+        fused_call_uses = []
+        for call in baseline_calls:
+            prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
+            fused_call_uses.append(
+                prompt_keyword is not None
+                and isinstance(prompt_keyword.value, ast.Name)
+                and prompt_keyword.value.id == "FUSED_VLM_PROMPT"
+            )
+        if fused_call_uses != [True]:
+            failures.append(
+                f"{rel_path}: take-photo P2 must pass FUSED_VLM_PROMPT directly as the helper prompt."
+            )
+    elif "TOOL_PROMPT" not in constants:
         failures.append(f"{rel_path}: take-photo P1 requires one string TOOL_PROMPT constant.")
     if extract_copilot_llm_task_categories(tool_text):
         failures.append(f"{rel_path}: take-photo P1 must not call copilot_llm_call().")
