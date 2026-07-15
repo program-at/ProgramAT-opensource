@@ -436,7 +436,7 @@ class TestOutputFormatEnforcement(unittest.TestCase):
         self.assertEqual(result, "move up towards Start")
 
 
-
+class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):
     """Tests that return values conform to the tool contract (mocked)."""
 
     def setUp(self):

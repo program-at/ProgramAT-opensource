@@ -61,13 +61,9 @@ def _fix_diagonals(text: str) -> str:
     """Replace diagonal directions with their primary cardinal equivalent."""
     def _replace(m: re.Match) -> str:
         g1, g2, g3, g4 = m.group(1), m.group(2), m.group(3), m.group(4)
-        if g1:
+        if g1 or g2:
             return "up"
-        if g2:
-            return "up"
-        if g3:
-            return "down"
-        if g4:
+        if g3 or g4:
             return "down"
         return m.group(0)
 
