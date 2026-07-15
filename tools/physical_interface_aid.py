@@ -123,9 +123,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         interface_result = copilot_llm_call(
             capability="structured_visual_understanding",
             goal=(
-                "Identify the physical interface in view, list all visible "
+                "Identify the physical interface in view, list all interactive "
                 "buttons or controls with their labels and approximate positions, "
-                "and note whether a user's finger or pointer is visible and where."
+                "and note whether a user's finger or pointer is visible and where. "
+                "Do NOT list displays, screens, digital readouts, status indicators, "
+                "or any non-interactive elements."
             ),
             messages=[
                 {
@@ -133,11 +135,14 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are analyzing a physical interface for a blind user. "
                         "State: (1) the interface type (e.g. microwave keypad, "
-                        "thermostat, kiosk, checkout terminal), (2) every visible "
+                        "thermostat, kiosk, checkout terminal), (2) every interactive "
                         "button or control with its label and grid position "
-                        "(e.g. top-left, center-right), (3) whether a human finger "
-                        "or stylus is visible and its approximate location on the "
-                        "interface. Flag any obstructed or unclear elements. "
+                        "(e.g. top-left, center-right) — do NOT include displays, "
+                        "screens, digital readouts, clocks, timers, or status "
+                        "indicators; list only elements the user can physically "
+                        "activate, (3) whether a human finger or stylus is visible "
+                        "and its approximate location on the interface. "
+                        "Flag any obstructed or unclear buttons. "
                         "If lighting is poor, say so. Be concise."
                     ),
                 },
@@ -145,7 +150,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "role": "user",
                     "content": (
                         "What kind of interface is this and where are all the "
-                        "buttons? Is a finger visible?"
+                        "interactive buttons? Is a finger visible?"
                     ),
                 },
             ],
@@ -153,7 +158,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             metadata={
                 "tool_name": TOOL_NAME,
                 "route_text": (
-                    "identify physical interface layout, buttons/controls, "
+                    "identify physical interface interactive buttons/controls "
                     "and finger position"
                 ),
             },
@@ -175,27 +180,31 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "role": "system",
                     "content": (
                         "You are determining how a blind user's finger relates to "
-                        "buttons on a physical interface. "
-                        "Given the interface layout, state: "
-                        "(1) Is the finger DIRECTLY ON a button — meaning it "
+                        "the nearest interactive button on a physical interface. "
+                        "Focus only on the single button closest to the finger — "
+                        "do NOT describe other buttons, display elements, or any "
+                        "part of the interface not relevant to the finger's position. "
+                        "State: "
+                        "(1) Is the finger DIRECTLY ON that button — meaning it "
                         "clearly overlaps the button's area? Or is it only NEARBY "
-                        "or ADJACENT to a button without overlapping? Use the "
-                        "button's label and state 'on' or 'near'. "
-                        "(2) If the finger is NOT directly on a button, give the "
-                        "exact direction needed to move onto the nearest button "
+                        "or ADJACENT without overlapping? Use the button's label "
+                        "and state 'on' or 'near'. "
+                        "(2) If the finger is NOT directly on the button, give the "
+                        "exact direction needed to move onto it "
                         "(up, down, left, right, up-left, up-right, down-left, "
                         "down-right). Only use 'already there' if the finger "
                         "clearly and unambiguously overlaps the button. "
-                        "(3) Any nearby alternative buttons if direction is "
-                        "ambiguous. If no finger is visible, say so."
+                        "(3) Only if two buttons are genuinely equidistant, name "
+                        "both. If no finger is visible, say so."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
                         f"Interface layout: {interface_context}\n"
-                        "Is the finger directly on a button (overlapping) or only "
-                        "near one? If near, which direction must the user move?"
+                        "Which single button is the finger closest to? Is the "
+                        "finger directly on it (overlapping) or only near it? "
+                        "If near, which direction must the user move?"
                     ),
                 },
             ]
@@ -205,21 +214,26 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "role": "system",
                     "content": (
                         "You are determining how a blind user's finger relates to "
-                        "buttons on a physical interface visible in the image. "
-                        "State: (1) Is the finger DIRECTLY ON a button (overlapping "
-                        "its area) or only NEAR/ADJACENT to a button? Use 'on' or "
-                        "'near'. "
-                        "(2) If the finger is NOT directly on a button, give the "
-                        "direction needed to move onto the nearest button. Only use "
-                        "'already there' if the finger clearly overlaps the button. "
-                        "(3) Any ambiguous alternatives. "
+                        "the nearest interactive button on a physical interface "
+                        "visible in the image. "
+                        "Focus only on the single button closest to the finger — "
+                        "do NOT describe other buttons, displays, or unrelated "
+                        "elements. "
+                        "State: (1) Is the finger DIRECTLY ON that button "
+                        "(overlapping its area) or only NEAR/ADJACENT? Use 'on' "
+                        "or 'near'. "
+                        "(2) If the finger is NOT directly on the button, give the "
+                        "direction needed to move onto it. Only use 'already there' "
+                        "if the finger clearly overlaps the button. "
+                        "(3) Only if two buttons are genuinely equidistant, name both. "
                         "If no finger is visible, say so."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Is the finger directly on a button or only near one? "
+                        "Which single button is the finger closest to? Is the "
+                        "finger directly on it or only near it? "
                         "If near, which direction should the user move?"
                     ),
                 },
@@ -256,6 +270,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface. "
                         "The user cannot see. "
+                        "Only reference the single button or element that is "
+                        "relevant to the user's finger — do NOT mention other "
+                        "buttons, display elements, status readouts, or any part "
+                        "of the interface not immediately relevant to where the "
+                        "finger is or needs to go. "
                         "You MUST output EXACTLY ONE of these three forms — nothing else: "
                         "  A) 'your finger is on [element]' — only when the "
                         "spatial analysis explicitly states the finger is ON or directly "
@@ -276,9 +295,9 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                 {
                     "role": "user",
                     "content": (
-                        f"Interface: {interface_context}\n"
                         f"Spatial analysis: {spatial_context}\n"
-                        "Give the spoken guidance now."
+                        "Give the spoken guidance now — reference only the element "
+                        "the finger is on or needs to reach."
                     ),
                 },
             ]
@@ -290,6 +309,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface visible in the image. "
                         "The user cannot see. "
+                        "Only reference the single button or element that is "
+                        "relevant to the user's finger — do NOT mention other "
+                        "buttons, display elements, status readouts, or any part "
+                        "of the interface not immediately relevant to where the "
+                        "finger is or needs to go. "
                         "You MUST output EXACTLY ONE of these three forms — nothing else: "
                         "  A) 'your finger is on [element]' — only when the "
                         "finger clearly overlaps the element area. "
@@ -308,19 +332,25 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                 },
                 {
                     "role": "user",
-                    "content": "Give the spoken guidance now.",
+                    "content": (
+                        "Give the spoken guidance now — reference only the element "
+                        "the finger is on or needs to reach."
+                    ),
                 },
             ]
 
         guidance_result = copilot_llm_call(
             capability="navigation",
             goal=(
-                "Produce a spoken instruction (≤15 words) in one of three strict forms: "
+                "Produce a spoken instruction (≤15 words) referencing only the "
+                "single button relevant to the user's finger position. "
+                "Use one of three strict forms: "
                 "'your finger is on [element]' when the finger overlaps the element; "
                 "'move [direction] towards [element]' with a single cardinal direction "
                 "(left, right, up, or down only — no diagonals); or "
                 "'[element a] is slightly [direction] of your finger, [element b] is "
                 "slightly [opposite direction] of your finger' when equidistant. "
+                "Never mention displays, readouts, or unrelated interface elements. "
                 "Never use: touch, touching, tap, tapping, press, pressing, reach, reaching, "
                 "find, finding, locate, locating."
             ),
