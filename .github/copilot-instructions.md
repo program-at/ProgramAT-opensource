@@ -8,29 +8,39 @@ not print results, connect to the backend, or use WebSockets.
 
 ## Take-photo tools
 
-When the issue's `Fused VLM Prompt` section is populated, use it verbatim:
+Define exactly one `TOOL_PROMPT` and use this shape:
 
 ```python
 from litellm_utils import call_take_photo_baseline_vlm
 
-FUSED_VLM_PROMPT = "Copy the exact text from the issue's Fused VLM Prompt section."
+TOOL_NAME = "tool_name"
+TOOL_PROMPT = "One task-specific instruction."
 
 
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    answer = call_take_photo_baseline_vlm(image=image, prompt=FUSED_VLM_PROMPT)
-    return answer
+    return call_take_photo_baseline_vlm(
+        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
+    )
 ```
 
-Make exactly one `call_take_photo_baseline_vlm` call and return its answer
-directly. Do not author, rewrite, or decompose the prompt. Do not add any other
-model calls, planner or router calls, stages, specialist calls, fallback logic,
-verification passes, or provider SDKs. Do not hardcode a model name in the tool;
-the shared helper owns the fixed Gemini Flash Lite model.
+Read `Prompt strategy` in the issue. For `no_planner`, copy `P1 exact prompt`
+verbatim. For `copilot_fused_prompt`, author the shortest high-quality fused
+prompt that preserves Task, Expected output, and Constraints / examples. Include
+an unavailable-information fallback and request only an accessible, concise,
+audio-friendly final answer. Simple recognition, OCR, classification, and
+identification tasks should be direct, without steps. Use an ordered logical
+sequence only when later reasoning depends on earlier visual findings. You may
+consult repository capability descriptions as reasoning examples, but do not
+emit capability names, runtime stages, routing metadata, cascades, or evaluators.
 
-When that issue section is empty, preserve the existing P1 behavior: define one
-concise task-specific `TOOL_PROMPT` and pass it to the same helper exactly once.
+Simple example: `Identify the visible hand gesture. Return only the gesture name; if no gesture is clear, say "No clear gesture."`
+
+Complex example: `Inspect the image for chairs, benches, or other seating. Determine which seats are visibly unoccupied, select the nearest suitable option, and give concise spoken guidance toward it. If none is visible, say so. Return only the final guidance.`
+
+Make exactly one helper call. Do not add planner, router, specialist, fallback
+model, verification, or provider calls. The shared helper owns Gemini Flash Lite.
 
 ## Streaming tools
 

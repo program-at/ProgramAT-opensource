@@ -164,8 +164,10 @@ def call_model(
 TAKE_PHOTO_BASELINE_MODEL = "gemini/gemini-3.1-flash-lite-preview"
 
 
-def call_take_photo_baseline_vlm(image: Any, prompt: str) -> str:
-    """Make the single fixed Gemini Flash Lite call used by take-photo P1."""
+def call_take_photo_baseline_vlm(
+    image: Any, prompt: str, tool_name: Optional[str] = None,
+) -> str:
+    """Make the single fixed Gemini Flash Lite call used by take-photo P1 and P2."""
     response = call_model(
         model_name=TAKE_PHOTO_BASELINE_MODEL,
         messages=[{"role": "user", "content": str(prompt).strip()}],

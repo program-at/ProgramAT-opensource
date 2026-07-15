@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite this Python tool inside `tools/`. For take-photo mode, copy a populated `Fused VLM Prompt` section verbatim into `FUSED_VLM_PROMPT`; if empty, retain the existing `TOOL_PROMPT` behavior. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with the supplied image and prompt, and return its answer directly. Do not author or rewrite a fused prompt, plan stages, or make any other model or specialist calls.";
+            const extraLine = "\n\nWrite this Python tool inside `tools/` and follow the issue's `Prompt strategy`. For `no_planner`, copy `P1 exact prompt` verbatim into `TOOL_PROMPT`. For `copilot_fused_prompt`, author one concise task-specific fused `TOOL_PROMPT` using Task, Expected output, Constraints / examples, and the repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,

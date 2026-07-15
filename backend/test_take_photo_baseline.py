@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import litellm_utils
-from validate_generated_tools import extract_fused_vlm_prompt, validate_take_photo_baseline
+from validate_generated_tools import validate_take_photo_baseline
 
 
 class TestTakePhotoBaseline(unittest.TestCase):
@@ -33,9 +33,10 @@ class TestTakePhotoBaseline(unittest.TestCase):
         issue = "## Mode\n\ntake-photo\n"
         tool = '''
 from litellm_utils import call_take_photo_baseline_vlm
+TOOL_NAME = "read_label"
 TOOL_PROMPT = "Read the label."
 def main(image, input_data):
-    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT)
+    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
         self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/read_label.py")), [])
 
@@ -43,51 +44,79 @@ def main(image, input_data):
         issue = "## Mode\n\ntake-photo\n"
         tool = '''
 TOOL_PROMPT = "Read the label."
+TOOL_NAME = "read_label"
 def main(image, input_data):
     copilot_llm_call(capability="ocr", images=[image])
     call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT)
-    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT)
+    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
         failures = validate_take_photo_baseline(tool, issue, Path("tools/read_label.py"))
         self.assertTrue(any("exactly one" in failure for failure in failures))
         self.assertTrue(any("must not call copilot_llm_call" in failure for failure in failures))
 
-    def test_fused_prompt_is_persisted_and_must_be_copied_verbatim(self):
+    def test_p1_prompt_is_mechanical_and_must_be_copied_verbatim(self):
         prompt = (
             "Inspect the image for seats, determine which are unoccupied, select the nearest "
             "available seat, and return only concise spoken directions."
         )
-        issue = f"## Mode\n\ntake-photo\n\n## Fused VLM Prompt\n\n{prompt}\n"
+        issue = f"## Mode\n\ntake-photo\n\n## Prompt strategy\n\nno_planner\n\n## P1 exact prompt\n\n{prompt}\n"
         tool = f'''
 from litellm_utils import call_take_photo_baseline_vlm
-FUSED_VLM_PROMPT = {prompt!r}
+TOOL_NAME = "find_seat"
+TOOL_PROMPT = {prompt!r}
 def main(image, input_data):
-    return call_take_photo_baseline_vlm(image=image, prompt=FUSED_VLM_PROMPT)
+    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
-        self.assertEqual(extract_fused_vlm_prompt(issue), prompt)
         self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/find_seat.py")), [])
 
         rewritten = tool.replace("concise spoken directions", "directions")
         failures = validate_take_photo_baseline(rewritten, issue, Path("tools/find_seat.py"))
         self.assertTrue(any("exactly match" in failure for failure in failures))
 
-        authored_call = tool.replace("prompt=FUSED_VLM_PROMPT", 'prompt="Describe the image."')
+        authored_call = tool.replace("prompt=TOOL_PROMPT", 'prompt="Describe the image."')
         failures = validate_take_photo_baseline(authored_call, issue, Path("tools/find_seat.py"))
-        self.assertTrue(any("pass FUSED_VLM_PROMPT directly" in failure for failure in failures))
+        self.assertTrue(any("pass TOOL_PROMPT directly" in failure for failure in failures))
 
-    def test_fused_runtime_has_one_helper_call_and_no_planner_or_router_calls(self):
+    def test_copilot_fused_prompt_may_be_authored_in_one_tool_prompt(self):
+        issue = """## Mode
+
+take-photo
+
+## Prompt strategy
+
+copilot_fused_prompt
+
+## P1 exact prompt
+
+"""
+        tool = '''
+from litellm_utils import call_take_photo_baseline_vlm
+TOOL_NAME = "find_seat"
+TOOL_PROMPT = (
+    "Inspect the image for seating, determine which seats are unoccupied, select the "
+    "nearest suitable option, and return only concise spoken guidance toward it. "
+    "If none is visible, say so."
+)
+def main(image, input_data):
+    return call_take_photo_baseline_vlm(
+        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
+    )
+'''
+        self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/find_seat.py")), [])
+
+    def test_shared_runtime_has_one_helper_call_and_no_planner_or_router_calls(self):
         source_path = Path(__file__).resolve().parent / "stream_server.py"
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
         function = next(
             node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "_run_take_photo_fused_prompt"
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_take_photo_baseline"
         )
         calls = [
             node.func.id for node in ast.walk(function)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         ]
         self.assertEqual(calls.count("call_take_photo_baseline_vlm"), 1)
-        self.assertEqual(calls.count("_take_photo_fused_prompt"), 1)
+        self.assertEqual(calls.count("_take_photo_tool_prompt"), 1)
         self.assertNotIn("system_llm_call", calls)
         self.assertNotIn("copilot_llm_call", calls)
         self.assertNotIn("execute_capability_sequence", calls)
@@ -98,7 +127,7 @@ def main(image, input_data):
         references = [
             node for node in ast.walk(tree)
             if isinstance(node, ast.Name)
-            and node.id == "_run_take_photo_no_planner"
+            and node.id == "_run_take_photo_baseline"
             and isinstance(node.ctx, ast.Load)
         ]
         self.assertEqual(len(references), 1)

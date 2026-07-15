@@ -64,10 +64,18 @@ class TestIssueTemplateGuidance(unittest.TestCase):
             self.assertIn(f"## {heading}", template)
         self.assertIn("call_take_photo_baseline_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("Fused VLM Prompt", template)
-        self.assertIn("FUSED_VLM_PROMPT", template)
+        self.assertIn("Prompt strategy", template)
+        self.assertIn("P1 exact prompt", template)
+        self.assertIn("copilot_fused_prompt", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
+
+        instructions_path = template_path.parent.parent / "copilot-instructions.md"
+        instructions = instructions_path.read_text(encoding="utf-8")
+        self.assertIn("Simple example: `Identify the visible hand gesture", instructions)
+        self.assertIn("Complex example: `Inspect the image for chairs", instructions)
+        self.assertIn("should be direct, without steps", instructions)
+        self.assertIn("only when later reasoning depends", instructions)
 
 
 class TestParserStageIssueIntegration(unittest.TestCase):
@@ -125,16 +133,12 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("Each stage must contain exactly two fields: goal and capability", decomposition)
         self.assertNotIn('"missing_fields"', decomposition)
 
-    def test_fused_mode_adds_one_creation_time_vlm_prompt_to_parser_contract(self):
-        extraction = self.extraction_prompt(
-            "Identify the playing card. Only say rank and suit.",
-            planning_mode="fused_prompt",
-        )
+    def test_parser_contract_contains_fields_only_for_both_prompt_modes(self):
+        extraction = self.extraction_prompt("Identify the playing card. Only say rank and suit.")
 
-        self.assertIn('"fused_vlm_prompt"', extraction)
-        self.assertIn("preserve every task constraint and the requested output format", extraction)
-        self.assertIn("ordered logical sequence inside the single prompt", extraction)
-        self.assertIn("request only the final", extraction)
+        self.assertNotIn('"fused_vlm_prompt"', extraction)
+        self.assertIn("Do not generate or improve a VLM prompt", extraction)
+        self.assertIn("Do not return stages, subtasks, reasoning steps", extraction)
         self.assertNotIn('"stages"', extraction)
 
     def test_no_planner_parser_contract_remains_without_fused_prompt(self):

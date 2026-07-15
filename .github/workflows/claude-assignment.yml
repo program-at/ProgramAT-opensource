@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write this Python tool inside `tools/`. For take-photo mode, copy a populated `Fused VLM Prompt` section verbatim into `FUSED_VLM_PROMPT`; if empty, retain the existing `TOOL_PROMPT` behavior. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once, and return its answer directly. Do not author or rewrite a fused prompt, plan stages, or make any other model or specialist calls. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write this Python tool inside `tools/` and follow the issue's `Prompt strategy`. For `no_planner`, copy `P1 exact prompt` verbatim into `TOOL_PROMPT`. For `copilot_fused_prompt`, author one concise task-specific fused `TOOL_PROMPT` using the issue fields and repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -65,10 +65,10 @@ jobs:
             Issue body: ${{ github.event.issue.body }}
             Requirements:
             - Write the code for this tool inside the tools folder.
-            - For take-photo mode, copy a populated `Fused VLM Prompt` verbatim into `FUSED_VLM_PROMPT`; otherwise retain `TOOL_PROMPT`.
+            - Follow the issue's `Prompt strategy`: copy `P1 exact prompt` for `no_planner`, or author one fused `TOOL_PROMPT` for `copilot_fused_prompt`.
             - Import `call_take_photo_baseline_vlm` from `litellm_utils`.
             - Call that helper exactly once with the supplied image and prompt, then return its answer directly.
-            - Do not author or rewrite a fused prompt, plan stages, or call a planner/router.
+            - Do not create runtime stages or call a planner/router/evaluator.
             - Do not make any other model or specialist calls.
             - Follow the existing repository structure and style.
             - Make the smallest reasonable implementation.

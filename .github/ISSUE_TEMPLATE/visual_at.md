@@ -24,14 +24,27 @@ assignees: ''
 ## Mode
 <!-- Enter exactly: take-photo or streaming. -->
 
-## Fused VLM Prompt
-<!-- Creation-time fused prompt; leave empty outside fused_prompt mode. -->
+## Prompt strategy
+<!-- Backend-selected take-photo prompt strategy. -->
 
-For a take-photo tool with a populated fused prompt, copy it verbatim into a
-`FUSED_VLM_PROMPT` string constant and pass that constant to
-`call_take_photo_baseline_vlm`. Do not invent, rewrite, or decompose the prompt.
-If this section is empty, retain the existing `TOOL_PROMPT` behavior. The tool
-must make no other model or specialist calls.
+## P1 exact prompt
+<!-- Mechanically assembled P1 prompt; empty for Copilot P2. -->
+
+For `no_planner`, copy the P1 exact prompt verbatim into `TOOL_PROMPT`.
+
+For `copilot_fused_prompt`, author one concise, task-specific `TOOL_PROMPT` from
+Task, Expected output, and Constraints / examples. Preserve the requested
+behavior and output format, make the final answer accessible and audio-friendly,
+and include a clear fallback when the requested visual information is unavailable.
+Prefer the shortest prompt that captures the task. Do not force simple recognition,
+OCR, classification, or identification tasks into steps. Use an ordered logical
+sequence only when later reasoning genuinely depends on earlier visual findings.
+The sequence remains inside one prompt and must request only the final answer.
+Do not create runtime stages, capability metadata, routing, cascades, evaluators,
+or specialist-model calls. Do not include capability names unless naturally needed.
+
+Every take-photo tool must define exactly one `TOOL_PROMPT`, call
+`call_take_photo_baseline_vlm` exactly once, and return its answer directly.
 
 Tools belong in `tools/`, must be Python, and must expose `main(image,
 input_data)`. Return concise audio-friendly text. Do not connect to the backend
