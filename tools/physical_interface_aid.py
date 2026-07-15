@@ -40,12 +40,12 @@ MAX_ERROR_MSG_LEN = 150
 REPEAT_INTERVAL = 10
 
 # ── Code-level output-format enforcement (applied regardless of routing mode) ─
-# Diagonal directions → nearest cardinal direction.  Matched case-insensitively.
+# Diagonal directions → nearest cardinal direction.  Named groups:
+#   vert  — the vertical component (up/upper → "up"; down/lower → "down")
+#   horiz — the horizontal component (left/right, discarded)
+# The separator between vert and horiz is optional and may be a hyphen or space.
 _DIAGONAL_RE = re.compile(
-    r"\b(up(?:-|\s)?left|upper(?:-|\s)?left)\b"
-    r"|\b(up(?:-|\s)?right|upper(?:-|\s)?right)\b"
-    r"|\b(down(?:-|\s)?left|lower(?:-|\s)?left)\b"
-    r"|\b(down(?:-|\s)?right|lower(?:-|\s)?right)\b",
+    r"\b(?P<vert>up(?:per)?|down|lower)(?:-|\s)?(?P<horiz>left|right)\b",
     re.IGNORECASE,
 )
 
@@ -60,12 +60,8 @@ _BANNED_VERB_RE = re.compile(
 def _fix_diagonals(text: str) -> str:
     """Replace diagonal directions with their primary cardinal equivalent."""
     def _replace(m: re.Match) -> str:
-        g1, g2, g3, g4 = m.group(1), m.group(2), m.group(3), m.group(4)
-        if g1 or g2:
-            return "up"
-        if g3 or g4:
-            return "down"
-        return m.group(0)
+        vert = m.group("vert").lower()
+        return "down" if vert in ("down", "lower") else "up"
 
     return _DIAGONAL_RE.sub(_replace, text)
 
