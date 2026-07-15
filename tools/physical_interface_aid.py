@@ -30,6 +30,11 @@ STREAMING_WORD_LIMIT = 15
 # Maximum characters for the raw error message portion (truncated at word boundary)
 MAX_ERROR_MSG_LEN = 150
 
+# Re-announce the same guidance after this many frames even when the scene is
+# unchanged, so the user hears confirmation and doesn't experience prolonged
+# silence while the server is actively processing frames.
+REPEAT_INTERVAL = 10
+
 # ── streaming state ──────────────────────────────────────────────────────────
 _last_response: str = ""
 _frame_count: int = 0
@@ -126,13 +131,16 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "You are determining how a blind user's finger relates to "
                         "buttons on a physical interface. "
                         "Given the interface layout, state: "
-                        "(1) which button the finger is currently touching or "
-                        "nearest to (use the button's label), "
-                        "(2) the exact direction the user needs to move to reach "
-                        "the closest or most prominent button "
+                        "(1) Is the finger DIRECTLY ON a button — meaning it "
+                        "clearly overlaps the button's area? Or is it only NEARBY "
+                        "or ADJACENT to a button without overlapping? Use the "
+                        "button's label and state 'on' or 'near'. "
+                        "(2) If the finger is NOT directly on a button, give the "
+                        "exact direction needed to move onto the nearest button "
                         "(up, down, left, right, up-left, up-right, down-left, "
-                        "down-right, or 'already there'), "
-                        "(3) any nearby alternative buttons if direction is "
+                        "down-right). Only use 'already there' if the finger "
+                        "clearly and unambiguously overlaps the button. "
+                        "(3) Any nearby alternative buttons if direction is "
                         "ambiguous. If no finger is visible, say so."
                     ),
                 },
@@ -140,8 +148,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "role": "user",
                     "content": (
                         f"Interface layout: {interface_context}\n"
-                        "Where is the finger relative to the buttons, and which "
-                        "direction should the user move?"
+                        "Is the finger directly on a button (overlapping) or only "
+                        "near one? If near, which direction must the user move?"
                     ),
                 },
             ]
@@ -152,17 +160,21 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are determining how a blind user's finger relates to "
                         "buttons on a physical interface visible in the image. "
-                        "State: (1) which button the finger is nearest to, "
-                        "(2) which direction to move to reach it, "
-                        "(3) any ambiguous alternatives. "
+                        "State: (1) Is the finger DIRECTLY ON a button (overlapping "
+                        "its area) or only NEAR/ADJACENT to a button? Use 'on' or "
+                        "'near'. "
+                        "(2) If the finger is NOT directly on a button, give the "
+                        "direction needed to move onto the nearest button. Only use "
+                        "'already there' if the finger clearly overlaps the button. "
+                        "(3) Any ambiguous alternatives. "
                         "If no finger is visible, say so."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "Where is the finger relative to the interface buttons, "
-                        "and which direction should the user move?"
+                        "Is the finger directly on a button or only near one? "
+                        "If near, which direction should the user move?"
                     ),
                 },
             ]
@@ -197,11 +209,14 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface. "
-                        "Give ONE clear instruction in 15 words or fewer: "
-                        "either confirm which button the finger is on "
-                        "(e.g. 'Your finger is on the 7 button') "
-                        "or give a brief direction to move "
+                        "Give ONE clear instruction in 15 words or fewer. "
+                        "Priority: if the spatial analysis says the finger is "
+                        "NEAR or ADJACENT to a button but NOT directly on it, "
+                        "always give a direction to move "
                         "(e.g. 'Move right to the Start button'). "
+                        "Only confirm 'Your finger is on the X button' when the "
+                        "spatial analysis explicitly states the finger is ON or "
+                        "directly overlapping that button. "
                         "If direction is ambiguous, name the nearby buttons "
                         "(e.g. '5 is slightly left, 6 is slightly right'). "
                         "If the interface is unclear due to lighting or "
@@ -225,9 +240,10 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface visible in the image. "
-                        "Give ONE clear instruction in 15 words or fewer: "
-                        "confirm which button the finger is on, or give a "
-                        "direction to move. "
+                        "Give ONE clear instruction in 15 words or fewer. "
+                        "Prefer directional guidance (e.g. 'Move right to the 7 "
+                        "button') over confirming 'on the button' unless the finger "
+                        "clearly overlaps the button. "
                         "Never exceed 15 words."
                     ),
                 },
@@ -265,8 +281,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             response = " ".join(words[:STREAMING_WORD_LIMIT])
 
         # ── Streaming deduplication ───────────────────────────────────────────
-        # Suppress repeat announcements when the scene hasn't changed
-        if response == _last_response:
+        # Suppress repeat announcements when the scene hasn't changed, but
+        # re-announce every REPEAT_INTERVAL frames so the user isn't left in
+        # silence while the server is actively processing (the cause of the
+        # "no output" symptom reported when server logs show a valid response).
+        if response == _last_response and _frame_count % REPEAT_INTERVAL != 0:
             return ""
 
         _last_response = response

@@ -131,7 +131,11 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         self.assertEqual(result, "Move right to the Start button")
 
     def test_streaming_deduplication_returns_empty_on_repeat(self):
-        """Calling main() twice with the same scene should return '' on second call."""
+        """Calling main() twice with the same scene should return '' on second call
+        (when the second call does not land on a REPEAT_INTERVAL boundary)."""
+        # _frame_count starts at 0; first call → 1, second call → 2.
+        # Neither is a multiple of REPEAT_INTERVAL (10), so the second call
+        # should be suppressed.
         side_effects = self._patched_llm([
             "microwave|buttons: Start|finger: left",
             "finger left of Start; move right",
@@ -147,6 +151,29 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
             second = physical_interface_aid.main(image, {})
         self.assertEqual(first, "Move right to the Start button")
         self.assertEqual(second, "")
+
+    def test_periodic_repeat_re_announces_at_interval(self):
+        """Same guidance should be re-announced at every REPEAT_INTERVAL frames."""
+        interval = physical_interface_aid.REPEAT_INTERVAL
+        # Seed state: _frame_count starts at 0.
+        # We want the Nth call to land on frame == interval (a multiple).
+        # That means we need (interval - 1) suppressed calls before the repeat call.
+        guidance = "Move right to the Start button"
+        # Each call needs 3 LLM results; produce enough for interval + 1 calls.
+        side_effects = self._patched_llm(
+            ["iface", "spatial", guidance] * (interval + 1)
+        )
+        image = create_blank_image()
+        with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
+            results = [physical_interface_aid.main(image, {}) for _ in range(interval + 1)]
+        # Frame 1 → first announcement
+        self.assertEqual(results[0], guidance)
+        # Frames 2..(interval-1) → suppressed
+        for i in range(1, interval - 1):
+            self.assertEqual(results[i], "", f"Expected '' at frame {i + 1}, got {results[i]!r}")
+        # Frame interval → periodic re-announcement
+        self.assertEqual(results[interval - 1], guidance,
+                         f"Expected repeat at frame {interval}")
 
     def test_new_response_after_scene_change_is_spoken(self):
         """A different guidance should not be suppressed by deduplication."""
@@ -298,6 +325,12 @@ class TestStreamingDeduplication(unittest.TestCase):
     def test_module_has_frame_count_state(self):
         """Module must expose _frame_count."""
         self.assertTrue(hasattr(physical_interface_aid, '_frame_count'))
+
+    def test_module_has_repeat_interval_constant(self):
+        """Module must expose REPEAT_INTERVAL for periodic re-announcement."""
+        self.assertTrue(hasattr(physical_interface_aid, 'REPEAT_INTERVAL'))
+        self.assertIsInstance(physical_interface_aid.REPEAT_INTERVAL, int)
+        self.assertGreater(physical_interface_aid.REPEAT_INTERVAL, 0)
 
 
 class TestValidateGuardrails(unittest.TestCase):
