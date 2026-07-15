@@ -262,7 +262,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         return response
 
     except Exception as exc:  # never raise — swallowed errors give no feedback
-        error_msg = f"Interface navigation error: {str(exc)[:60]}"
+        error_msg = f"Interface navigation error: {str(exc)[:150]}"
         return {
             "audio": {
                 "type": "error",

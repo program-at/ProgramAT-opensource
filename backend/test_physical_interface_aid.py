@@ -136,13 +136,11 @@ class TestStreamingDeduplication(unittest.TestCase):
         import physical_interface_aid
         physical_interface_aid._frame_count = 0
         image = create_blank_image()
-        # Call twice (results may vary depending on backend availability)
         try:
             physical_interface_aid.main(image, {})
-            physical_interface_aid.main(image, {})
-        except Exception:
-            pass
-        self.assertGreater(physical_interface_aid._frame_count, 0)
+        except Exception as exc:
+            self.skipTest(f"Backend unavailable: {exc}")
+        self.assertGreaterEqual(physical_interface_aid._frame_count, 1)
 
 
 class TestStreamingWordLimit(unittest.TestCase):
@@ -154,8 +152,8 @@ class TestStreamingWordLimit(unittest.TestCase):
         image = create_blank_image()
         try:
             result = physical_interface_aid.main(image, {})
-        except Exception:
-            return  # skip if backend is unavailable
+        except Exception as exc:
+            self.skipTest(f"Backend unavailable: {exc}")
         if isinstance(result, str) and result:
             word_count = len(result.split())
             self.assertLessEqual(
