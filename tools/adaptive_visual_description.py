@@ -14,7 +14,6 @@ changed to avoid repeating the same audio every frame.
 
 from __future__ import annotations
 
-import time
 import cv2
 import numpy as np
 from typing import Any, Optional
@@ -36,6 +35,16 @@ STREAMING_HOLD_FRAMES = 6
 
 # Streaming word cap (per project convention)
 STREAMING_WORD_LIMIT = 15
+
+# Common everyday objects the user is likely to encounter; passed to the
+# detector as a hint so it focuses on user-relevant targets rather than
+# every COCO class.  This is intentionally a short, scene-agnostic list —
+# the backend detector decides the final set of classes it evaluates.
+_FAST_MODE_TARGET_LABELS = [
+    "person", "chair", "table", "car", "door", "window",
+    "television", "refrigerator", "cabinet", "bed", "sofa",
+    "laptop", "phone", "bottle", "cup", "bag", "book",
+]
 
 # ── Global streaming state ──────────────────────────────────────────────────
 _prev_frame_gray: Optional[np.ndarray] = None   # previous frame for diff
@@ -77,11 +86,7 @@ def _fast_description(image: np.ndarray) -> str:
         metadata={
             "tool_name": TOOL_NAME,
             "route_text": "detect prominent objects and return brief comma-separated labels",
-            "target_labels": [
-                "person", "chair", "table", "car", "door", "window",
-                "television", "refrigerator", "cabinet", "bed", "sofa",
-                "laptop", "phone", "bottle", "cup", "bag", "book",
-            ],
+            "target_labels": _FAST_MODE_TARGET_LABELS,
         },
     )
     artifact = result.get("artifact") or {}
@@ -90,6 +95,8 @@ def _fast_description(image: np.ndarray) -> str:
     if detections:
         labels = []
         for det in detections:
+            # The artifact schema varies by backend implementation; try the most
+            # common key names in order of likelihood.
             label = det.get("label") or det.get("class") or det.get("name") or ""
             if label and label not in labels:
                 labels.append(label.capitalize())
@@ -127,7 +134,7 @@ def _slow_description(image: np.ndarray) -> str:
     return _trim_to_word_limit(response)
 
 
-def _stable_description(image: np.ndarray, previous_artifact: Any = None) -> str:
+def _stable_description(image: np.ndarray) -> str:
     """Two-stage stable mode: spatial layout → detailed proximity description."""
     # Stage 1: spatial layout
     spatial_result = copilot_llm_call(
@@ -140,12 +147,19 @@ def _stable_description(image: np.ndarray, previous_artifact: Any = None) -> str
         metadata={
             "tool_name": TOOL_NAME,
             "route_text": "identify object positions and proximity for blind user",
-            **({"previous_stage_artifact": previous_artifact} if previous_artifact else {}),
         },
     )
     spatial_artifact = spatial_result.get("artifact")
 
-    # Stage 2: detailed description prioritised by proximity
+    # Stage 2: detailed description prioritised by proximity.
+    # Build metadata separately so we only add the artifact key when useful.
+    stage2_metadata: dict = {
+        "tool_name": TOOL_NAME,
+        "route_text": "detailed proximity-prioritised description for blind user",
+    }
+    if spatial_artifact:
+        stage2_metadata["previous_stage_artifact"] = spatial_artifact
+
     detail_result = copilot_llm_call(
         capability="general_reasoning",
         goal=(
@@ -162,11 +176,7 @@ def _stable_description(image: np.ndarray, previous_artifact: Any = None) -> str
             },
         ],
         images=[image],
-        metadata={
-            "tool_name": TOOL_NAME,
-            "route_text": "detailed proximity-prioritised description for blind user",
-            **({"previous_stage_artifact": spatial_artifact} if spatial_artifact else {}),
-        },
+        metadata=stage2_metadata,
     )
     response = (detail_result.get("response") or "").strip()
     return _trim_to_word_limit(response)
@@ -233,8 +243,8 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
             else:
                 description = _stable_description(image)
             return description or "Unable to describe the scene."
-        except Exception as exc:  # noqa: BLE001
-            return f"Description error: {exc}"
+        except Exception:  # noqa: BLE001
+            return "Unable to analyze the scene. Please try again."
 
     # ── Streaming mode ────────────────────────────────────────────────────
     _hold_frame_count += 1
@@ -251,8 +261,8 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
             description = _slow_description(image)
         else:
             description = _stable_description(image)
-    except Exception as exc:  # noqa: BLE001
-        return f"Description error: {exc}"
+    except Exception:  # noqa: BLE001
+        return ""  # Stay silent on transient errors in streaming mode
 
     if not description:
         return ""
