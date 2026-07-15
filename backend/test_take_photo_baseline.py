@@ -6,10 +6,32 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import litellm_utils
+import stream_server
 from validate_generated_tools import validate_take_photo_baseline
 
 
 class TestTakePhotoBaseline(unittest.TestCase):
+    def test_checked_in_user_tools_have_unified_take_photo_prompt_constants(self):
+        tools_dir = Path(__file__).resolve().parent.parent / "tools"
+        tool_names = (
+            "camera_aiming", "clothing_recognition", "door_detection",
+            "empty_seat_detection", "live_ocr", "object_recognition",
+            "scene_description",
+        )
+        for tool_name in tool_names:
+            tree = ast.parse((tools_dir / f"{tool_name}.py").read_text(encoding="utf-8"))
+            constants = {
+                node.targets[0].id: node.value.value
+                for node in tree.body
+                if isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            }
+            self.assertEqual(constants["TOOL_NAME"], tool_name)
+            self.assertTrue(constants["TOOL_PROMPT"].strip())
+
     def test_helper_makes_one_fixed_model_call_without_retries(self):
         response = type("Response", (), {
             "choices": [type("Choice", (), {
@@ -54,12 +76,12 @@ def main(image, input_data):
         self.assertTrue(any("exactly one" in failure for failure in failures))
         self.assertTrue(any("must not call copilot_llm_call" in failure for failure in failures))
 
-    def test_p1_prompt_is_mechanical_and_must_be_copied_verbatim(self):
+    def test_simple_copilot_prompt_uses_unified_contract(self):
         prompt = (
-            "Inspect the image for seats, determine which are unoccupied, select the nearest "
-            "available seat, and return only concise spoken directions."
+            "Identify the visible hand gesture. Return only the gesture name; "
+            "if no gesture is clear, say 'No clear gesture.'"
         )
-        issue = f"## Mode\n\ntake-photo\n\n## Prompt strategy\n\nno_planner\n\n## P1 exact prompt\n\n{prompt}\n"
+        issue = "## Mode\n\ntake-photo\n"
         tool = f'''
 from litellm_utils import call_take_photo_baseline_vlm
 TOOL_NAME = "find_seat"
@@ -69,26 +91,12 @@ def main(image, input_data):
 '''
         self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/find_seat.py")), [])
 
-        rewritten = tool.replace("concise spoken directions", "directions")
-        failures = validate_take_photo_baseline(rewritten, issue, Path("tools/find_seat.py"))
-        self.assertTrue(any("exactly match" in failure for failure in failures))
-
         authored_call = tool.replace("prompt=TOOL_PROMPT", 'prompt="Describe the image."')
         failures = validate_take_photo_baseline(authored_call, issue, Path("tools/find_seat.py"))
         self.assertTrue(any("pass TOOL_PROMPT directly" in failure for failure in failures))
 
-    def test_copilot_fused_prompt_may_be_authored_in_one_tool_prompt(self):
-        issue = """## Mode
-
-take-photo
-
-## Prompt strategy
-
-copilot_fused_prompt
-
-## P1 exact prompt
-
-"""
+    def test_complex_copilot_prompt_may_fuse_logical_operations(self):
+        issue = "## Mode\n\ntake-photo\n"
         tool = '''
 from litellm_utils import call_take_photo_baseline_vlm
 TOOL_NAME = "find_seat"
@@ -120,6 +128,23 @@ def main(image, input_data):
         self.assertNotIn("system_llm_call", calls)
         self.assertNotIn("copilot_llm_call", calls)
         self.assertNotIn("execute_capability_sequence", calls)
+
+    def test_runtime_sends_copilot_prompt_to_gemini_exactly_once(self):
+        code = 'TOOL_NAME = "gesture"\nTOOL_PROMPT = "Return only the visible gesture."\n'
+        with patch.object(
+            stream_server, "call_take_photo_baseline_vlm", return_value="Waving"
+        ) as gemini, patch.object(stream_server, "tool_copilot_llm_call") as router:
+            result = stream_server._run_take_photo_baseline("gesture", code, b"image")
+
+        self.assertEqual(result, "Waving")
+        gemini.assert_called_once_with(
+            image=b"image", prompt="Return only the visible gesture."
+        )
+        router.assert_not_called()
+
+    def test_runtime_rejects_tools_without_a_prompt(self):
+        with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):
+            stream_server._run_take_photo_baseline("legacy", "def main(): pass", b"image")
 
     def test_runtime_bypass_is_only_in_run_tool_branch(self):
         source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")

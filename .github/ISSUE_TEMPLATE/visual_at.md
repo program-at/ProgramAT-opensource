@@ -24,15 +24,7 @@ assignees: ''
 ## Mode
 <!-- Enter exactly: take-photo or streaming. -->
 
-## Prompt strategy
-<!-- Backend-selected take-photo prompt strategy. -->
-
-## P1 exact prompt
-<!-- Mechanically assembled P1 prompt; empty for Copilot P2. -->
-
-For `no_planner`, copy the P1 exact prompt verbatim into `TOOL_PROMPT`.
-
-For `copilot_fused_prompt`, author one concise, task-specific `TOOL_PROMPT` from
+For a take-photo tool, author one concise, task-specific `TOOL_PROMPT` from
 Task, Expected output, and Constraints / examples. Preserve the requested
 behavior and output format, make the final answer accessible and audio-friendly,
 and include a clear fallback when the requested visual information is unavailable.

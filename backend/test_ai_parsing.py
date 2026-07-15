@@ -64,9 +64,7 @@ class TestIssueTemplateGuidance(unittest.TestCase):
             self.assertIn(f"## {heading}", template)
         self.assertIn("call_take_photo_baseline_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("Prompt strategy", template)
-        self.assertIn("P1 exact prompt", template)
-        self.assertIn("copilot_fused_prompt", template)
+        self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
 
@@ -141,7 +139,7 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("Do not return stages, subtasks, reasoning steps", extraction)
         self.assertNotIn('"stages"', extraction)
 
-    def test_no_planner_parser_contract_remains_without_fused_prompt(self):
+    def test_take_photo_parser_contract_has_no_prompt_or_stage_fields(self):
         extraction = self.extraction_prompt("Read the medication label.")
         self.assertNotIn('"fused_vlm_prompt"', extraction)
 

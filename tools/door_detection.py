@@ -31,6 +31,12 @@ import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
+TOOL_NAME = "door_detection"
+TOOL_PROMPT = (
+    "Locate the nearest visible door or doorway and give concise clock-face guidance toward it. "
+    "If no door or doorway is visible, say so."
+)
+
 # Detection constants
 # Balanced threshold for door detection - YoloWorld may produce lower confidence
 # scores for non-COCO objects, and doors can have highly variable appearances

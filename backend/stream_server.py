@@ -117,18 +117,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-TAKE_PHOTO_PLANNING_MODE = os.environ.get(
-    'TAKE_PHOTO_PLANNING_MODE', 'no_planner'
-).strip().lower()
-SUPPORTED_TAKE_PHOTO_PLANNING_MODES = {
-    'no_planner', 'copilot_fused_prompt',
-}
-if TAKE_PHOTO_PLANNING_MODE not in SUPPORTED_TAKE_PHOTO_PLANNING_MODES:
-    raise ValueError(
-        f"Unsupported TAKE_PHOTO_PLANNING_MODE={TAKE_PHOTO_PLANNING_MODE!r}; "
-        f"expected one of {sorted(SUPPORTED_TAKE_PHOTO_PLANNING_MODES)}"
-    )
-
 BRAINSTORMING_ENABLED = os.environ.get(
     'BRAINSTORMING_ENABLED', 'false'
 ).strip().lower() in {'1', 'true', 'yes', 'on'}
@@ -1560,8 +1548,8 @@ def _single_stage_tool_result(
     )
 
 
-def _take_photo_tool_prompt(tool_name: str, task: str, tool_code: str) -> str:
-    """Read a generated TOOL_PROMPT without executing the tool; support old tools via task metadata."""
+def _take_photo_tool_prompt(tool_name: str, tool_code: str) -> str:
+    """Read the Copilot-authored TOOL_PROMPT without executing generated tool code."""
     try:
         tree = ast.parse(tool_code or '')
         for node in tree.body:
@@ -1574,16 +1562,18 @@ def _take_photo_tool_prompt(tool_name: str, task: str, tool_code: str) -> str:
                     return value.strip()
     except (SyntaxError, ValueError, TypeError):
         logger.debug("Could not extract TOOL_PROMPT from %s", tool_name, exc_info=True)
-    return str(task or '').strip() or str(tool_name).replace('_', ' ')
+    raise ValueError(
+        f"Take-photo tool {tool_name!r} has no string TOOL_PROMPT; regenerate the tool "
+        "with the unified take-photo contract."
+    )
 
 
-def _run_take_photo_baseline(tool_name: str, task: str, tool_code: str, image) -> str:
-    """Execute E1/P1 or E1/P2 with exactly one direct Gemini Flash Lite inference."""
-    prompt = _take_photo_tool_prompt(tool_name, task, tool_code)
+def _run_take_photo_baseline(tool_name: str, tool_code: str, image) -> str:
+    """Execute a take-photo tool with exactly one direct Gemini Flash Lite inference."""
+    prompt = _take_photo_tool_prompt(tool_name, tool_code)
     logger.info(
-        "[Take Photo E1] planning_mode=%s model=Gemini Flash Lite model_id=%s total_model_calls=1 "
+        "[Take Photo] prompt_author=copilot model=Gemini Flash Lite model_id=%s total_model_calls=1 "
         "planner_calls=0 router_calls=0 cascade_calls=0 evaluator_calls=0 stage_executions=0",
-        TAKE_PHOTO_PLANNING_MODE,
         TAKE_PHOTO_BASELINE_MODEL,
     )
     return call_take_photo_baseline_vlm(image=image, prompt=prompt)
@@ -5044,20 +5034,6 @@ Transcript: {transcript}
 """
 
 
-def _mechanical_take_photo_prompt(parsed_data: Dict[str, Any]) -> str:
-    """Combine user-facing issue fields without semantic prompt rewriting."""
-    sections = []
-    for label, key in (
-        ('Task', 'description'),
-        ('Expected output', 'example_usage'),
-        ('Constraints / examples', 'additional'),
-    ):
-        value = str(parsed_data.get(key) or '').strip()
-        if value:
-            sections.append(f"{label}: {value}")
-    return '\n'.join(sections)
-
-
 def _stage_decomposition_input(transcript: str, existing_data: Optional[dict] = None) -> str:
     previous_prompts = list((existing_data or {}).get('original_prompts') or [])
     prior_text = [entry.split('] ', 1)[-1] for entry in previous_prompts]
@@ -5129,22 +5105,15 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         )
 
         execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
-        if TAKE_PHOTO_PLANNING_MODE in {'no_planner', 'copilot_fused_prompt'} and execution_mode != 'streaming':
+        if execution_mode != 'streaming':
             parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
             parsed_data['execution_mode'] = 'take-photo'
             parsed_data['stages'] = []
-            parsed_data['prompt_strategy'] = TAKE_PHOTO_PLANNING_MODE
-            parsed_data['p1_exact_prompt'] = (
-                _mechanical_take_photo_prompt(parsed_data)
-                if TAKE_PHOTO_PLANNING_MODE == 'no_planner'
-                else ''
-            )
             existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
             logger.info(
-                "Take-photo planning_mode=%s; parser returned fields only and skipped stage decomposition",
-                TAKE_PHOTO_PLANNING_MODE,
+                "Take-photo request: parser returned fields only and skipped stage decomposition",
             )
             return parsed_data
 
@@ -5285,10 +5254,6 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                             ensure_string(parsed_data.get('additional', '')))
     filled = filled.replace('<!-- Enter exactly: take-photo or streaming. -->',
                             ensure_string(parsed_data.get('execution_mode', '')))
-    filled = filled.replace('<!-- Backend-selected take-photo prompt strategy. -->',
-                            ensure_string(parsed_data.get('prompt_strategy', '')))
-    filled = filled.replace('<!-- Mechanically assembled P1 prompt; empty for Copilot P2. -->',
-                            ensure_string(parsed_data.get('p1_exact_prompt', '')))
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])
@@ -7694,20 +7659,18 @@ async def handle_client(websocket):
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
 
-                            if TAKE_PHOTO_PLANNING_MODE in {'no_planner', 'copilot_fused_prompt'}:
-                                baseline_result = await asyncio.to_thread(
-                                    _run_take_photo_baseline,
-                                    tool_name,
-                                    data.get('task', ''),
-                                    tool_code,
-                                    frame_image,
-                                )
-                                response_data = _build_mobile_tool_response(
-                                    'tool_result', tool_name, baseline_result, datetime.now()
-                                )
-                                _log_final_tool_response(tool_name, response_data)
-                                await websocket.send(json.dumps(response_data))
-                                continue
+                            baseline_result = await asyncio.to_thread(
+                                _run_take_photo_baseline,
+                                tool_name,
+                                tool_code,
+                                frame_image,
+                            )
+                            response_data = _build_mobile_tool_response(
+                                'tool_result', tool_name, baseline_result, datetime.now()
+                            )
+                            _log_final_tool_response(tool_name, response_data)
+                            await websocket.send(json.dumps(response_data))
+                            continue
                             
                             # Get module manager and load common modules dynamically
                             module_mgr = get_module_manager()

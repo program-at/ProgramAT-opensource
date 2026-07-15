@@ -14,7 +14,7 @@ For a take-photo tool, use this shape:
 from litellm_utils import call_take_photo_baseline_vlm
 
 TOOL_NAME = "tool_name"
-TOOL_PROMPT = "Follow the issue's Prompt strategy."
+TOOL_PROMPT = "One concise task-specific fused prompt."
 
 
 def main(image, input_data):
@@ -27,9 +27,8 @@ def main(image, input_data):
 
 Make exactly one helper call and return it directly. Do not add another model or
 specialist call, verification pass, fallback model, model name, or provider SDK.
-For `no_planner`, copy the issue's P1 exact prompt verbatim. For
-`copilot_fused_prompt`, author one concise fused prompt following the detailed
-guidance in `.github/copilot-instructions.md`.
+Author one concise fused prompt following the detailed guidance in
+`.github/copilot-instructions.md`.
 
 For streaming tools, preserve existing streaming behavior and keep responses to
 about 15 spoken words. Do not change NVIDIA hosted streaming or RTVI code.

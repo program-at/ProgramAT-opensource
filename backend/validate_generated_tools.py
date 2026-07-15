@@ -80,25 +80,6 @@ def extract_stage_capabilities(issue_text: str) -> List[str]:
     return capabilities
 
 
-def _extract_issue_section(issue_text: str, heading: str) -> str:
-    match = re.search(rf"^##\s+{heading}\s*$", issue_text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        return ""
-    remainder = issue_text[match.end():]
-    next_header = re.search(r"^##\s+", remainder, re.MULTILINE)
-    section = remainder[:next_header.start()] if next_header else remainder
-    section = re.sub(r"<!--.*?-->", "", section, flags=re.DOTALL)
-    return section.strip()
-
-
-def extract_prompt_strategy(issue_text: str) -> str:
-    return _extract_issue_section(issue_text, r"Prompt\s+strategy")
-
-
-def extract_p1_exact_prompt(issue_text: str) -> str:
-    return _extract_issue_section(issue_text, r"P1\s+exact\s+prompt")
-
-
 def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
     constants: dict[str, str] = {}
     if not isinstance(tree, ast.Module):
@@ -214,7 +195,7 @@ def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) 
 
 
 def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
-    """Enforce the E1/P1 or E1/P2 generation contract for take-photo issues."""
+    """Enforce the unified single-call take-photo generation contract."""
     if not re.search(
         r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take-photo\s*$",
         issue_text,
@@ -237,23 +218,15 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     failures = []
     if len(baseline_calls) != 1:
         failures.append(
-            f"{rel_path}: take-photo P1 requires exactly one call_take_photo_baseline_vlm() call; "
+            f"{rel_path}: take-photo tools require exactly one call_take_photo_baseline_vlm() call; "
             f"found {len(baseline_calls)}."
         )
     constants = _extract_string_constants(tree)
-    strategy = extract_prompt_strategy(issue_text)
     tool_prompt = constants.get("TOOL_PROMPT")
     if tool_prompt is None:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_PROMPT constant.")
     if "TOOL_NAME" not in constants:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_NAME constant.")
-    if strategy == "no_planner":
-        p1_prompt = extract_p1_exact_prompt(issue_text)
-        if not p1_prompt or tool_prompt != p1_prompt:
-            failures.append(
-                f"{rel_path}: take-photo P1 requires TOOL_PROMPT to exactly match "
-                "the issue's P1 exact prompt."
-            )
     prompt_uses = []
     for call in baseline_calls:
         prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
@@ -275,7 +248,7 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     if tool_name_uses != [True]:
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_NAME directly as tool_name.")
     if extract_copilot_llm_task_categories(tool_text):
-        failures.append(f"{rel_path}: take-photo P1 must not call copilot_llm_call().")
+        failures.append(f"{rel_path}: take-photo tools must not call copilot_llm_call().")
     return failures
 
 

@@ -15,6 +15,10 @@ from litellm_utils import extract_text, pil_image_to_data_uri
 from model_router_client import copilot_llm_call
 
 TOOL_NAME = "clothing_recognition"
+TOOL_PROMPT = (
+    "Identify the most prominent clothing item and briefly state its category, color, "
+    "pattern, and other useful visible features. If no clothing is clearly visible, say so."
+)
 TASK_CATEGORY = "general_reasoning"
 
 

@@ -24,6 +24,13 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
+TOOL_NAME = "empty_seat_detection"
+TOOL_PROMPT = (
+    "Inspect the image for chairs, benches, couches, or other seating, determine which seats "
+    "are visibly unoccupied, select the nearest suitable option, and give concise spoken "
+    "guidance toward it. If no empty seat is visible, say so."
+)
+
 # Detection constants
 DEFAULT_CONFIDENCE = 0.5
 CHAIR_CLASS = 'chair'

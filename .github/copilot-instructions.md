@@ -25,9 +25,8 @@ def main(image, input_data):
     )
 ```
 
-Read `Prompt strategy` in the issue. For `no_planner`, copy `P1 exact prompt`
-verbatim. For `copilot_fused_prompt`, author the shortest high-quality fused
-prompt that preserves Task, Expected output, and Constraints / examples. Include
+Author the shortest high-quality fused prompt that preserves Task, Expected
+output, and Constraints / examples. Include
 an unavailable-information fallback and request only an accessible, concise,
 audio-friendly final answer. Simple recognition, OCR, classification, and
 identification tasks should be direct, without steps. Use an ordered logical

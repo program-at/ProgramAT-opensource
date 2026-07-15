@@ -50,6 +50,12 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
+TOOL_NAME = "object_recognition"
+TOOL_PROMPT = (
+    "Identify the useful objects visible in the image and give a concise spoken list with counts. "
+    "If no objects can be identified clearly, say so."
+)
+
 # Detection constants
 DEFAULT_CONFIDENCE = 0.5
 MAX_OBJECTS_TO_REPORT = 10

@@ -42,6 +42,12 @@ import cv2
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
+TOOL_NAME = "camera_aiming"
+TOOL_PROMPT = (
+    "Identify the main object in the image and give one concise direction to center it "
+    "and frame it clearly. If no suitable object is visible, ask the user to point the camera at it."
+)
+
 # Framing constants
 DEFAULT_CONFIDENCE = 0.5
 CENTERING_TOLERANCE = 0.15  # 15% tolerance from center
