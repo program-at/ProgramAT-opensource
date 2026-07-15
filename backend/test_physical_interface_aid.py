@@ -168,7 +168,13 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         self.assertNotEqual(first, second)
 
     def test_response_word_count_at_most_15(self):
-        """Guidance responses must be at most 15 words."""
+        """Guidance responses must be at most 15 words.
+
+        Note: this validates that the tool correctly passes through a
+        ≤15-word response returned by the mocked LLM.  It does not
+        guarantee that a live LLM will honour the 15-word system-prompt
+        instruction, which is tested separately in integration.
+        """
         guidance = "Move right to the Start button"
         side_effects = self._patched_llm([
             "interface", "spatial", guidance,
@@ -205,15 +211,19 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         self.assertIn("backend unavailable", result['audio']['text'])
 
     def test_error_message_word_boundary_truncation(self):
-        """Long error messages should be truncated at a word boundary."""
+        """Long error messages should be truncated at a word boundary with ellipsis."""
         long_error = "this is a very long error message " * 10  # 340+ chars
         with patch.object(physical_interface_aid, 'copilot_llm_call',
                           side_effect=RuntimeError(long_error)):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertIsInstance(result, dict)
-        # The message should not exceed 150 chars of the raw error plus prefix
+        # Raw portion after prefix must end with '…' and be ≤151 chars
+        # (150 chars of content + the single '…' character)
         raw_in_text = result['audio']['text'].replace("Interface navigation error: ", "")
-        self.assertLessEqual(len(raw_in_text), 155)
+        self.assertTrue(raw_in_text.endswith("…"),
+                        f"Expected truncated message to end with '…', got: {raw_in_text!r}")
+        self.assertLessEqual(len(raw_in_text), 151,
+                             f"Truncated message too long ({len(raw_in_text)} chars)")
 
 
 class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):
