@@ -40,6 +40,39 @@ MIN_RESPONSE_INTERVAL = 1.5
 # silence while the server is actively processing frames.
 REPEAT_INTERVAL = 10
 
+TOOL_PROMPT = (
+    "You are providing real-time audio guidance for a blind user "
+    "navigating a physical interface (keypad, thermostat, kiosk, "
+    "checkout terminal, etc.). The user cannot see — audio is "
+    "their only feedback.\n\n"
+    "From the image, simultaneously: identify all interactive "
+    "buttons or controls (NOT displays, screens, digital readouts, "
+    "clocks, timers, or status indicators), locate the user's "
+    "finger, determine whether it directly overlaps a button or "
+    "is only nearby, and produce the spoken guidance.\n\n"
+    "You MUST output EXACTLY ONE of these three forms "
+    "with ≤10 words total:\n"
+    "  A) 'your finger is on [element]' — only when the finger "
+    "clearly overlaps the button area.\n"
+    "  B) 'move [direction] towards [element]' — when the finger "
+    "is near but NOT directly on a button. Direction must be "
+    "exactly one word: left, right, up, or down. No diagonals.\n"
+    "  C) '[element a] is slightly [direction] of your finger, "
+    "[element b] is slightly [opposite direction] of your finger' "
+    "— only when the finger is genuinely equidistant between two "
+    "elements.\n\n"
+    "RULES (enforced in all cases):\n"
+    "- Reference only the single most relevant button or control.\n"
+    "- Never mention displays, readouts, clocks, timers, status "
+    "indicators, or any non-interactive element.\n"
+    "- Never use: touch, touching, tap, tapping, press, pressing, "
+    "reach, reaching, find, finding, locate, locating.\n"
+    "- Never use diagonal directions.\n"
+    "- If no finger is visible, say 'no finger visible'.\n"
+    "- If lighting is too poor to determine position, say "
+    "'lighting too poor to guide'."
+)
+
 # ── Code-level output-format enforcement (applied regardless of routing mode) ─
 # Diagonal directions → nearest cardinal direction.  Named groups:
 #   vert  — the vertical component (up/upper → "up"; down/lower → "down")
@@ -143,38 +176,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             messages=[
                 {
                     "role": "system",
-                    "content": (
-                        "You are providing real-time audio guidance for a blind user "
-                        "navigating a physical interface (keypad, thermostat, kiosk, "
-                        "checkout terminal, etc.). The user cannot see — audio is "
-                        "their only feedback.\n\n"
-                        "From the image, simultaneously: identify all interactive "
-                        "buttons or controls (NOT displays, screens, digital readouts, "
-                        "clocks, timers, or status indicators), locate the user's "
-                        "finger, determine whether it directly overlaps a button or "
-                        "is only nearby, and produce the spoken guidance.\n\n"
-                        "You MUST output EXACTLY ONE of these three forms "
-                        "with ≤10 words total:\n"
-                        "  A) 'your finger is on [element]' — only when the finger "
-                        "clearly overlaps the button area.\n"
-                        "  B) 'move [direction] towards [element]' — when the finger "
-                        "is near but NOT directly on a button. Direction must be "
-                        "exactly one word: left, right, up, or down. No diagonals.\n"
-                        "  C) '[element a] is slightly [direction] of your finger, "
-                        "[element b] is slightly [opposite direction] of your finger' "
-                        "— only when the finger is genuinely equidistant between two "
-                        "elements.\n\n"
-                        "RULES (enforced in all cases):\n"
-                        "- Reference only the single most relevant button or control.\n"
-                        "- Never mention displays, readouts, clocks, timers, status "
-                        "indicators, or any non-interactive element.\n"
-                        "- Never use: touch, touching, tap, tapping, press, pressing, "
-                        "reach, reaching, find, finding, locate, locating.\n"
-                        "- Never use diagonal directions.\n"
-                        "- If no finger is visible, say 'no finger visible'.\n"
-                        "- If lighting is too poor to determine position, say "
-                        "'lighting too poor to guide'."
-                    ),
+                    "content": TOOL_PROMPT,
                 },
                 {
                     "role": "user",
