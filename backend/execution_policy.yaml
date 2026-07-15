@@ -1,10 +1,10 @@
 global:
   planner_enabled: true
-  routing_enabled: true
+  routing_enabled: false
   system_model:
     implementation: llama_planner
   default_llm_when_routing_disabled:
-    implementation: gemini_flash_lite
+    implementation: moondream_cloud
 
 streaming:
   frame_selector:

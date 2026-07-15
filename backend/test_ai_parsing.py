@@ -56,24 +56,22 @@ def load_stream_server_function(name: str):
 class TestIssueTemplateGuidance(unittest.TestCase):
     """Test Copilot-facing issue template guidance."""
 
-    def test_visual_at_template_uses_take_photo_baseline(self):
+    def test_visual_at_template_uses_separate_task_stages(self):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
         for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
             self.assertIn(f"## {heading}", template)
-        self.assertIn("call_take_photo_baseline_vlm", template)
-        self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
-        self.assertNotIn("Task Stages", template)
-        self.assertNotIn("copilot_llm_call", template)
+        self.assertIn("Task Stages", template)
+        self.assertIn("copilot_llm_call", template)
+        self.assertNotIn("call_take_photo_baseline_vlm", template)
+        self.assertNotIn("TOOL_PROMPT", template)
 
         instructions_path = template_path.parent.parent / "copilot-instructions.md"
         instructions = instructions_path.read_text(encoding="utf-8")
-        self.assertIn("Simple example: `Identify the visible hand gesture", instructions)
-        self.assertIn("Complex example: `Inspect the image for chairs", instructions)
-        self.assertIn("should be direct, without steps", instructions)
-        self.assertIn("only when later reasoning depends", instructions)
+        self.assertIn("one ordered call per declared stage", instructions)
+        self.assertIn("earlier `artifact` values", instructions)
+        self.assertIn("last call's `response`", instructions)
 
 
 class TestParserStageIssueIntegration(unittest.TestCase):
@@ -281,14 +279,14 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("## Task Stages", markdown)
         self.assertIn("### Stage 1", markdown)
         self.assertIn("**Goal:** Locate the passenger-side handle.", markdown)
-        self.assertNotIn("Input dependencies", markdown)
-        self.assertNotIn("Expected output", markdown)
+        self.assertIn("**Expected output:** Final concise spoken response.", markdown)
+        self.assertIn("**Depends on:** Original image and user request.", markdown)
         self.assertIn("Including Task Stages in GitHub issue", source)
         self.assertIn("Issue body stage handoff", source)
         self.assertIn("Issue creation stopped because stage decomposition failed", source)
         self.assertIn("Always return at least one stage", build_stage_decomposition_prompt("test"))
 
-    def test_routing_disabled_parser_skips_stage_decomposition(self):
+    def test_take_photo_parser_runs_stage_decomposition_when_planner_enabled(self):
         source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         parser = next(
@@ -297,12 +295,9 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         )
         parser_source = ast.get_source_segment(source, parser)
 
-        self.assertIn("if not planner_enabled:", parser_source)
-        self.assertIn("parsed_data['stages'] = []", parser_source)
-        self.assertLess(
-            parser_source.index("if not planner_enabled:"),
-            parser_source.index("build_stage_decomposition_prompt"),
-        )
+        self.assertNotIn("execution_mode != 'streaming'", parser_source)
+        self.assertIn("build_stage_decomposition_prompt", parser_source)
+        self.assertIn("planning_mode=separate_steps", parser_source)
 
     def test_uber_stage_plan_reaches_issue_markdown(self):
         plan = self.normalize(
@@ -330,6 +325,7 @@ class TestParserStageIssueIntegration(unittest.TestCase):
         self.assertIn("### Stage 1", markdown)
         self.assertIn("### Stage 2", markdown)
         self.assertIn("### Stage 3", markdown)
+        self.assertIn("useful outputs from stages 1-2", markdown)
 
         complete = self.normalize_requirements(
             {

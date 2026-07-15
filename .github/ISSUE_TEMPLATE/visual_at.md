@@ -24,19 +24,12 @@ assignees: ''
 ## Mode
 <!-- Enter exactly: take-photo or streaming. -->
 
-For a take-photo tool, author one concise, task-specific `TOOL_PROMPT` from
-Task, Expected output, and Constraints / examples. Preserve the requested
-behavior and output format, make the final answer accessible and audio-friendly,
-and include a clear fallback when the requested visual information is unavailable.
-Prefer the shortest prompt that captures the task. Do not force simple recognition,
-OCR, classification, or identification tasks into steps. Use an ordered logical
-sequence only when later reasoning genuinely depends on earlier visual findings.
-The sequence remains inside one prompt and must request only the final answer.
-Do not create runtime stages, capability metadata, routing, cascades, evaluators,
-or specialist-model calls. Do not include capability names unless naturally needed.
-
-Every take-photo tool must define exactly one `TOOL_PROMPT`, call
-`call_take_photo_baseline_vlm` exactly once, and return its answer directly.
+For take-photo tools, follow the generated `Task Stages` exactly. Implement one
+ordered `copilot_llm_call(...)` per stage using its declared capability and goal.
+Pass the original image to each visual stage. Pass useful earlier `artifact`
+values explicitly through `metadata={"previous_stage_artifact": ...}` and/or the
+next stage's messages. Return only the final stage's `response`. Do not fuse the
+stages into one prompt, select models, add retries, or add evaluators.
 
 Tools belong in `tools/`, must be Python, and must expose `main(image,
 input_data)`. Return concise audio-friendly text. Do not connect to the backend

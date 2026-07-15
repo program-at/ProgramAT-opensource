@@ -216,11 +216,20 @@ def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
 
     stages = stage_plan.get('stages') or []
     for index, stage in enumerate(stages, start=1):
+        is_final = index == len(stages)
         lines.extend([
             f"### Stage {index}",
             "",
             f"- **Goal:** {stage.get('goal') or 'Not specified'}",
             f"- **Capability:** {stage.get('capability') or 'Not specified'}",
+            "- **Expected output:** " + (
+                "Final concise spoken response." if is_final
+                else "Useful structured artifact for later stages."
+            ),
+            "- **Depends on:** " + (
+                "Original image and user request." if index == 1
+                else f"Original image and useful outputs from stages 1-{index - 1}."
+            ),
             "",
         ])
 
@@ -5104,19 +5113,6 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             json.dumps(issue_data, ensure_ascii=False),
         )
 
-        execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
-        if execution_mode != 'streaming':
-            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
-            parsed_data['execution_mode'] = 'take-photo'
-            parsed_data['stages'] = []
-            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
-            logger.info(
-                "Take-photo request: parser returned fields only and skipped stage decomposition",
-            )
-            return parsed_data
-
         planner_enabled = load_global_execution_config()['planner_enabled']
         if not planner_enabled:
             parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
@@ -5160,6 +5156,11 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             source_task=decomposition_input,
         )
         parsed_data = _merge_issue_and_stage_outputs(issue_data, normalized_decomposition)
+        logger.info(
+            "[Take Photo Planning] planner_enabled=true routing_enabled=false "
+            "planning_mode=separate_steps planned_step_count=%s",
+            len(parsed_data.get('stages') or []),
+        )
         logger.info(
             "Merged parser output=%s",
             json.dumps(parsed_data, ensure_ascii=False),
@@ -7659,27 +7660,19 @@ async def handle_client(websocket):
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
 
-                            baseline_result = await asyncio.to_thread(
-                                _run_take_photo_baseline,
-                                tool_name,
-                                tool_code,
-                                frame_image,
-                            )
-                            response_data = _build_mobile_tool_response(
-                                'tool_result', tool_name, baseline_result, datetime.now()
-                            )
-                            _log_final_tool_response(tool_name, response_data)
-                            await websocket.send(json.dumps(response_data))
-                            continue
-                            
                             # Get module manager and load common modules dynamically
                             module_mgr = get_module_manager()
                             common_modules = module_mgr.get_common_modules()
                             
                             # Create a sandboxed execution environment with image data
+                            take_photo_model_calls = 0
+
                             def frame_copilot_llm_call(*args, **kwargs):
+                                nonlocal take_photo_model_calls
+                                take_photo_model_calls += 1
                                 metadata = dict(kwargs.get('metadata') or {})
                                 metadata.setdefault('tool_name', tool_name)
+                                metadata.setdefault('step_index', take_photo_model_calls)
                                 kwargs['metadata'] = metadata
                                 if not kwargs.get('images'):
                                     kwargs['images'] = [frame_image]
@@ -7783,6 +7776,12 @@ async def handle_client(websocket):
                             
                             response_data = _build_mobile_tool_response(
                                 'tool_result', tool_name, result, datetime.now(), printed_output
+                            )
+                            logger.info(
+                                "[Take Photo Planning] planner_enabled=true routing_enabled=false "
+                                "planning_mode=separate_steps model_calls=%s evaluator_calls=0 "
+                                "cascade_escalations=0",
+                                take_photo_model_calls,
                             )
                             logger.info(
                                 "Sending tool_result: result length=%d, audio.text length=%d",

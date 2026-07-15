@@ -915,9 +915,9 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
     def test_global_switch_and_models_load_from_execution_policy(self):
         config = model_router.load_global_execution_config()
         self.assertTrue(config["planner_enabled"])
-        self.assertTrue(config["routing_enabled"])
+        self.assertFalse(config["routing_enabled"])
         self.assertEqual(config["system_model"], "llama_planner")
-        self.assertEqual(config["default_llm_when_routing_disabled"], "gemini_flash_lite")
+        self.assertEqual(config["default_llm_when_routing_disabled"], "moondream_cloud")
 
     def test_planner_disabled_forces_routing_disabled_with_warning(self):
         config = {
@@ -1843,9 +1843,11 @@ class TestAtomicCopilotCall(unittest.TestCase):
 
     def test_routing_disabled_uses_default_for_non_specialized_capability(self):
         calls = []
+        seen_messages = []
 
-        def executor(profile, _messages, _images, _metadata):
+        def executor(profile, messages, _images, _metadata):
             calls.append(profile.name)
+            seen_messages.extend(messages)
             return model_router.ImplementationResult(response("default response"))
 
         policies = {"navigation": {
@@ -1869,9 +1871,16 @@ class TestAtomicCopilotCall(unittest.TestCase):
              patch.object(model_router, "load_global_execution_config", return_value=global_config), \
              patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}), \
              self.assertLogs(model_router.logger, level="INFO") as logs:
-            result = model_router.copilot_llm_call(capability="navigation")
+            result = model_router.copilot_llm_call(
+                capability="navigation",
+                messages=[{"role": "user", "content": "Guide me toward the selected seat."}],
+            )
 
         self.assertEqual(calls, ["default"])
+        self.assertTrue(any(
+            message.get("content") == "Guide me toward the selected seat."
+            for message in seen_messages
+        ))
         self.assertEqual(result["implementation"], "default")
         output = "\n".join(logs.output)
         self.assertIn("planner_enabled=true routing_enabled=false", output)
@@ -1879,7 +1888,7 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn("default_llm_when_routing_disabled=default/test/default", output)
         self.assertIn("capability=navigation selected implementation=default", output)
 
-    def test_routing_disabled_keeps_specialized_capability(self):
+    def test_routing_disabled_uses_fixed_default_for_specialized_capability(self):
         calls = []
 
         def executor(profile, _messages, _images, _metadata):
@@ -1908,8 +1917,8 @@ class TestAtomicCopilotCall(unittest.TestCase):
              patch.dict(model_router.IMPLEMENTATION_EXECUTORS, {"fake": executor}):
             result = model_router.copilot_llm_call(capability="object_detection_localization")
 
-        self.assertEqual(calls, ["yolo"])
-        self.assertEqual(result["implementation"], "yolo")
+        self.assertEqual(calls, ["default"])
+        self.assertEqual(result["implementation"], "default")
 
 
 class TestSystemCall(unittest.TestCase):

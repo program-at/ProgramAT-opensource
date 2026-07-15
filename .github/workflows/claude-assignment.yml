@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using the issue fields and repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, and `TOOL_NAME`, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write this Python tool inside `tools/`. For take-photo mode, implement the issue's Task Stages exactly with one ordered `copilot_llm_call` per stage. Preserve each step instruction, pass useful earlier artifacts forward, and return the final step response. Do not choose models or add routing, retries, evaluators, or cascade escalation. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -65,11 +65,10 @@ jobs:
             Issue body: ${{ github.event.issue.body }}
             Requirements:
             - Write the code for this tool inside the tools folder.
-            - For take-photo mode, author one concise fused `TOOL_PROMPT` from the issue fields.
-            - Import `call_take_photo_baseline_vlm` from `litellm_utils`.
-            - Call that helper exactly once with the supplied image and prompt, then return its answer directly.
-            - Do not create runtime stages or call a planner/router/evaluator.
-            - Do not make any other model or specialist calls.
+            - For take-photo mode, implement each declared Task Stage as one ordered `copilot_llm_call`.
+            - Preserve every stage instruction and capability.
+            - Pass useful earlier artifacts to later stages and return the final stage response.
+            - Do not choose models or add routing, retries, evaluators, or cascade escalation.
             - Follow the existing repository structure and style.
             - Make the smallest reasonable implementation.
             - Do not modify unrelated files.

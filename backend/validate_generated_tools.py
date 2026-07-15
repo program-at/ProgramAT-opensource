@@ -318,7 +318,6 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
         failures.extend(validate_no_stringified_copilot_results(text, rel_path))
         if issue_text:
             failures.extend(validate_stage_enforcement(text, issue_text, rel_path))
-            failures.extend(validate_take_photo_baseline(text, issue_text, rel_path))
 
     return failures
 

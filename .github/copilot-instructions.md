@@ -8,38 +8,20 @@ not print results, connect to the backend, or use WebSockets.
 
 ## Take-photo tools
 
-Define exactly one `TOOL_PROMPT` and use this shape:
+Use the issue's `Task Stages` as the implementation plan. Import the existing
+tool-facing call:
 
 ```python
-from litellm_utils import call_take_photo_baseline_vlm
-
-TOOL_NAME = "tool_name"
-TOOL_PROMPT = "One task-specific instruction."
-
-
-def main(image, input_data):
-    if image is None:
-        return "No camera image is available."
-    return call_take_photo_baseline_vlm(
-        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
-    )
+from model_router_client import copilot_llm_call
 ```
 
-Author the shortest high-quality fused prompt that preserves Task, Expected
-output, and Constraints / examples. Include
-an unavailable-information fallback and request only an accessible, concise,
-audio-friendly final answer. Simple recognition, OCR, classification, and
-identification tasks should be direct, without steps. Use an ordered logical
-sequence only when later reasoning depends on earlier visual findings. You may
-consult repository capability descriptions as reasoning examples, but do not
-emit capability names, runtime stages, routing metadata, cascades, or evaluators.
-
-Simple example: `Identify the visible hand gesture. Return only the gesture name; if no gesture is clear, say "No clear gesture."`
-
-Complex example: `Inspect the image for chairs, benches, or other seating. Determine which seats are visibly unoccupied, select the nearest suitable option, and give concise spoken guidance toward it. If none is visible, say so. Return only the final guidance.`
-
-Make exactly one helper call. Do not add planner, router, specialist, fallback
-model, verification, or provider calls. The shared helper owns Gemini Flash Lite.
+Generate exactly one ordered call per declared stage. Use the stage capability
+and preserve its goal as the step-specific `goal` or user message. Pass
+`images=[image]` whenever the stage needs the scene. Later calls must explicitly
+receive useful earlier `artifact` values in `metadata` and/or messages. Return
+the last call's `response`. A one-stage issue produces one call. Never fuse a
+multi-stage issue into one `TOOL_PROMPT`, choose an implementation, add retries,
+or add evaluation/escalation logic; the backend supplies one fixed model per call.
 
 ## Streaming tools
 

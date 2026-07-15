@@ -8,27 +8,17 @@ Expose `main(image, input_data)` with exactly two parameters. `image` is an
 OpenCV BGR array and `input_data` is a dictionary. Return concise,
 audio-friendly text; do not print.
 
-For a take-photo tool, use this shape:
+For a take-photo tool, import the established capability client:
 
 ```python
-from litellm_utils import call_take_photo_baseline_vlm
-
-TOOL_NAME = "tool_name"
-TOOL_PROMPT = "One concise task-specific fused prompt."
-
-
-def main(image, input_data):
-    if image is None:
-        return "No camera image is available."
-    return call_take_photo_baseline_vlm(
-        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
-    )
+from model_router_client import copilot_llm_call
 ```
 
-Make exactly one helper call and return it directly. Do not add another model or
-specialist call, verification pass, fallback model, model name, or provider SDK.
-Author one concise fused prompt following the detailed guidance in
-`.github/copilot-instructions.md`.
+Follow the issue's `Task Stages` exactly: one ordered call per stage, with the
+declared capability and step-specific goal. Pass useful prior artifacts to later
+calls, keep the original image available to visual stages, and return the final
+call's `response`. Do not fuse stages or choose models, retries, evaluators, or
+fallbacks. See `.github/copilot-instructions.md` for the full handoff contract.
 
 For streaming tools, preserve existing streaming behavior and keep responses to
 about 15 spoken words. Do not change NVIDIA hosted streaming or RTVI code.

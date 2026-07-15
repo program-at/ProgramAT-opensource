@@ -146,7 +146,7 @@ def main(image, input_data):
         with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):
             stream_server._run_take_photo_baseline("legacy", "def main(): pass", b"image")
 
-    def test_runtime_bypass_is_only_in_run_tool_branch(self):
+    def test_runtime_baseline_bypass_is_inactive(self):
         source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
         tree = ast.parse(source)
         references = [
@@ -155,7 +155,7 @@ def main(image, input_data):
             and node.id == "_run_take_photo_baseline"
             and isinstance(node.ctx, ast.Load)
         ]
-        self.assertEqual(len(references), 1)
+        self.assertEqual(len(references), 0)
         self.assertIn("if data.get('type') == 'run_tool':", source)
 
 

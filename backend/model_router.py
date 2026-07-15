@@ -1368,21 +1368,20 @@ def copilot_llm_call(
         logger.info("[Execution Policy] routing enabled -> selecting implementations")
         candidates = policy["candidates"]
         evaluator_name = policy.get("evaluator")
-    elif policy.get("specialized"):
-        logger.info(
-            "[Execution Policy] routing disabled -> preserving specialized candidates=%s",
-            policy["candidates"],
-        )
-        candidates = policy["candidates"]
-        evaluator_name = policy.get("evaluator")
     else:
-        logger.info("[Execution Policy] routing disabled -> using default model for all LLM stages")
+        logger.info("[Execution Policy] routing disabled -> using one fixed implementation per stage")
         candidates = [global_config["default_llm_when_routing_disabled"]]
         evaluator_name = None
 
     call_metadata = dict(metadata or {})
     call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
     call_metadata["capability"] = declared
+    step_index = call_metadata.get("step_index", "unknown")
+    prior_results_supplied = bool(
+        call_metadata.get("previous_stage_artifact")
+        or call_metadata.get("previous_stage_artifacts")
+        or call_metadata.get("previous_stage_output")
+    )
     streaming_log = bool(
         call_metadata.get("streaming") or STREAMING_EXECUTION_CONTEXT.get()
     )
@@ -1535,6 +1534,17 @@ def copilot_llm_call(
             )
             continue
         record_candidate_timing(candidate, (time.perf_counter() - started_at) * 1000)
+        if not global_config["routing_enabled"]:
+            logger.info(
+                "[Separate Steps] step_index=%s capability=%s selected_fixed_implementation=%s "
+                "latency_ms=%.1f prior_results_supplied=%s model_calls=1 evaluator_calls=0 "
+                "cascade_escalations=0",
+                step_index,
+                declared,
+                candidate,
+                (time.perf_counter() - started_at) * 1000,
+                str(prior_results_supplied).lower(),
+            )
         if streaming_log and _streaming_cancelled(call_metadata):
             log_streaming_timing("cancelled")
         _raise_if_streaming_cancelled(
