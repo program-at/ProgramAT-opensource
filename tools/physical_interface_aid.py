@@ -264,8 +264,9 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
     except Exception as exc:  # never raise — swallowed errors give no feedback
         raw_msg = str(exc)
         if len(raw_msg) > 150:
-            # Truncate at a word boundary; fall back to hard truncation if no
-            # spaces are found within the first 150 characters.
+            # Truncate at a word boundary.  raw_msg[:150] gives ≤150 chars;
+            # rsplit may reduce that further.  Adding '…' means the final
+            # string is ≤151 chars in the worst case (no spaces in first 150).
             truncated = raw_msg[:150]
             parts = truncated.rsplit(" ", 1)
             raw_msg = (parts[0] if len(parts) > 1 else truncated) + "…"

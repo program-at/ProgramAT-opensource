@@ -17,7 +17,7 @@ try:
     import physical_interface_aid
     _MODULE_AVAILABLE = True
     _IMPORT_ERROR = None
-except Exception as exc:  # noqa: BLE001
+except (ImportError, ModuleNotFoundError) as exc:
     _MODULE_AVAILABLE = False
     _IMPORT_ERROR = str(exc)
 
@@ -217,8 +217,9 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
                           side_effect=RuntimeError(long_error)):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertIsInstance(result, dict)
-        # Raw portion after prefix must end with '…' and be ≤151 chars
-        # (150 chars of content + the single '…' character)
+        # Raw portion after prefix must end with '…' and be ≤151 chars.
+        # The tool slices at 150 chars then rsplit may reduce that further,
+        # giving content ≤150 chars; adding '…' makes the maximum total 151.
         raw_in_text = result['audio']['text'].replace("Interface navigation error: ", "")
         self.assertTrue(raw_in_text.endswith("…"),
                         f"Expected truncated message to end with '…', got: {raw_in_text!r}")
