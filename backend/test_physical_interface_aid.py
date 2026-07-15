@@ -182,8 +182,20 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             result = physical_interface_aid.main(create_blank_image(), {})
         if isinstance(result, str) and result:
-            self.assertLessEqual(len(result.split()), 15,
-                                 f"Response exceeds 15 words: '{result}'")
+            self.assertLessEqual(len(result.split()), physical_interface_aid.STREAMING_WORD_LIMIT,
+                                 f"Response exceeds {physical_interface_aid.STREAMING_WORD_LIMIT} "
+                                 f"words: '{result}'")
+
+    def test_over_limit_response_is_truncated_in_code(self):
+        """The code must truncate LLM responses that exceed STREAMING_WORD_LIMIT."""
+        long_guidance = " ".join([f"word{i}" for i in range(25)])  # 25 words
+        side_effects = self._patched_llm(["interface", "spatial", long_guidance])
+        with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
+            result = physical_interface_aid.main(create_blank_image(), {})
+        if isinstance(result, str) and result:
+            self.assertLessEqual(len(result.split()), physical_interface_aid.STREAMING_WORD_LIMIT,
+                                 f"Response not truncated to {physical_interface_aid.STREAMING_WORD_LIMIT} "
+                                 f"words: '{result}'")
 
     def test_frame_count_increments(self):
         """_frame_count must increment on each main() call."""
@@ -217,14 +229,18 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
                           side_effect=RuntimeError(long_error)):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertIsInstance(result, dict)
-        # Raw portion after prefix must end with '…' and be ≤151 chars.
-        # The tool slices at 150 chars then rsplit may reduce that further,
-        # giving content ≤150 chars; adding '…' makes the maximum total 151.
-        raw_in_text = result['audio']['text'].replace("Interface navigation error: ", "")
-        self.assertTrue(raw_in_text.endswith("…"),
-                        f"Expected truncated message to end with '…', got: {raw_in_text!r}")
-        self.assertLessEqual(len(raw_in_text), 151,
-                             f"Truncated message too long ({len(raw_in_text)} chars)")
+        audio_text = result['audio']['text']
+        # The audio text must contain the original error and end with '…'
+        self.assertTrue(audio_text.endswith("…"),
+                        f"Expected truncated message to end with '…', got: {audio_text!r}")
+        # The total length must be ≤ prefix + MAX_ERROR_MSG_LEN + 1 (for '…')
+        max_expected = (
+            len("Interface navigation error: ")
+            + physical_interface_aid.MAX_ERROR_MSG_LEN
+            + 1  # '…'
+        )
+        self.assertLessEqual(len(audio_text), max_expected,
+                             f"Truncated message too long ({len(audio_text)} chars)")
 
 
 class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):

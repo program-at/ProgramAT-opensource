@@ -14,7 +14,7 @@ Stages:
 
 Live mode: runs every ~1 second; returns "" when nothing has changed so
 the same phrase is not repeated continuously. Streaming responses are
-capped at 15 words.
+capped at 15 words via both system-prompt instruction and code enforcement.
 """
 
 import numpy as np
@@ -23,6 +23,12 @@ from typing import Any, Dict, Optional
 from model_router_client import copilot_llm_call
 
 TOOL_NAME = "physical_interface_aid"
+
+# Maximum words in a streaming/live-mode response (enforced in code + via prompt)
+STREAMING_WORD_LIMIT = 15
+
+# Maximum characters for the raw error message portion (truncated at word boundary)
+MAX_ERROR_MSG_LEN = 150
 
 # ── streaming state ──────────────────────────────────────────────────────────
 _last_response: str = ""
@@ -253,6 +259,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         if not response:
             return ""
 
+        # ── Enforce 15-word cap (safety net on top of prompt instruction) ────
+        words = response.split()
+        if len(words) > STREAMING_WORD_LIMIT:
+            response = " ".join(words[:STREAMING_WORD_LIMIT])
+
         # ── Streaming deduplication ───────────────────────────────────────────
         # Suppress repeat announcements when the scene hasn't changed
         if response == _last_response:
@@ -263,11 +274,11 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
 
     except Exception as exc:  # never raise — swallowed errors give no feedback
         raw_msg = str(exc)
-        if len(raw_msg) > 150:
-            # Truncate at a word boundary.  raw_msg[:150] gives ≤150 chars;
-            # rsplit may reduce that further.  Adding '…' means the final
-            # string is ≤151 chars in the worst case (no spaces in first 150).
-            truncated = raw_msg[:150]
+        if len(raw_msg) > MAX_ERROR_MSG_LEN:
+            # Truncate at a word boundary.  raw_msg[:MAX_ERROR_MSG_LEN] gives
+            # ≤MAX_ERROR_MSG_LEN chars; rsplit may reduce that further.
+            # Adding '…' means the final string is ≤MAX_ERROR_MSG_LEN + 1 chars.
+            truncated = raw_msg[:MAX_ERROR_MSG_LEN]
             parts = truncated.rsplit(" ", 1)
             raw_msg = (parts[0] if len(parts) > 1 else truncated) + "…"
         error_msg = f"Interface navigation error: {raw_msg}"
