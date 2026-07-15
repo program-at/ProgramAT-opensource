@@ -155,23 +155,23 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
     def test_periodic_repeat_re_announces_at_interval(self):
         """Same guidance should be re-announced at every REPEAT_INTERVAL frames."""
         interval = physical_interface_aid.REPEAT_INTERVAL
-        # Seed state: _frame_count starts at 0.
-        # We want the Nth call to land on frame == interval (a multiple).
-        # That means we need (interval - 1) suppressed calls before the repeat call.
+        # _frame_count starts at 0; call i+1 lands on frame i+1.
+        # Periodic re-announcement fires when _frame_count % interval == 0,
+        # i.e. at frame `interval` = results[interval - 1].
         guidance = "Move right to the Start button"
-        # Each call needs 3 LLM results; produce enough for interval + 1 calls.
+        # Each call needs 3 LLM results; produce enough for exactly `interval` calls.
         side_effects = self._patched_llm(
-            ["iface", "spatial", guidance] * (interval + 1)
+            ["iface", "spatial", guidance] * interval
         )
         image = create_blank_image()
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
-            results = [physical_interface_aid.main(image, {}) for _ in range(interval + 1)]
-        # Frame 1 → first announcement
+            results = [physical_interface_aid.main(image, {}) for _ in range(interval)]
+        # Frame 1 (index 0) → first announcement
         self.assertEqual(results[0], guidance)
-        # Frames 2..(interval-1) → suppressed
+        # Frames 2..(interval-1) (indices 1..interval-2) → suppressed by deduplication
         for i in range(1, interval - 1):
             self.assertEqual(results[i], "", f"Expected '' at frame {i + 1}, got {results[i]!r}")
-        # Frame interval → periodic re-announcement
+        # Frame interval (index interval-1) → periodic re-announcement
         self.assertEqual(results[interval - 1], guidance,
                          f"Expected repeat at frame {interval}")
 
