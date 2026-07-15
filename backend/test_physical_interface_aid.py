@@ -224,16 +224,18 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
 
     def test_error_message_word_boundary_truncation(self):
         """Long error messages should be truncated at a word boundary with ellipsis."""
+        # Construct an error message known to contain spaces; use a multi-word
+        # phrase repeated so the total length exceeds MAX_ERROR_MSG_LEN.
         long_error = "this is a very long error message " * 10  # 340+ chars
         with patch.object(physical_interface_aid, 'copilot_llm_call',
                           side_effect=RuntimeError(long_error)):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertIsInstance(result, dict)
         audio_text = result['audio']['text']
-        # The audio text must contain the original error and end with '…'
+        # Must end with '…' to indicate truncation
         self.assertTrue(audio_text.endswith("…"),
                         f"Expected truncated message to end with '…', got: {audio_text!r}")
-        # The total length must be ≤ prefix + MAX_ERROR_MSG_LEN + 1 (for '…')
+        # Total length must be ≤ prefix + MAX_ERROR_MSG_LEN + 1 (for '…')
         max_expected = (
             len("Interface navigation error: ")
             + physical_interface_aid.MAX_ERROR_MSG_LEN
@@ -241,6 +243,13 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         )
         self.assertLessEqual(len(audio_text), max_expected,
                              f"Truncated message too long ({len(audio_text)} chars)")
+        # Verify the truncated content ends at a word boundary: the character
+        # before '…' must be the last character of a complete word (non-space),
+        # and that word must be a complete word from the original error string.
+        content_before_ellipsis = audio_text[len("Interface navigation error: "):-1]
+        last_word = content_before_ellipsis.split()[-1] if content_before_ellipsis.split() else ""
+        self.assertIn(last_word, long_error,
+                      f"Last word '{last_word}' before ellipsis not found in original error")
 
 
 class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):

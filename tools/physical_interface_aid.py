@@ -111,10 +111,9 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         interface_artifact = interface_result.get("artifact") or {}
         interface_response = interface_result.get("response", "")
 
-        # Use artifact if available; fall back to response text
-        interface_context = (
-            interface_artifact if interface_artifact else interface_response
-        )
+        # Use artifact when present; fall back to the text response.
+        # Both empty dict and empty string are falsy, so `or` handles both.
+        interface_context = interface_artifact or interface_response
 
         # ── Stage 2: spatial reasoning — finger vs. buttons ──────────────────
         # Pass artifact only when it carries useful structured data; always
@@ -187,7 +186,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
 
         spatial_artifact = spatial_result.get("artifact") or {}
         spatial_response = spatial_result.get("response", "")
-        spatial_context = spatial_artifact if spatial_artifact else spatial_response
+        # Both empty dict and empty string are falsy.
+        spatial_context = spatial_artifact or spatial_response
 
         # ── Stage 3: navigation — produce the spoken instruction ──────────────
         if spatial_context:
