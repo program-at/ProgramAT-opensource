@@ -113,16 +113,15 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         # Reset streaming state before each test
         physical_interface_aid._last_response = ""
         physical_interface_aid._frame_count = 0
+        physical_interface_aid._last_spoken_time = 0.0
 
     def _patched_llm(self, responses):
         """Return a side_effect list for copilot_llm_call that yields each response dict."""
         return [_make_llm_result(r) for r in responses]
 
     def test_returns_str_on_success(self):
-        """main() returns a non-empty string when all stages succeed."""
+        """main() returns a non-empty string when the single-stage call succeeds."""
         side_effects = self._patched_llm([
-            "microwave keypad|buttons: 1(top-left), Start(bottom-right)|finger: center",
-            "finger is near the Start button; move right",
             "move right towards Start",
         ])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
@@ -137,12 +136,8 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         # Neither is a multiple of REPEAT_INTERVAL (10), so the second call
         # should be suppressed.
         side_effects = self._patched_llm([
-            "microwave|buttons: Start|finger: left",
-            "finger left of Start; move right",
             "move right towards Start",
             # Second invocation
-            "microwave|buttons: Start|finger: left",
-            "finger left of Start; move right",
             "move right towards Start",
         ])
         image = create_blank_image()
@@ -154,18 +149,25 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
 
     def test_periodic_repeat_re_announces_at_interval(self):
         """Same guidance should be re-announced at every REPEAT_INTERVAL frames."""
+        import unittest.mock as mock_module
         interval = physical_interface_aid.REPEAT_INTERVAL
         # _frame_count starts at 0; call i+1 lands on frame i+1.
         # Periodic re-announcement fires when _frame_count % interval == 0,
         # i.e. at frame `interval` = results[interval - 1].
         guidance = "move right towards Start"
-        # Each call needs 3 LLM results; produce enough for exactly `interval` calls.
+        # Each call needs 1 LLM result; produce enough for exactly `interval` calls.
         side_effects = self._patched_llm(
-            ["iface", "spatial", guidance] * interval
+            [guidance] * interval
         )
+        # time.monotonic() is only called when deduplication passes (frames 1 and
+        # REPEAT_INTERVAL).  Provide values that are each ≥ 1.5 s apart so the
+        # rate limiter passes at both re-announcement points.
+        fake_times = iter([2.0, 4.0])
         image = create_blank_image()
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
-            results = [physical_interface_aid.main(image, {}) for _ in range(interval)]
+            with mock_module.patch('physical_interface_aid.time') as mock_time:
+                mock_time.monotonic.side_effect = fake_times
+                results = [physical_interface_aid.main(image, {}) for _ in range(interval)]
         # Frame 1 (index 0) → first announcement
         self.assertEqual(results[0], guidance)
         # Frames 2..(interval-1) (indices 1..interval-2) → suppressed by deduplication
@@ -177,19 +179,21 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
 
     def test_new_response_after_scene_change_is_spoken(self):
         """A different guidance should not be suppressed by deduplication."""
+        import unittest.mock as mock_module
         side_effects = self._patched_llm([
-            "microwave|buttons: Start|finger: center",
-            "finger on Start",
             "your finger is on Start",
             # Second invocation with different result
-            "microwave|buttons: Start|finger: right",
-            "finger right of Start; move left",
             "move left towards Start",
         ])
+        # Both calls have different responses so dedup passes each time.
+        # Provide times ≥ 1.5 s apart so the rate limiter also passes.
+        fake_times = iter([2.0, 4.0])
         image = create_blank_image()
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
-            first = physical_interface_aid.main(image, {})
-            second = physical_interface_aid.main(image, {})
+            with mock_module.patch('physical_interface_aid.time') as mock_time:
+                mock_time.monotonic.side_effect = fake_times
+                first = physical_interface_aid.main(image, {})
+                second = physical_interface_aid.main(image, {})
         self.assertNotEqual(first, "")
         self.assertNotEqual(second, "")
         self.assertNotEqual(first, second)
@@ -203,9 +207,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         in end-to-end integration testing.
         """
         guidance = "move right towards Start"
-        side_effects = self._patched_llm([
-            "interface", "spatial", guidance,
-        ])
+        side_effects = self._patched_llm([guidance])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             result = physical_interface_aid.main(create_blank_image(), {})
         if isinstance(result, str) and result:
@@ -216,7 +218,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
     def test_over_limit_response_is_truncated_in_code(self):
         """The code must truncate LLM responses that exceed STREAMING_WORD_LIMIT."""
         long_guidance = " ".join([f"word{i}" for i in range(25)])  # 25 words
-        side_effects = self._patched_llm(["interface", "spatial", long_guidance])
+        side_effects = self._patched_llm([long_guidance])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             result = physical_interface_aid.main(create_blank_image(), {})
         if isinstance(result, str) and result:
@@ -227,14 +229,14 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
     def test_frame_count_increments(self):
         """_frame_count must increment on each main() call."""
         physical_interface_aid._frame_count = 0
-        side_effects = self._patched_llm(["interface", "spatial", "move up towards 7"])
+        side_effects = self._patched_llm(["move up towards 7"])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             physical_interface_aid.main(create_blank_image(), {})
         self.assertGreaterEqual(physical_interface_aid._frame_count, 1)
 
     def test_empty_guidance_response_returns_empty_string(self):
-        """When the navigation stage returns an empty response, return ''."""
-        side_effects = self._patched_llm(["interface", "spatial", ""])
+        """When the single-stage call returns an empty response, return ''."""
+        side_effects = self._patched_llm([""])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertEqual(result, "")
@@ -410,12 +412,11 @@ class TestOutputFormatEnforcement(unittest.TestCase):
     # ── end-to-end: main() rejects bad format from LLM ───────────────────────
 
     def test_main_suppresses_banned_verb_response(self):
-        """main() returns '' when Stage 3 LLM returns a banned-verb response."""
+        """main() returns '' when the LLM returns a banned-verb response."""
         physical_interface_aid._last_response = ""
         physical_interface_aid._frame_count = 0
+        physical_interface_aid._last_spoken_time = 0.0
         side_effects = [
-            _make_llm_result("microwave|buttons: Start|finger: center"),
-            _make_llm_result("finger near Start; move right"),
             _make_llm_result("touch the Start button"),  # banned verb
         ]
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
@@ -426,9 +427,8 @@ class TestOutputFormatEnforcement(unittest.TestCase):
         """main() corrects diagonal directions from the LLM before returning."""
         physical_interface_aid._last_response = ""
         physical_interface_aid._frame_count = 0
+        physical_interface_aid._last_spoken_time = 0.0
         side_effects = [
-            _make_llm_result("microwave|buttons: Start|finger: center"),
-            _make_llm_result("finger up-right of Start"),
             _make_llm_result("move up-right towards Start"),  # diagonal
         ]
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
@@ -444,6 +444,7 @@ class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):
             self.skipTest(f"Module not importable: {_IMPORT_ERROR}")
         physical_interface_aid._last_response = ""
         physical_interface_aid._frame_count = 0
+        physical_interface_aid._last_spoken_time = 0.0
 
     def test_dict_result_has_audio_key(self):
         """If main() returns a dict, it must include an 'audio' key."""

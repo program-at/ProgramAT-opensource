@@ -5,12 +5,9 @@ Helps blind users navigate physical interfaces (keypads, buttons, touchscreens,
 thermostats, kiosks, checkout terminals, etc.) by providing real-time directional
 guidance to locate and identify buttons.
 
-Stages:
-  1. structured_visual_understanding — identify the interface type and all
-     visible buttons/controls, plus whether a finger/pointer is visible.
-  2. spatial_reasoning — determine the finger's position relative to buttons
-     and which direction the user should move.
-  3. navigation — produce a short, spoken directional instruction.
+Single-call approach: one copilot_llm_call handles interface identification,
+spatial reasoning, and guidance generation together, with all output rules
+enforced in that prompt.
 
 Live mode: responds at most every 1.5 seconds; returns "" when nothing has
 changed so the same phrase is not repeated continuously. Streaming responses
@@ -75,7 +72,7 @@ def _enforce_output_format(text: str) -> str:
     Code-level safety net that enforces the allowed output format, regardless
     of whether the backend's planning/routing pipeline is enabled.
 
-    Applied after the Stage 3 LLM response is received:
+    Applied after the LLM response is received:
       1. Diagonal directions are replaced with cardinal equivalents.
       2. If the result still contains a banned verb, suppress it (return "")
          so non-compliant guidance is never spoken to the user.
@@ -125,38 +122,65 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         input_data = {}
 
     try:
-        # ── Stage 1: understand the interface layout ─────────────────────────
-        interface_result = copilot_llm_call(
-            capability="structured_visual_understanding",
+        # ── Single call: identify interface, reason spatially, produce guidance ──
+        guidance_result = copilot_llm_call(
+            capability="general_reasoning",
             goal=(
-                "Identify the physical interface in view, list all interactive "
-                "buttons or controls with their labels and approximate positions, "
-                "and note whether a user's finger or pointer is visible and where. "
-                "Do NOT list displays, screens, digital readouts, status indicators, "
-                "or any non-interactive elements."
+                "Look at the physical interface and the user's finger in the image. "
+                "Output EXACTLY ONE of these three forms (≤10 words total, "
+                "cardinal directions only — left, right, up, or down): "
+                "A) 'your finger is on [element]' — only if the finger clearly "
+                "overlaps the button area. "
+                "B) 'move [direction] towards [element]' — if the finger is near "
+                "but not on a button. Direction: left, right, up, or down only. "
+                "C) '[element a] is slightly [direction] of your finger, "
+                "[element b] is slightly [opposite direction] of your finger' — "
+                "only when equidistant to two buttons. "
+                "Only name buttons/controls the user can physically activate. "
+                "Never mention displays, readouts, clocks, or non-interactive elements. "
+                "Never use: touch, tap, press, reach, find, locate."
             ),
             messages=[
                 {
                     "role": "system",
                     "content": (
-                        "You are analyzing a physical interface for a blind user. "
-                        "State: (1) the interface type (e.g. microwave keypad, "
-                        "thermostat, kiosk, checkout terminal), (2) every interactive "
-                        "button or control with its label and grid position "
-                        "(e.g. top-left, center-right) — do NOT include displays, "
-                        "screens, digital readouts, clocks, timers, or status "
-                        "indicators; list only elements the user can physically "
-                        "activate, (3) whether a human finger or stylus is visible "
-                        "and its approximate location on the interface. "
-                        "Flag any obstructed or unclear buttons. "
-                        "If lighting is poor, say so. Be concise."
+                        "You are providing real-time audio guidance for a blind user "
+                        "navigating a physical interface (keypad, thermostat, kiosk, "
+                        "checkout terminal, etc.). The user cannot see — audio is "
+                        "their only feedback.\n\n"
+                        "From the image, simultaneously: identify all interactive "
+                        "buttons or controls (NOT displays, screens, digital readouts, "
+                        "clocks, timers, or status indicators), locate the user's "
+                        "finger, determine whether it directly overlaps a button or "
+                        "is only nearby, and produce the spoken guidance.\n\n"
+                        "You MUST output EXACTLY ONE of these three forms "
+                        "with ≤10 words total:\n"
+                        "  A) 'your finger is on [element]' — only when the finger "
+                        "clearly overlaps the button area.\n"
+                        "  B) 'move [direction] towards [element]' — when the finger "
+                        "is near but NOT directly on a button. Direction must be "
+                        "exactly one word: left, right, up, or down. No diagonals.\n"
+                        "  C) '[element a] is slightly [direction] of your finger, "
+                        "[element b] is slightly [opposite direction] of your finger' "
+                        "— only when the finger is genuinely equidistant between two "
+                        "elements.\n\n"
+                        "RULES (enforced in all cases):\n"
+                        "- Reference only the single most relevant button or control.\n"
+                        "- Never mention displays, readouts, clocks, timers, status "
+                        "indicators, or any non-interactive element.\n"
+                        "- Never use: touch, touching, tap, tapping, press, pressing, "
+                        "reach, reaching, find, finding, locate, locating.\n"
+                        "- Never use diagonal directions.\n"
+                        "- If no finger is visible, say 'no finger visible'.\n"
+                        "- If lighting is too poor to determine position, say "
+                        "'lighting too poor to guide'."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        "What kind of interface is this and where are all the "
-                        "interactive buttons? Is a finger visible?"
+                        "What physical interface is this? Where is the user's finger "
+                        "relative to the buttons? Give me the spoken guidance now."
                     ),
                 },
             ],
@@ -164,214 +188,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             metadata={
                 "tool_name": TOOL_NAME,
                 "route_text": (
-                    "identify physical interface interactive buttons/controls "
-                    "and finger position"
+                    "guide blind user's finger on physical interface with directional audio"
                 ),
-            },
-        )
-
-        interface_artifact = interface_result.get("artifact") or {}
-        interface_response = interface_result.get("response", "")
-
-        # Use artifact when present; fall back to the text response.
-        # Both empty dict and empty string are falsy, so `or` handles both.
-        interface_context = interface_artifact or interface_response
-
-        # ── Stage 2: spatial reasoning — finger vs. buttons ──────────────────
-        # Pass artifact only when it carries useful structured data; always
-        # pass the original image so the model can inspect the scene directly.
-        if interface_context:
-            spatial_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are determining how a blind user's finger relates to "
-                        "the nearest interactive button on a physical interface. "
-                        "Focus only on the single button closest to the finger — "
-                        "do NOT describe other buttons, display elements, or any "
-                        "part of the interface not relevant to the finger's position. "
-                        "State: "
-                        "(1) Is the finger DIRECTLY ON that button — meaning it "
-                        "clearly overlaps the button's area? Or is it only NEARBY "
-                        "or ADJACENT without overlapping? Use the button's label "
-                        "and state 'on' or 'near'. "
-                        "(2) If the finger is NOT directly on the button, give the "
-                        "exact direction needed to move onto it "
-                        "(up, down, left, right, up-left, up-right, down-left, "
-                        "down-right). Only use 'already there' if the finger "
-                        "clearly and unambiguously overlaps the button. "
-                        "(3) Only if two buttons are genuinely equidistant, name "
-                        "both. If no finger is visible, say so."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Interface layout: {interface_context}\n"
-                        "Which single button is the finger closest to? Is the "
-                        "finger directly on it (overlapping) or only near it? "
-                        "If near, which direction must the user move?"
-                    ),
-                },
-            ]
-        else:
-            spatial_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are determining how a blind user's finger relates to "
-                        "the nearest interactive button on a physical interface "
-                        "visible in the image. "
-                        "Focus only on the single button closest to the finger — "
-                        "do NOT describe other buttons, displays, or unrelated "
-                        "elements. "
-                        "State: (1) Is the finger DIRECTLY ON that button "
-                        "(overlapping its area) or only NEAR/ADJACENT? Use 'on' "
-                        "or 'near'. "
-                        "(2) If the finger is NOT directly on the button, give the "
-                        "direction needed to move onto it. Only use 'already there' "
-                        "if the finger clearly overlaps the button. "
-                        "(3) Only if two buttons are genuinely equidistant, name both. "
-                        "If no finger is visible, say so."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Which single button is the finger closest to? Is the "
-                        "finger directly on it or only near it? "
-                        "If near, which direction should the user move?"
-                    ),
-                },
-            ]
-
-        spatial_result = copilot_llm_call(
-            capability="spatial_reasoning",
-            goal=(
-                "Determine the relationship between the user's finger and the "
-                "nearest interface button, and the direction needed to reach it."
-            ),
-            messages=spatial_messages,
-            images=[image],
-            metadata={
-                "tool_name": TOOL_NAME,
-                "route_text": (
-                    "determine finger position relative to physical interface buttons"
-                ),
-                "previous_stage_artifact": interface_artifact or None,
-            },
-        )
-
-        spatial_artifact = spatial_result.get("artifact") or {}
-        spatial_response = spatial_result.get("response", "")
-        # Both empty dict and empty string are falsy.
-        spatial_context = spatial_artifact or spatial_response
-
-        # ── Stage 3: navigation — produce the spoken instruction ──────────────
-        if spatial_context:
-            nav_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are providing audio guidance for a blind user "
-                        "navigating a physical interface. "
-                        "The user cannot see. "
-                        "Only reference the single button or element that is "
-                        "relevant to the user's finger — do NOT mention other "
-                        "buttons, display elements, status readouts, or any part "
-                        "of the interface not immediately relevant to where the "
-                        "finger is or needs to go. "
-                        "You MUST output EXACTLY ONE of these three forms — nothing else: "
-                        "  A) 'your finger is on [element]' — only when the "
-                        "spatial analysis explicitly states the finger is ON or directly "
-                        "overlapping that element. "
-                        "  B) 'move [direction] towards [element]' — when the finger "
-                        "is near but NOT on an element. Direction must be exactly one "
-                        "word: left, right, up, or down. "
-                        "  C) '[element a] is slightly [direction] of your finger, "
-                        "[element b] is slightly [opposite direction] of your finger' — "
-                        "only when two elements are equidistant and direction is "
-                        "genuinely ambiguous. "
-                        "NEVER use: touch, touching, tap, tapping, press, pressing, "
-                        "reach, reaching, find, finding, locate, locating. "
-                        "NEVER use diagonal directions. "
-                        "NEVER use vague instructions. NEVER exceed 10 words. "
-                        "Always name the specific element clearly."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Spatial analysis: {spatial_context}\n"
-                        "Give the spoken guidance now — reference only the element "
-                        "the finger is on or needs to reach."
-                    ),
-                },
-            ]
-        else:
-            nav_messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are providing audio guidance for a blind user "
-                        "navigating a physical interface visible in the image. "
-                        "The user cannot see. "
-                        "Only reference the single button or element that is "
-                        "relevant to the user's finger — do NOT mention other "
-                        "buttons, display elements, status readouts, or any part "
-                        "of the interface not immediately relevant to where the "
-                        "finger is or needs to go. "
-                        "You MUST output EXACTLY ONE of these three forms — nothing else: "
-                        "  A) 'your finger is on [element]' — only when the "
-                        "finger clearly overlaps the element area. "
-                        "  B) 'move [direction] towards [element]' — when the finger "
-                        "is near but not on an element. Direction must be exactly one "
-                        "word: left, right, up, or down. "
-                        "  C) '[element a] is slightly [direction] of your finger, "
-                        "[element b] is slightly [opposite direction] of your finger' — "
-                        "only when two elements are equidistant and direction is "
-                        "genuinely ambiguous. "
-                        "NEVER use: touch, touching, tap, tapping, press, pressing, "
-                        "reach, reaching, find, finding, locate, locating. "
-                        "NEVER use diagonal directions. "
-                        "NEVER use vague instructions. NEVER exceed 10 words. "
-                        "Always name the specific element clearly."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        "Give the spoken guidance now — reference only the element "
-                        "the finger is on or needs to reach."
-                    ),
-                },
-            ]
-
-        guidance_result = copilot_llm_call(
-            capability="navigation",
-            goal=(
-                "Produce a spoken instruction (≤10 words) naming the specific "
-                "element clearly. Reference only the button(s) relevant to the "
-                "user's finger — one button in most cases, or two when the finger "
-                "is genuinely equidistant between them. "
-                "Use one of three strict forms: "
-                "'your finger is on [element]' when the finger overlaps the element; "
-                "'move [direction] towards [element]' with a single cardinal direction "
-                "(left, right, up, or down only — no diagonals); or "
-                "'[element a] is slightly [direction] of your finger, [element b] is "
-                "slightly [opposite direction] of your finger' when equidistant. "
-                "Never mention displays, readouts, or unrelated interface elements. "
-                "Never use: touch, touching, tap, tapping, press, pressing, reach, reaching, "
-                "find, finding, locate, locating."
-            ),
-            messages=nav_messages,
-            images=[image],
-            metadata={
-                "tool_name": TOOL_NAME,
-                "route_text": (
-                    "generate directional guidance for physical interface navigation"
-                ),
-                "previous_stage_artifact": spatial_artifact or None,
             },
         )
 
