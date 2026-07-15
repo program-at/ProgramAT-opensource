@@ -40,18 +40,25 @@ STREAMING_WORD_LIMIT = 15
 # detector as a hint so it focuses on user-relevant targets rather than
 # every COCO class.  This is intentionally a short, scene-agnostic list —
 # the backend detector decides the final set of classes it evaluates.
-_FAST_MODE_TARGET_LABELS = [
+FAST_MODE_TARGET_LABELS = [
     "person", "chair", "table", "car", "door", "window",
     "television", "refrigerator", "cabinet", "bed", "sofa",
     "laptop", "phone", "bottle", "cup", "bag", "book",
 ]
 
 # ── Global streaming state ──────────────────────────────────────────────────
+# Global variables follow the same per-tool pattern used by door_detection.py
+# and other tools in this codebase.  Each tool runs in a single-user context
+# on the backend server, so module-level state is safe and idiomatic here.
 _prev_frame_gray: Optional[np.ndarray] = None   # previous frame for diff
 _stable_frame_count: int = 0                    # consecutive stable frames
 _last_description: str = ""                     # last spoken description
 _last_level: str = ""                           # 'fast' | 'slow' | 'stable'
 _hold_frame_count: int = 0                      # frames since last output
+_consecutive_errors: int = 0                    # streaming failure counter
+
+# Alert the user if this many consecutive streaming frames fail
+_STREAMING_ERROR_THRESHOLD = 3
 
 
 def _compute_motion(gray_current: np.ndarray, gray_prev: np.ndarray) -> float:
@@ -86,7 +93,7 @@ def _fast_description(image: np.ndarray) -> str:
         metadata={
             "tool_name": TOOL_NAME,
             "route_text": "detect prominent objects and return brief comma-separated labels",
-            "target_labels": _FAST_MODE_TARGET_LABELS,
+            "target_labels": FAST_MODE_TARGET_LABELS,
         },
     )
     artifact = result.get("artifact") or {}
@@ -194,7 +201,7 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
     In streaming mode returns "" when nothing new to say.
     """
     global _prev_frame_gray, _stable_frame_count
-    global _last_description, _last_level, _hold_frame_count
+    global _last_description, _last_level, _hold_frame_count, _consecutive_errors
 
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
         return "No camera image available."
@@ -210,8 +217,11 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
         _prev_frame_gray = gray_small
         if not is_streaming:
             # One-shot on first frame: treat as stable
-            description = _stable_description(image)
-            return description or "Scene not yet analysed."
+            try:
+                description = _stable_description(image)
+                return description or "Scene not yet analysed."
+            except Exception:  # noqa: BLE001
+                return "Unable to analyze the scene. Try moving to a well-lit area and pointing the camera at the scene."
         return ""
 
     motion_score = _compute_motion(gray_small, _prev_frame_gray)
@@ -234,6 +244,7 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
         _last_level = ""
         _hold_frame_count = 0
         _stable_frame_count = 0
+        _consecutive_errors = 0
 
         try:
             if level == "fast":
@@ -244,7 +255,7 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
                 description = _stable_description(image)
             return description or "Unable to describe the scene."
         except Exception:  # noqa: BLE001
-            return "Unable to analyze the scene. Please try again."
+            return "Unable to analyze the scene. Try moving to a well-lit area and pointing the camera at the scene."
 
     # ── Streaming mode ────────────────────────────────────────────────────
     _hold_frame_count += 1
@@ -261,8 +272,13 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
             description = _slow_description(image)
         else:
             description = _stable_description(image)
+        _consecutive_errors = 0
     except Exception:  # noqa: BLE001
-        return ""  # Stay silent on transient errors in streaming mode
+        _consecutive_errors += 1
+        if _consecutive_errors >= _STREAMING_ERROR_THRESHOLD:
+            _consecutive_errors = 0
+            return "Scene analysis unavailable. Check camera and lighting."
+        return ""  # Stay silent on isolated transient errors
 
     if not description:
         return ""
