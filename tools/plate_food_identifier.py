@@ -51,12 +51,16 @@ def main(image, input_data=None):
     spatial = copilot_llm_call(
         capability="spatial_reasoning",
         goal=(
-            "The image shows a plate of food. Using the detected food items and "
-            "their positions on the plate, describe where each food item is located "
-            "using clock-face directions (12 o'clock = top, 3 o'clock = right, "
-            "6 o'clock = bottom, 9 o'clock = left). "
+            "The image shows a plate of food viewed from above. "
+            "Using the detected food items and their positions on the plate, "
+            "describe where each food item is located using clock-face directions. "
+            "Treat the plate like a clock: 12 o'clock is at the top of the plate, "
+            "3 o'clock is at the right, 6 o'clock is at the bottom, and "
+            "9 o'clock is at the left. All 12 positions (1 through 12) are valid "
+            "because the plate is viewed from above, not as a camera navigation direction. "
             "For each food item state the clock-face arc it occupies, e.g. "
-            "'Rice from 11 o'clock to 1 o'clock'. "
+            "'Rice from 11 o'clock to 1 o'clock' or "
+            "'mixed vegetables from 1 o'clock to 7 o'clock'. "
             "If two items share a clock-face region, list the one that starts "
             "earlier in clockwise order first; if they start at the same position, "
             "list the one that ends soonest first. "
