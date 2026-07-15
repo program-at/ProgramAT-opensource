@@ -210,16 +210,18 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface. "
                         "The user cannot see. "
-                        "You MUST output EXACTLY ONE of these two forms — nothing else: "
+                        "You MUST output EXACTLY ONE of these three forms — nothing else: "
                         "  A) 'Your finger is on the [label] button.' — only when the "
                         "spatial analysis explicitly states the finger is ON or directly "
                         "overlapping that button. "
                         "  B) 'Move [direction] to the [label] button.' — when the finger "
                         "is near but NOT on a button. Direction must be one word: left, "
                         "right, up, down, up-left, up-right, down-left, or down-right. "
-                        "If two buttons are equidistant, name both: "
-                        "'5 is slightly left, 6 is slightly right.' "
-                        "NEVER say 'touch', 'tap', 'press', 'reach', 'find', or 'locate'. "
+                        "  C) '[label] is slightly [direction], [label] is slightly "
+                        "[direction].' — only when two buttons are equidistant and "
+                        "direction is genuinely ambiguous. "
+                        "NEVER use: touch, touching, tap, tapping, press, pressing, "
+                        "reach, reaching, find, finding, locate, locating. "
                         "NEVER use vague instructions. NEVER exceed 15 words."
                     ),
                 },
@@ -240,13 +242,17 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface visible in the image. "
                         "The user cannot see. "
-                        "You MUST output EXACTLY ONE of these two forms — nothing else: "
+                        "You MUST output EXACTLY ONE of these three forms — nothing else: "
                         "  A) 'Your finger is on the [label] button.' — only when the "
                         "finger clearly overlaps the button area. "
                         "  B) 'Move [direction] to the [label] button.' — when the finger "
                         "is near but not on a button. Direction must be one word: left, "
                         "right, up, down, up-left, up-right, down-left, or down-right. "
-                        "NEVER say 'touch', 'tap', 'press', 'reach', 'find', or 'locate'. "
+                        "  C) '[label] is slightly [direction], [label] is slightly "
+                        "[direction].' — only when two buttons are equidistant and "
+                        "direction is genuinely ambiguous. "
+                        "NEVER use: touch, touching, tap, tapping, press, pressing, "
+                        "reach, reaching, find, finding, locate, locating. "
                         "NEVER use vague instructions. NEVER exceed 15 words."
                     ),
                 },
@@ -259,10 +265,12 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         guidance_result = copilot_llm_call(
             capability="navigation",
             goal=(
-                "Produce a spoken instruction (≤15 words) in one of two strict forms: "
-                "'Your finger is on the [label] button.' when the finger overlaps the button, "
-                "or 'Move [direction] to the [label] button.' with a single cardinal direction. "
-                "Never say touch, tap, press, reach, find, or locate."
+                "Produce a spoken instruction (≤15 words) in one of three strict forms: "
+                "'Your finger is on the [label] button.' when the finger overlaps the button; "
+                "'Move [direction] to the [label] button.' with a single cardinal direction; or "
+                "'[label] is slightly [direction], [label] is slightly [direction].' when equidistant. "
+                "Never use: touch, touching, tap, tapping, press, pressing, reach, reaching, "
+                "find, finding, locate, locating."
             ),
             messages=nav_messages,
             images=[image],
