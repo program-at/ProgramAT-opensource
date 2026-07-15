@@ -15,8 +15,12 @@ Stages:
 Live mode: runs every ~1 second; returns "" when nothing has changed so
 the same phrase is not repeated continuously. Streaming responses are
 capped at 15 words via both system-prompt instruction and code enforcement.
+Output format (cardinal-only directions, no banned verbs) is also enforced
+in code so restrictions apply regardless of whether the backend's planning
+and routing pipeline is enabled.
 """
 
+import re
 import numpy as np
 from typing import Any, Dict, Optional
 
@@ -34,6 +38,56 @@ MAX_ERROR_MSG_LEN = 150
 # unchanged, so the user hears confirmation and doesn't experience prolonged
 # silence while the server is actively processing frames.
 REPEAT_INTERVAL = 10
+
+# ── Code-level output-format enforcement (applied regardless of routing mode) ─
+# Diagonal directions → nearest cardinal direction.  Matched case-insensitively.
+_DIAGONAL_RE = re.compile(
+    r"\b(up(?:-|\s)?left|upper(?:-|\s)?left)\b"
+    r"|\b(up(?:-|\s)?right|upper(?:-|\s)?right)\b"
+    r"|\b(down(?:-|\s)?left|lower(?:-|\s)?left)\b"
+    r"|\b(down(?:-|\s)?right|lower(?:-|\s)?right)\b",
+    re.IGNORECASE,
+)
+
+# Banned verbs — whole-word match including common inflections.
+_BANNED_VERB_RE = re.compile(
+    r"\b(touch(?:ing)?|tap(?:ping)?|press(?:ing)?|reach(?:ing)?"
+    r"|find(?:ing)?|locat(?:e|ing))\b",
+    re.IGNORECASE,
+)
+
+
+def _fix_diagonals(text: str) -> str:
+    """Replace diagonal directions with their primary cardinal equivalent."""
+    def _replace(m: re.Match) -> str:
+        g1, g2, g3, g4 = m.group(1), m.group(2), m.group(3), m.group(4)
+        if g1:
+            return "up"
+        if g2:
+            return "up"
+        if g3:
+            return "down"
+        if g4:
+            return "down"
+        return m.group(0)
+
+    return _DIAGONAL_RE.sub(_replace, text)
+
+
+def _enforce_output_format(text: str) -> str:
+    """
+    Code-level safety net that enforces the allowed output format, regardless
+    of whether the backend's planning/routing pipeline is enabled.
+
+    Applied after the Stage 3 LLM response is received:
+      1. Diagonal directions are replaced with cardinal equivalents.
+      2. If the result still contains a banned verb, suppress it (return "")
+         so non-compliant guidance is never spoken to the user.
+    """
+    cleaned = _fix_diagonals(text)
+    if _BANNED_VERB_RE.search(cleaned):
+        return ""
+    return cleaned
 
 # ── streaming state ──────────────────────────────────────────────────────────
 _last_response: str = ""
@@ -298,6 +352,15 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         words = response.split()
         if len(words) > STREAMING_WORD_LIMIT:
             response = " ".join(words[:STREAMING_WORD_LIMIT])
+
+        # ── Enforce output format (safety net regardless of routing mode) ─────
+        # Replaces diagonal directions with cardinal equivalents and suppresses
+        # responses containing banned verbs.  Applied here in code so the
+        # restriction holds whether or not the backend's planning/routing
+        # pipeline is active.
+        response = _enforce_output_format(response)
+        if not response:
+            return ""
 
         # ── Streaming deduplication ───────────────────────────────────────────
         # Suppress repeat announcements when the scene hasn't changed, but

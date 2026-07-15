@@ -279,7 +279,164 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
                       f"Last word '{last_word}' before ellipsis not found in original error")
 
 
-class TestPhysicalInterfaceAidReturnTypes(unittest.TestCase):
+class TestOutputFormatEnforcement(unittest.TestCase):
+    """
+    Tests for code-level output-format enforcement (_fix_diagonals and
+    _enforce_output_format).  These run regardless of the backend's
+    planning/routing configuration.
+    """
+
+    def setUp(self):
+        if not _MODULE_AVAILABLE:
+            self.skipTest(f"Module not importable: {_IMPORT_ERROR}")
+
+    # ── _fix_diagonals ────────────────────────────────────────────────────────
+
+    def test_fix_diagonals_up_left(self):
+        """'up-left' is replaced with 'up'."""
+        result = physical_interface_aid._fix_diagonals("move up-left towards Start")
+        self.assertEqual(result, "move up towards Start")
+
+    def test_fix_diagonals_up_right(self):
+        """'up-right' is replaced with 'up'."""
+        result = physical_interface_aid._fix_diagonals("move up-right towards Start")
+        self.assertEqual(result, "move up towards Start")
+
+    def test_fix_diagonals_down_left(self):
+        """'down-left' is replaced with 'down'."""
+        result = physical_interface_aid._fix_diagonals("move down-left towards 7")
+        self.assertEqual(result, "move down towards 7")
+
+    def test_fix_diagonals_down_right(self):
+        """'down-right' is replaced with 'down'."""
+        result = physical_interface_aid._fix_diagonals("move down-right towards Cancel")
+        self.assertEqual(result, "move down towards Cancel")
+
+    def test_fix_diagonals_upper_left(self):
+        """'upper-left' variant is replaced with 'up'."""
+        result = physical_interface_aid._fix_diagonals("move upper-left towards 1")
+        self.assertEqual(result, "move up towards 1")
+
+    def test_fix_diagonals_lower_right(self):
+        """'lower-right' variant is replaced with 'down'."""
+        result = physical_interface_aid._fix_diagonals("move lower-right towards Enter")
+        self.assertEqual(result, "move down towards Enter")
+
+    def test_fix_diagonals_case_insensitive(self):
+        """Diagonal replacement is case-insensitive."""
+        result = physical_interface_aid._fix_diagonals("move UP-LEFT towards Start")
+        self.assertEqual(result, "move up towards Start")
+
+    def test_fix_diagonals_cardinal_unchanged(self):
+        """Cardinal directions are not altered."""
+        for direction in ("left", "right", "up", "down"):
+            text = f"move {direction} towards Start"
+            self.assertEqual(physical_interface_aid._fix_diagonals(text), text)
+
+    # ── _enforce_output_format ────────────────────────────────────────────────
+
+    def test_enforce_suppresses_touch(self):
+        """'touch' triggers suppression; empty string returned."""
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("touch the Start button"),
+            "",
+        )
+
+    def test_enforce_suppresses_touching(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("you are touching the Start button"),
+            "",
+        )
+
+    def test_enforce_suppresses_tap(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("tap the 5 button"),
+            "",
+        )
+
+    def test_enforce_suppresses_press(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("press Start to begin"),
+            "",
+        )
+
+    def test_enforce_suppresses_reach(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("reach left to find the button"),
+            "",
+        )
+
+    def test_enforce_suppresses_find(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("find the Start button by moving right"),
+            "",
+        )
+
+    def test_enforce_suppresses_locate(self):
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("locate the Enter key"),
+            "",
+        )
+
+    def test_enforce_diagonal_fixed_valid_form_passes(self):
+        """Diagonal fixed to cardinal — no banned verb — response is kept."""
+        result = physical_interface_aid._enforce_output_format(
+            "move up-right towards Start"
+        )
+        self.assertEqual(result, "move up towards Start")
+
+    def test_enforce_valid_form_a_passes(self):
+        """Form A ('your finger is on …') is returned unchanged."""
+        text = "your finger is on Start"
+        self.assertEqual(physical_interface_aid._enforce_output_format(text), text)
+
+    def test_enforce_valid_form_b_passes(self):
+        """Form B ('move … towards …') is returned unchanged."""
+        text = "move right towards Start"
+        self.assertEqual(physical_interface_aid._enforce_output_format(text), text)
+
+    def test_enforce_valid_form_c_passes(self):
+        """Form C ('[a] is slightly … of your finger …') is returned unchanged."""
+        text = "Start is slightly right of your finger, Cancel is slightly left of your finger"
+        self.assertEqual(physical_interface_aid._enforce_output_format(text), text)
+
+    def test_enforce_banned_verb_case_insensitive(self):
+        """Banned-verb detection is case-insensitive."""
+        self.assertEqual(
+            physical_interface_aid._enforce_output_format("TOUCH the Start button"),
+            "",
+        )
+
+    # ── end-to-end: main() rejects bad format from LLM ───────────────────────
+
+    def test_main_suppresses_banned_verb_response(self):
+        """main() returns '' when Stage 3 LLM returns a banned-verb response."""
+        physical_interface_aid._last_response = ""
+        physical_interface_aid._frame_count = 0
+        side_effects = [
+            _make_llm_result("microwave|buttons: Start|finger: center"),
+            _make_llm_result("finger near Start; move right"),
+            _make_llm_result("touch the Start button"),  # banned verb
+        ]
+        with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
+            result = physical_interface_aid.main(create_blank_image(), {})
+        self.assertEqual(result, "")
+
+    def test_main_fixes_diagonal_in_llm_response(self):
+        """main() corrects diagonal directions from the LLM before returning."""
+        physical_interface_aid._last_response = ""
+        physical_interface_aid._frame_count = 0
+        side_effects = [
+            _make_llm_result("microwave|buttons: Start|finger: center"),
+            _make_llm_result("finger up-right of Start"),
+            _make_llm_result("move up-right towards Start"),  # diagonal
+        ]
+        with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
+            result = physical_interface_aid.main(create_blank_image(), {})
+        self.assertEqual(result, "move up towards Start")
+
+
+
     """Tests that return values conform to the tool contract (mocked)."""
 
     def setUp(self):
