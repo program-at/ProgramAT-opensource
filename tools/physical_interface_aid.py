@@ -272,7 +272,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         _last_response = response
         return response
 
-    except Exception as exc:  # never raise — swallowed errors give no feedback
+    except Exception as exc:  # catch all exceptions and return audio error feedback
         raw_msg = str(exc)
         if len(raw_msg) > MAX_ERROR_MSG_LEN:
             # Truncate at a word boundary.  raw_msg[:MAX_ERROR_MSG_LEN] gives

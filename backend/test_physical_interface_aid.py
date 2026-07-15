@@ -171,9 +171,9 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         """Guidance responses must be at most 15 words.
 
         Note: this validates that the tool correctly passes through a
-        ≤15-word response returned by the mocked LLM.  It does not
-        guarantee that a live LLM will honour the 15-word system-prompt
-        instruction, which is tested separately in integration.
+        ≤15-word response returned by the mocked LLM.  Compliance of live
+        LLM responses with the 15-word system-prompt instruction is verified
+        in end-to-end integration testing.
         """
         guidance = "Move right to the Start button"
         side_effects = self._patched_llm([
@@ -226,7 +226,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         """Long error messages should be truncated at a word boundary with ellipsis."""
         # Construct an error message known to contain spaces; use a multi-word
         # phrase repeated so the total length exceeds MAX_ERROR_MSG_LEN.
-        long_error = "this is a very long error message " * 10  # 340+ chars
+        long_error = "this is a very long error message " * 10  # 340 chars (34 × 10)
         with patch.object(physical_interface_aid, 'copilot_llm_call',
                           side_effect=RuntimeError(long_error)):
             result = physical_interface_aid.main(create_blank_image(), {})
