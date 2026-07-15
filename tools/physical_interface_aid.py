@@ -209,19 +209,18 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface. "
-                        "Give ONE clear instruction in 15 words or fewer. "
-                        "Priority: if the spatial analysis says the finger is "
-                        "NEAR or ADJACENT to a button but NOT directly on it, "
-                        "always give a direction to move "
-                        "(e.g. 'Move right to the Start button'). "
-                        "Only confirm 'Your finger is on the X button' when the "
-                        "spatial analysis explicitly states the finger is ON or "
-                        "directly overlapping that button. "
-                        "If direction is ambiguous, name the nearby buttons "
-                        "(e.g. '5 is slightly left, 6 is slightly right'). "
-                        "If the interface is unclear due to lighting or "
-                        "obstruction, say so briefly. "
-                        "Never exceed 15 words. No filler phrases."
+                        "The user cannot see. "
+                        "You MUST output EXACTLY ONE of these two forms — nothing else: "
+                        "  A) 'Your finger is on the [label] button.' — only when the "
+                        "spatial analysis explicitly states the finger is ON or directly "
+                        "overlapping that button. "
+                        "  B) 'Move [direction] to the [label] button.' — when the finger "
+                        "is near but NOT on a button. Direction must be one word: left, "
+                        "right, up, down, up-left, up-right, down-left, or down-right. "
+                        "If two buttons are equidistant, name both: "
+                        "'5 is slightly left, 6 is slightly right.' "
+                        "NEVER say 'touch', 'tap', 'press', 'reach', 'find', or 'locate'. "
+                        "NEVER use vague instructions. NEVER exceed 15 words."
                     ),
                 },
                 {
@@ -240,24 +239,30 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     "content": (
                         "You are providing audio guidance for a blind user "
                         "navigating a physical interface visible in the image. "
-                        "Give ONE clear instruction in 15 words or fewer. "
-                        "Prefer directional guidance (e.g. 'Move right to the 7 "
-                        "button') over confirming 'on the button' unless the finger "
-                        "clearly overlaps the button. "
-                        "Never exceed 15 words."
+                        "The user cannot see. "
+                        "You MUST output EXACTLY ONE of these two forms — nothing else: "
+                        "  A) 'Your finger is on the [label] button.' — only when the "
+                        "finger clearly overlaps the button area. "
+                        "  B) 'Move [direction] to the [label] button.' — when the finger "
+                        "is near but not on a button. Direction must be one word: left, "
+                        "right, up, down, up-left, up-right, down-left, or down-right. "
+                        "NEVER say 'touch', 'tap', 'press', 'reach', 'find', or 'locate'. "
+                        "NEVER use vague instructions. NEVER exceed 15 words."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": "Guide the user to or confirm the nearest button.",
+                    "content": "Give the spoken guidance now.",
                 },
             ]
 
         guidance_result = copilot_llm_call(
             capability="navigation",
             goal=(
-                "Produce a brief spoken instruction (≤15 words) to guide the "
-                "blind user's finger to or confirm the nearest interface button."
+                "Produce a spoken instruction (≤15 words) in one of two strict forms: "
+                "'Your finger is on the [label] button.' when the finger overlaps the button, "
+                "or 'Move [direction] to the [label] button.' with a single cardinal direction. "
+                "Never say touch, tap, press, reach, find, or locate."
             ),
             messages=nav_messages,
             images=[image],
