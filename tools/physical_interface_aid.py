@@ -343,7 +343,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
             capability="navigation",
             goal=(
                 "Produce a spoken instruction (≤15 words) referencing only the "
-                "single button relevant to the user's finger position. "
+                "button(s) relevant to the user's finger — one button in most cases, "
+                "or two when the finger is genuinely equidistant between them. "
                 "Use one of three strict forms: "
                 "'your finger is on [element]' when the finger overlaps the element; "
                 "'move [direction] towards [element]' with a single cardinal direction "
