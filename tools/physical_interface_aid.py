@@ -12,15 +12,16 @@ Stages:
      and which direction the user should move.
   3. navigation — produce a short, spoken directional instruction.
 
-Live mode: runs every ~1 second; returns "" when nothing has changed so
-the same phrase is not repeated continuously. Streaming responses are
-capped at 15 words via both system-prompt instruction and code enforcement.
+Live mode: responds at most every 1.5 seconds; returns "" when nothing has
+changed so the same phrase is not repeated continuously. Streaming responses
+are capped at 10 words via both system-prompt instruction and code enforcement.
 Output format (cardinal-only directions, no banned verbs) is also enforced
 in code so restrictions apply regardless of whether the backend's planning
 and routing pipeline is enabled.
 """
 
 import re
+import time
 import numpy as np
 from typing import Any, Dict, Optional
 
@@ -29,10 +30,13 @@ from model_router_client import copilot_llm_call
 TOOL_NAME = "physical_interface_aid"
 
 # Maximum words in a streaming/live-mode response (enforced in code + via prompt)
-STREAMING_WORD_LIMIT = 15
+STREAMING_WORD_LIMIT = 10
 
 # Maximum characters for the raw error message portion (truncated at word boundary)
 MAX_ERROR_MSG_LEN = 150
+
+# Minimum seconds between spoken responses in live mode.
+MIN_RESPONSE_INTERVAL = 1.5
 
 # Re-announce the same guidance after this many frames even when the scene is
 # unchanged, so the user hears confirmation and doesn't experience prolonged
@@ -84,6 +88,7 @@ def _enforce_output_format(text: str) -> str:
 # ── streaming state ──────────────────────────────────────────────────────────
 _last_response: str = ""
 _frame_count: int = 0
+_last_spoken_time: float = 0.0
 
 
 def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
@@ -96,12 +101,13 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                     options such as a target button name).
 
     Returns:
-        A spoken string (≤ 15 words in streaming/live mode) directing the user
+        A spoken string (≤ 10 words in streaming/live mode) directing the user
         to or confirming the button their finger is on.  Returns "" when the
-        scene has not changed, so TTS is not triggered redundantly.
+        scene has not changed or when called too soon (< 1.5 s since last
+        spoken output), so TTS is not triggered redundantly.
         Returns an audio-error dict when no image is available.
     """
-    global _last_response, _frame_count
+    global _last_response, _frame_count, _last_spoken_time
     _frame_count += 1
 
     if image is None or not isinstance(image, np.ndarray) or image.size == 0:
@@ -289,7 +295,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "NEVER use: touch, touching, tap, tapping, press, pressing, "
                         "reach, reaching, find, finding, locate, locating. "
                         "NEVER use diagonal directions. "
-                        "NEVER use vague instructions. NEVER exceed 15 words."
+                        "NEVER use vague instructions. NEVER exceed 10 words. "
+                        "Always name the specific element clearly."
                     ),
                 },
                 {
@@ -327,7 +334,8 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                         "NEVER use: touch, touching, tap, tapping, press, pressing, "
                         "reach, reaching, find, finding, locate, locating. "
                         "NEVER use diagonal directions. "
-                        "NEVER use vague instructions. NEVER exceed 15 words."
+                        "NEVER use vague instructions. NEVER exceed 10 words. "
+                        "Always name the specific element clearly."
                     ),
                 },
                 {
@@ -342,9 +350,10 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         guidance_result = copilot_llm_call(
             capability="navigation",
             goal=(
-                "Produce a spoken instruction (≤15 words) referencing only the "
-                "button(s) relevant to the user's finger — one button in most cases, "
-                "or two when the finger is genuinely equidistant between them. "
+                "Produce a spoken instruction (≤10 words) naming the specific "
+                "element clearly. Reference only the button(s) relevant to the "
+                "user's finger — one button in most cases, or two when the finger "
+                "is genuinely equidistant between them. "
                 "Use one of three strict forms: "
                 "'your finger is on [element]' when the finger overlaps the element; "
                 "'move [direction] towards [element]' with a single cardinal direction "
@@ -371,7 +380,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         if not response:
             return ""
 
-        # ── Enforce 15-word cap (safety net on top of prompt instruction) ────
+        # ── Enforce 10-word cap (safety net on top of prompt instruction) ────
         words = response.split()
         if len(words) > STREAMING_WORD_LIMIT:
             response = " ".join(words[:STREAMING_WORD_LIMIT])
@@ -393,7 +402,13 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         if response == _last_response and _frame_count % REPEAT_INTERVAL != 0:
             return ""
 
+        # ── Rate limit: at most one spoken response every 1.5 seconds ────────
+        now = time.monotonic()
+        if now - _last_spoken_time < MIN_RESPONSE_INTERVAL:
+            return ""
+
         _last_response = response
+        _last_spoken_time = now
         return response
 
     except Exception as exc:  # catch all exceptions and return audio error feedback
