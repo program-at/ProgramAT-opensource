@@ -122,13 +122,13 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         """main() returns a non-empty string when all stages succeed."""
         side_effects = self._patched_llm([
             "microwave keypad|buttons: 1(top-left), Start(bottom-right)|finger: center",
-            "finger is near the 5 button; move right to Start",
-            "Move right to the Start button",
+            "finger is near the Start button; move right",
+            "move right towards Start",
         ])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             result = physical_interface_aid.main(create_blank_image(), {})
         self.assertIsInstance(result, str)
-        self.assertEqual(result, "Move right to the Start button")
+        self.assertEqual(result, "move right towards Start")
 
     def test_streaming_deduplication_returns_empty_on_repeat(self):
         """Calling main() twice with the same scene should return '' on second call
@@ -139,17 +139,17 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         side_effects = self._patched_llm([
             "microwave|buttons: Start|finger: left",
             "finger left of Start; move right",
-            "Move right to the Start button",
+            "move right towards Start",
             # Second invocation
             "microwave|buttons: Start|finger: left",
             "finger left of Start; move right",
-            "Move right to the Start button",
+            "move right towards Start",
         ])
         image = create_blank_image()
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             first = physical_interface_aid.main(image, {})
             second = physical_interface_aid.main(image, {})
-        self.assertEqual(first, "Move right to the Start button")
+        self.assertEqual(first, "move right towards Start")
         self.assertEqual(second, "")
 
     def test_periodic_repeat_re_announces_at_interval(self):
@@ -158,7 +158,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         # _frame_count starts at 0; call i+1 lands on frame i+1.
         # Periodic re-announcement fires when _frame_count % interval == 0,
         # i.e. at frame `interval` = results[interval - 1].
-        guidance = "Move right to the Start button"
+        guidance = "move right towards Start"
         # Each call needs 3 LLM results; produce enough for exactly `interval` calls.
         side_effects = self._patched_llm(
             ["iface", "spatial", guidance] * interval
@@ -180,11 +180,11 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         side_effects = self._patched_llm([
             "microwave|buttons: Start|finger: center",
             "finger on Start",
-            "Your finger is on the Start button",
+            "your finger is on Start",
             # Second invocation with different result
             "microwave|buttons: Start|finger: right",
             "finger right of Start; move left",
-            "Move left to the Start button",
+            "move left towards Start",
         ])
         image = create_blank_image()
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
@@ -202,7 +202,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
         LLM responses with the 15-word system-prompt instruction is verified
         in end-to-end integration testing.
         """
-        guidance = "Move right to the Start button"
+        guidance = "move right towards Start"
         side_effects = self._patched_llm([
             "interface", "spatial", guidance,
         ])
@@ -227,7 +227,7 @@ class TestPhysicalInterfaceAidWithMock(unittest.TestCase):
     def test_frame_count_increments(self):
         """_frame_count must increment on each main() call."""
         physical_interface_aid._frame_count = 0
-        side_effects = self._patched_llm(["interface", "spatial", "Move up to the 7 button"])
+        side_effects = self._patched_llm(["interface", "spatial", "move up towards 7"])
         with patch.object(physical_interface_aid, 'copilot_llm_call', side_effect=side_effects):
             physical_interface_aid.main(create_blank_image(), {})
         self.assertGreaterEqual(physical_interface_aid._frame_count, 1)
