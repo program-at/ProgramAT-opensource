@@ -12,9 +12,11 @@ Operates in two modes based on what is visible in the camera frame:
 In live/streaming mode responses are capped at 15 words.
 
 Example outputs:
-  Reading mode : "Reading field student name."
-  Writing mode : "Slightly left to field student name."
-  Centered     : "Writing centered on field student name, ready to write."
+  Reading mode (top-level field) : "Reading field student name."
+  Reading mode (sub-field)       : "Chair/Co-Chairs, Title."
+  Reading mode (sub-field long)  : "Field: Chair/Co-Chairs, Name and UM email address."
+  Writing mode                   : "Slightly left to field student name."
+  Centered                       : "Writing centered on field student name, ready to write."
 """
 
 import numpy as np
@@ -40,10 +42,13 @@ TOOL_PROMPT = (
     "'Slightly left to field student name.'\n\n"
     "READING MODE instructions:\n"
     "Read the text or field label directly under or nearest to the pointing "
-    "finger. If the finger points to a plain text area say: 'Reading <text>.' "
-    "If it points to a form field label say: 'Reading field <label>.' or "
-    "'Field <label>.' "
-    "For multiple fields in the same row read them left to right. "
+    "finger. If the field belongs to a named section or group on the form, "
+    "always include the section name before the field name. "
+    "Examples: 'Field: Chair/Co-Chairs, Name and UM email address.' or "
+    "'Chair/Co-Chairs, Title.' "
+    "If the finger points to a plain text area (not a labelled field) say: 'Reading <text>.' "
+    "For multiple fields in the same row read them left to right, each with "
+    "its section name if applicable. "
     "If the form cannot be read (e.g. due to poor lighting) say: "
     "'Cannot read form: <reason>.'\n\n"
     "Reply in 15 words or fewer. Do not include mode labels or explanations."
