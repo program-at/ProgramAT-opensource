@@ -37,6 +37,9 @@ class MetaWearablesModule: NSObject {
     private var rayBanFramesReceived = 0
     private var rayBanFramesDecodeFailed = 0
     private var rayBanLastStreamState = "none"
+    private var rayBanLastSessionState = "none"
+    private var rayBanLastSessionError: String?
+    private var rayBanLastStreamError: String?
     // True from the moment a Ray-Ban stop is requested until the DeviceSession
     // reaches STOPPED and resources are released. Guards against creating a new
     // session before the old one finishes tearing down (sessionAlreadyExists).
@@ -137,12 +140,14 @@ class MetaWearablesModule: NSObject {
                 let session = try wearables.createSession(deviceSelector: deviceSelector)
                 self.rayBanSession = session
 
-                self.rayBanSessionStateToken = session.statePublisher.listen { state in
+                self.rayBanSessionStateToken = session.statePublisher.listen { [weak self] state in
                     print("[Meta] Ray-Ban session state:", String(describing: state))
+                    self?.rayBanLastSessionState = String(describing: state)
                 }
 
-                self.rayBanSessionErrorToken = session.errorPublisher.listen { error in
+                self.rayBanSessionErrorToken = session.errorPublisher.listen { [weak self] error in
                     print("[Meta] Ray-Ban session error:", error.localizedDescription)
+                    self?.rayBanLastSessionError = error.localizedDescription
                 }
 
                 try session.start()
@@ -174,8 +179,9 @@ class MetaWearablesModule: NSObject {
                     self?.rayBanLastStreamState = String(describing: state)
                 }
 
-                self.rayBanStreamErrorToken = stream.errorPublisher.listen { error in
+                self.rayBanStreamErrorToken = stream.errorPublisher.listen { [weak self] error in
                     print("[Meta] Ray-Ban stream error:", error.localizedDescription)
+                    self?.rayBanLastStreamError = error.localizedDescription
                 }
 
                 self.rayBanFrameToken = stream.videoFramePublisher.listen { [weak self] frame in
@@ -223,7 +229,7 @@ class MetaWearablesModule: NSObject {
         guard let image = self.latestRayBanImage else {
             reject(
                 "no_ray_ban_frame",
-                "No Ray-Ban frame is available yet. streamState=\(self.rayBanLastStreamState) framesReceived=\(self.rayBanFramesReceived) decodeFailed=\(self.rayBanFramesDecodeFailed)",
+                "No Ray-Ban frame is available yet. sessionState=\(self.rayBanLastSessionState) streamState=\(self.rayBanLastStreamState) framesReceived=\(self.rayBanFramesReceived) decodeFailed=\(self.rayBanFramesDecodeFailed) sessionError=\(self.rayBanLastSessionError ?? "none") streamError=\(self.rayBanLastStreamError ?? "none")",
                 nil
             )
             return
@@ -332,6 +338,9 @@ class MetaWearablesModule: NSObject {
         self.rayBanFramesReceived = 0
         self.rayBanFramesDecodeFailed = 0
         self.rayBanLastStreamState = "none"
+        self.rayBanLastSessionState = "none"
+        self.rayBanLastSessionError = nil
+        self.rayBanLastStreamError = nil
     }
 
     private func handleRayBanFrame(_ frame: VideoFrame) {
