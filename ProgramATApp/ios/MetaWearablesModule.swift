@@ -151,6 +151,9 @@ class MetaWearablesModule: NSObject {
                 )
 
                 guard let stream = try session.addStream(config: config) else {
+                    session.stop()
+                    _ = await self.waitForRayBanSessionStopped(session)
+                    self.releaseRayBanResources()
                     reject(
                         "stream_creation_failed",
                         "Unable to create a Meta DAT stream.",
@@ -180,6 +183,19 @@ class MetaWearablesModule: NSObject {
 
             } catch {
                 print("[Meta] Failed to start Ray-Ban stream:", error.localizedDescription)
+
+                // A partially created session/stream must be torn down here,
+                // otherwise it lingers as rayBanSession/rayBanStream and every
+                // retry is rejected with ray_ban_already_active.
+                if let session = self.rayBanSession {
+                    if let stream = self.rayBanStream {
+                        await stream.stop()
+                    }
+                    session.stop()
+                    _ = await self.waitForRayBanSessionStopped(session)
+                }
+                self.releaseRayBanResources()
+
                 reject(
                     "start_ray_ban_stream_failed",
                     String(describing: error),
