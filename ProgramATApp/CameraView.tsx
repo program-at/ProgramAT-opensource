@@ -18,6 +18,7 @@ import {
   Alert,
   AccessibilityInfo,
   NativeModules,
+  Image,
 } from 'react-native';
 import {
   Camera,
@@ -58,8 +59,10 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const [isLoading, setIsLoading] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [cameraSource, setCameraSource] = useState<CameraSource>(CameraSource.Phone);
+  const [rayBanPreviewUri, setRayBanPreviewUri] = useState<string | null>(null);
   const cameraRef = useRef<Camera>(null);
   const frameIntervalRef = useRef<any>(null);
+  const rayBanPreviewIntervalRef = useRef<any>(null);
   const errorCountRef = useRef<number>(0);
   const lastErrorTime = useRef<number>(0);
   const frameSkipCounterRef = useRef<number>(0);
@@ -113,6 +116,10 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         clearInterval(frameIntervalRef.current);
         frameIntervalRef.current = null;
       }
+      if (rayBanPreviewIntervalRef.current) {
+        clearInterval(rayBanPreviewIntervalRef.current);
+        rayBanPreviewIntervalRef.current = null;
+      }
       if (cameraSourceRef.current === CameraSource.RayBan) {
         // Fire-and-forget on unmount; native still tears down to STOPPED.
         MetaWearablesModule?.stopRayBanStream?.().catch(() => {});
@@ -135,6 +142,37 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       return null;
     }
   };
+
+  // Poll the latest Ray-Ban frame independently of tool frame streaming, so
+  // there is a visible preview the moment the glasses camera is active —
+  // vision-camera renders the phone preview natively, but Ray-Ban frames only
+  // exist as still snapshots pulled from the native module.
+  useEffect(() => {
+    const isRayBanActive = isCameraActive && cameraSource === CameraSource.RayBan;
+
+    if (!isRayBanActive) {
+      setRayBanPreviewUri(null);
+      if (rayBanPreviewIntervalRef.current) {
+        clearInterval(rayBanPreviewIntervalRef.current);
+        rayBanPreviewIntervalRef.current = null;
+      }
+      return;
+    }
+
+    rayBanPreviewIntervalRef.current = setInterval(async () => {
+      const frame = await captureRayBanFrameJS();
+      if (frame) {
+        setRayBanPreviewUri(frame.base64);
+      }
+    }, 200);
+
+    return () => {
+      if (rayBanPreviewIntervalRef.current) {
+        clearInterval(rayBanPreviewIntervalRef.current);
+        rayBanPreviewIntervalRef.current = null;
+      }
+    };
+  }, [isCameraActive, cameraSource]);
 
   // Loading sound effect for camera operations
   useEffect(() => {
@@ -515,6 +553,15 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
               accessibilityLabel="Camera preview"
               accessibilityHint="Live camera feed displaying what the camera sees"
             />
+          ) : rayBanPreviewUri ? (
+            <Image
+              source={{ uri: rayBanPreviewUri }}
+              style={styles.camera}
+              resizeMode="cover"
+              accessible={true}
+              accessibilityLabel="Meta Ray-Ban camera preview"
+              accessibilityHint="Live camera feed from your Ray-Ban glasses"
+            />
           ) : (
             <View style={styles.cameraPlaceholder}>
               <Text
@@ -527,7 +574,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
                 style={styles.placeholderSubtext}
                 accessible={true}
                 accessibilityRole="text">
-                Frames stream from your glasses to this tool
+                Waiting for frames from your glasses…
               </Text>
             </View>
           )
