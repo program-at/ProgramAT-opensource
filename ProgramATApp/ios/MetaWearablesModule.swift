@@ -32,6 +32,11 @@ class MetaWearablesModule: NSObject {
     private var rayBanStreamErrorToken: Any?
     private var rayBanFrameToken: Any?
     private var latestRayBanImage: UIImage?
+    // Diagnostics surfaced via captureRayBanFrame's rejection message so they
+    // are visible in Metro without needing the native Xcode console.
+    private var rayBanFramesReceived = 0
+    private var rayBanFramesDecodeFailed = 0
+    private var rayBanLastStreamState = "none"
     // True from the moment a Ray-Ban stop is requested until the DeviceSession
     // reaches STOPPED and resources are released. Guards against creating a new
     // session before the old one finishes tearing down (sessionAlreadyExists).
@@ -164,8 +169,9 @@ class MetaWearablesModule: NSObject {
 
                 self.rayBanStream = stream
 
-                self.rayBanStreamStateToken = stream.statePublisher.listen { state in
+                self.rayBanStreamStateToken = stream.statePublisher.listen { [weak self] state in
                     print("[Meta] Ray-Ban stream state:", String(describing: state))
+                    self?.rayBanLastStreamState = String(describing: state)
                 }
 
                 self.rayBanStreamErrorToken = stream.errorPublisher.listen { error in
@@ -217,7 +223,7 @@ class MetaWearablesModule: NSObject {
         guard let image = self.latestRayBanImage else {
             reject(
                 "no_ray_ban_frame",
-                "No Ray-Ban frame is available yet.",
+                "No Ray-Ban frame is available yet. streamState=\(self.rayBanLastStreamState) framesReceived=\(self.rayBanFramesReceived) decodeFailed=\(self.rayBanFramesDecodeFailed)",
                 nil
             )
             return
@@ -323,11 +329,17 @@ class MetaWearablesModule: NSObject {
         self.rayBanStream = nil
         self.rayBanSession = nil
         self.latestRayBanImage = nil
+        self.rayBanFramesReceived = 0
+        self.rayBanFramesDecodeFailed = 0
+        self.rayBanLastStreamState = "none"
     }
 
     private func handleRayBanFrame(_ frame: VideoFrame) {
 
+        self.rayBanFramesReceived += 1
+
         guard let image = frame.makeUIImage() else {
+            self.rayBanFramesDecodeFailed += 1
             print("[Meta] Ray-Ban frame received but makeUIImage() returned nil")
             return
         }
