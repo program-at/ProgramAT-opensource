@@ -156,7 +156,7 @@ class MetaWearablesModule: NSObject {
 
                 let config = StreamConfiguration(
                     videoCodec: .raw,
-                    resolution: .medium,
+                    resolution: .high,
                     frameRate: 15
                 )
 
