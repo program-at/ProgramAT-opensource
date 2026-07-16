@@ -180,8 +180,8 @@ class MetaWearablesModule: NSObject {
                 }
 
                 self.rayBanStreamErrorToken = stream.errorPublisher.listen { [weak self] error in
-                    print("[Meta] Ray-Ban stream error:", error.localizedDescription)
-                    self?.rayBanLastStreamError = error.localizedDescription
+                    print("[Meta] Ray-Ban stream error:", String(describing: error), "-", error.localizedDescription)
+                    self?.rayBanLastStreamError = "\(String(describing: error)) (\(error.localizedDescription))"
                 }
 
                 self.rayBanFrameToken = stream.videoFramePublisher.listen { [weak self] frame in
