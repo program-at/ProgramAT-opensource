@@ -177,6 +177,12 @@ class MetaWearablesModule: NSObject {
                 }
 
                 await stream.start()
+
+                // stream.start() only requests the start; it returns before
+                // the stream reaches .streaming. Resolving right away told
+                // the app "connected" even when the stream stayed stuck in
+                // .waitingForDevice/.starting and never produced a frame.
+                try await self.waitForStreamStreaming(stream)
                 print("[Meta] Ray-Ban stream started")
 
                 resolve(true)
@@ -386,6 +392,26 @@ class MetaWearablesModule: NSObject {
             domain: "MetaWearablesModule",
             code: 1001,
             userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the session to start."]
+        )
+    }
+
+    /// Polls the stream state until it reports .streaming, throwing on
+    /// timeout. `Stream.start()` only requests the start and returns before
+    /// the camera pipeline is actually producing frames, so callers must wait
+    /// for this before treating the stream as usable.
+    private func waitForStreamStreaming(_ stream: MWDATCamera.Stream) async throws {
+
+        for _ in 0..<100 {  // up to ~20 seconds at 200ms intervals
+            if stream.state == .streaming {
+                return
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
+        }
+
+        throw NSError(
+            domain: "MetaWearablesModule",
+            code: 1003,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the Ray-Ban stream to start streaming."]
         )
     }
 
