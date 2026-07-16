@@ -238,7 +238,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sent)
         cascade.assert_called_once()
         websocket.send.assert_not_awaited()
-        self.assertIn("C2 result discarded as stale", "\n".join(logs.output))
+        self.assertIn("policy cascade result discarded as stale", "\n".join(logs.output))
 
     async def test_stable_candidate_too_similar_to_last_sent_is_skipped(self):
         now = asyncio.get_running_loop().time()

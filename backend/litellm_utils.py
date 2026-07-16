@@ -2,10 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
-import logging
 import os
-import time
-import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
 try:
@@ -17,9 +14,6 @@ try:
     from PIL import Image
 except ImportError:
     Image = None
-
-
-logger = logging.getLogger(__name__)
 
 
 def extract_text(response) -> str:
@@ -167,34 +161,6 @@ def call_model(
     )
 
 
-TAKE_PHOTO_BASELINE_MODEL = "gemini/gemini-3.1-flash-lite-preview"
-C2_GEMINI_MODEL = TAKE_PHOTO_BASELINE_MODEL
-C2_EVALUATOR_MODEL = "openai/gpt-4o-mini"
-C2_GPT5_MODEL = "gpt-5"
-C2_EXPERIMENT_CONDITION = "C2_NO_RESULT_PASSING"
-C2_PLANNER_MODE = "P2_FUSED_PROMPT"
-C2_EVALUATOR_PROMPT = """Evaluate whether the answer is sufficiently useful for a blind or low-vision
-user.
-
-Return YES if the answer provides meaningful task-relevant information and
-communicates the important visual result in words.
-
-The answer does not need to be perfect, exhaustive, or completely certain.
-Minor omissions or cautious wording are acceptable.
-
-Return NO if the answer is empty, unrelated, provides no useful conclusion,
-mainly says it cannot determine the answer, or asks the user to visually inspect
-information that was not explained in words.
-
-Return exactly YES or NO.
-
-Original fused task:
-{prompt}
-
-Answer to evaluate:
-{answer}"""
-
-
 def _extract_responses_text(response: Any) -> str:
     output_text = getattr(response, "output_text", None)
     if isinstance(output_text, str):
@@ -208,13 +174,19 @@ def _extract_responses_text(response: Any) -> str:
     return "".join(parts).strip()
 
 
-def _call_gpt5_responses(image: Any, prompt: str) -> str:
-    """Call GPT-5 from a fresh prompt/image request via the OpenAI Responses API."""
+def call_openai_responses_model(
+    model_name: str,
+    prompt: str,
+    image: Any,
+    *,
+    reasoning_effort: str = "medium",
+) -> str:
+    """Call one OpenAI Responses API model with one fresh multimodal request."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=resolve_api_key(C2_GPT5_MODEL), max_retries=0)
+    client = OpenAI(api_key=resolve_api_key(model_name), max_retries=0)
     response = client.responses.create(
-        model=C2_GPT5_MODEL,
+        model=model_name,
         input=[{
             "role": "user",
             "content": [
@@ -222,97 +194,9 @@ def _call_gpt5_responses(image: Any, prompt: str) -> str:
                 {"type": "input_image", "image_url": _image_to_data_uri(image)},
             ],
         }],
-        reasoning={"effort": "medium"},
+        reasoning={"effort": reasoning_effort},
     )
     return _extract_responses_text(response)
-
-
-def call_c2_no_result_passing(
-    image: Any,
-    prompt: str,
-    *,
-    mode: str,
-    request_id: Optional[str] = None,
-) -> str:
-    """Run Experiment 2 C2 while keeping the fallback context completely fresh."""
-    original_prompt = str(prompt).strip()
-    original_image = image
-    inference_id = request_id or uuid.uuid4().hex
-    total_started = time.perf_counter()
-    gemini_ms = 0.0
-    evaluator_ms = 0.0
-    gpt5_ms = 0.0
-    evaluator_decision = "SKIPPED"
-    escalation = False
-    final_model = C2_GEMINI_MODEL
-    gemini_answer = ""
-
-    gemini_started = time.perf_counter()
-    try:
-        response = call_model(
-            model_name=C2_GEMINI_MODEL,
-            messages=[{"role": "user", "content": original_prompt}],
-            images=[original_image],
-            metadata={"num_retries": 0},
-        )
-        gemini_answer = extract_text(response).strip()
-    except Exception as exc:
-        logger.warning(
-            "[C2] mode=%s request_id=%s Gemini failed; escalating error_type=%s",
-            mode, inference_id, type(exc).__name__,
-        )
-    finally:
-        gemini_ms = (time.perf_counter() - gemini_started) * 1000
-
-    if gemini_answer:
-        evaluator_started = time.perf_counter()
-        try:
-            evaluation = call_model(
-                model_name=C2_EVALUATOR_MODEL,
-                messages=[{
-                    "role": "user",
-                    "content": C2_EVALUATOR_PROMPT.format(
-                        prompt=original_prompt,
-                        answer=gemini_answer,
-                    ),
-                }],
-                images=[],
-                metadata={"temperature": 0, "max_tokens": 3, "num_retries": 0},
-            )
-            normalized = " ".join(extract_text(evaluation).split()).upper()
-            evaluator_decision = "YES" if normalized == "YES" else "NO"
-        except Exception as exc:
-            evaluator_decision = "FAILED"
-            logger.warning(
-                "[C2] mode=%s request_id=%s evaluator failed; escalating error_type=%s",
-                mode, inference_id, type(exc).__name__,
-            )
-        finally:
-            evaluator_ms = (time.perf_counter() - evaluator_started) * 1000
-
-    if not gemini_answer or evaluator_decision != "YES":
-        escalation = True
-        final_model = C2_GPT5_MODEL
-        gpt5_started = time.perf_counter()
-        try:
-            # Deliberately use only the immutable original inputs. Gemini output and
-            # evaluator feedback never enter this fresh Responses API request.
-            final_answer = _call_gpt5_responses(original_image, original_prompt)
-        finally:
-            gpt5_ms = (time.perf_counter() - gpt5_started) * 1000
-    else:
-        final_answer = gemini_answer
-
-    logger.info(
-        "[C2] mode=%s condition=%s planner_mode=%s request_id=%s "
-        "gemini_ms=%.1f evaluator_decision=%s evaluator_ms=%.1f escalated=%s "
-        "gpt5_ms=%.1f final_model=%s total_ms=%.1f "
-        "fallback_context=original_prompt_and_image_only",
-        mode, C2_EXPERIMENT_CONDITION, C2_PLANNER_MODE, inference_id,
-        gemini_ms, evaluator_decision, evaluator_ms, str(escalation).lower(),
-        gpt5_ms, final_model, (time.perf_counter() - total_started) * 1000,
-    )
-    return final_answer
 
 
 def call_take_photo_baseline_vlm(
@@ -323,10 +207,11 @@ def call_take_photo_baseline_vlm(
     mode: str = "take-photo",
     request_id: Optional[str] = None,
 ) -> str:
-    """Run the P2 fused prompt through the Experiment 2 C2 cascade."""
-    return call_c2_no_result_passing(
-        image=image,
-        prompt=prompt,
-        mode=mode,
-        request_id=request_id,
+    """Delegate the P2 fused prompt to the mode's YAML-configured cascade."""
+    # Imported lazily because model_router uses the individual provider wrappers
+    # in this module when constructing its implementation executor registry.
+    from model_router import run_mode_cascade
+
+    return run_mode_cascade(
+        mode=mode, prompt=prompt, image=image, request_id=request_id
     )

@@ -62,13 +62,24 @@ fallback behavior; those backend details are not generated prompt stages.
 
 Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
 
-Take-photo model-backed work should call `copilot_llm_call(...)` through `model_router_client.py`. The declared capability selects its configured policy:
+Generated take-photo tools call `call_take_photo_baseline_vlm(...)`; capability-based
+tools call `copilot_llm_call(...)`. Both resolve concrete implementations from
+`execution_policy.yaml`:
 
 ```yaml
+mode_execution:
+  take-photo:
+    cascade: default_reasoning
+    planner_mode: P2_FUSED_PROMPT
+  streaming:
+    cascade: default_reasoning
+    planner_mode: P2_FUSED_PROMPT
+
 cascade_profiles:
   default_reasoning:
-    candidates: [moondream_cloud, gemini_flash_lite, gpt4o]
+    candidates: [moondream_cloud, gemini_flash_lite, gpt5]
     evaluator: gpt4o-mini
+    result_passing: none
   ocr:
     candidates: [mistral_ocr, google_vision]
     evaluator: gpt4o-mini

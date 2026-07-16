@@ -81,6 +81,35 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
         self.assertIn("response status=200", output)
         self.assertIn("latency_ms=", output)
 
+    def test_policy_mode_preserves_exact_untruncated_tool_prompt(self):
+        prompt = (
+            "Identify important mail and briefly label each important item. "
+            + "Keep this task-specific instruction. " * 200
+            + "END_OF_TOOL_PROMPT"
+        )
+        create = Mock(return_value=response("Important: medical appointment letter."))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+
+        with patch.object(model_router, "_create_moondream_client", return_value=client), \
+             patch.dict(model_router.os.environ, {
+                 "MOONDREAM_API_KEY": "test-key",
+                 "ENABLE_MOONDREAM_CLOUD": "true",
+             }), self.assertLogs(model_router.logger, level="INFO") as logs:
+            model_router._moondream_cloud_executor(
+                self.profile(),
+                [{"role": "user", "content": prompt}],
+                [self.image_bytes()],
+                {"preserve_original_prompt": True, "prompt_source": "tool_prompt"},
+            )
+
+        request_text = create.call_args.kwargs["messages"][0]["content"][0]["text"]
+        self.assertEqual(request_text, prompt)
+        output = "\n".join(logs.output)
+        self.assertIn("prompt_adapter=none", output)
+        self.assertIn("prompt_source=original_prompt_preserved", output)
+        self.assertIn(f"prompt_chars_original={len(prompt)}", output)
+        self.assertIn(f"prompt_chars_sent={len(prompt)}", output)
+
     def test_prompt_adapter_normalizes_and_caps_goal(self):
         full = "```json\n# ProgramAT\n" + ("Find the nearest exit safely using visible landmarks. " * 20)
         prompt, short_goal, original_chars, source = model_router.moondream_provider.adapt_task_prompt(
@@ -558,7 +587,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                     self.profile(), [{"role": "user", "content": "Describe it"}],
                     [self.image_bytes()], {},
                 )
-        self.assertIn("continuing cascade", "\n".join(logs.output))
+        self.assertIn("empty or malformed response", "\n".join(logs.output))
 
     def test_500_starts_cooldown_and_next_call_skips_network(self):
         error = RuntimeError("FAL backend error: 500")
@@ -942,11 +971,11 @@ class TestExecutionPolicyConfiguration(unittest.TestCase):
         for policy in policies.values():
             self.assertNotIn("llava", policy["candidates"])
 
-    def test_reasoning_cascade_uses_moondream_then_gemini_then_gpt4o(self):
+    def test_reasoning_cascade_uses_moondream_then_gemini_then_gpt5(self):
         policy = model_router.load_execution_policies()["general_reasoning"]
         self.assertEqual(
             policy["candidates"],
-            ["moondream_cloud", "gemini_flash_lite", "gpt4o"],
+            ["moondream_cloud", "gemini_flash_lite", "gpt5"],
         )
         self.assertEqual(policy["evaluator"], "gpt4o-mini")
 

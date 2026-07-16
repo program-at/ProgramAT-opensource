@@ -1,11 +1,15 @@
 import ast
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import litellm_utils
+import model_router
 import stream_server
 from validate_generated_tools import validate_take_photo_baseline
 
@@ -19,7 +23,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
             })()]
         })()
 
-    def test_checked_in_user_tools_have_unified_take_photo_prompt_constants(self):
+    def test_every_checked_in_assistive_tool_has_one_task_specific_prompt(self):
         tools_dir = Path(__file__).resolve().parent.parent / "tools"
         tool_names = (
             "camera_aiming", "clothing_recognition", "door_detection",
@@ -40,57 +44,189 @@ class TestTakePhotoBaseline(unittest.TestCase):
             self.assertEqual(constants["TOOL_NAME"], tool_name)
             self.assertTrue(constants["TOOL_PROMPT"].strip())
 
-    def test_evaluator_yes_returns_gemini_without_gpt5(self):
-        responses = [self._completion("The label says aspirin."), self._completion(" yes\n")]
-        with patch.object(litellm_utils, "call_model", side_effect=responses) as call, \
-             patch.object(litellm_utils, "_call_gpt5_responses") as gpt5:
-            answer = litellm_utils.call_take_photo_baseline_vlm(
-                image=b"image", prompt="Read the label."
-            )
-
-        self.assertEqual(answer, "The label says aspirin.")
-        self.assertEqual(call.call_count, 2)
-        call.assert_any_call(
-            model_name=litellm_utils.TAKE_PHOTO_BASELINE_MODEL,
-            messages=[{"role": "user", "content": "Read the label."}],
-            images=[b"image"],
-            metadata={"num_retries": 0},
+    def test_evaluator_receives_exact_untruncated_tool_prompt_and_candidate(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+        prompt = (
+            "Identify important mail and briefly label each important item. "
+            + "Preserve this task-specific detail. " * 200
+            + "END_OF_EXACT_TOOL_PROMPT"
         )
-        evaluator_call = call.call_args_list[1].kwargs
-        self.assertEqual(evaluator_call["model_name"], "openai/gpt-4o-mini")
-        self.assertIn("The label says aspirin.", evaluator_call["messages"][0]["content"])
-        self.assertEqual(evaluator_call["images"], [])
-        gpt5.assert_not_called()
+        candidate = '{"mail_type":"Medical/Healthcare","confidence":0.98}'
+        evaluator_messages = []
+        decisions = iter(("NO", "YES"))
 
-    def test_evaluator_no_calls_gpt5_with_only_original_inputs(self):
+        def executor(profile, messages, images, metadata):
+            if profile.name == policy.evaluator:
+                evaluator_messages.append(messages)
+                text = next(decisions)
+            elif profile.name == "moondream_cloud":
+                text = candidate
+            else:
+                text = "Important: medical letter."
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            answer = model_router.run_cascade(policy, prompt, b"image", request_id="mail-1")
+
+        self.assertEqual(answer, "Important: medical letter.")
+        first_evaluation = evaluator_messages[0]
+        self.assertEqual(first_evaluation[0]["role"], "system")
+        self.assertIn("actually satisfies", first_evaluation[0]["content"])
+        self.assertIn("requested output format", first_evaluation[0]["content"])
+        self.assertEqual(first_evaluation[1]["role"], "user")
+        evaluator_input = first_evaluation[1]["content"]
+        self.assertIn(f"<task_prompt>\n{prompt}\n</task_prompt>", evaluator_input)
+        self.assertIn(f"<candidate_answer>\n{candidate}\n</candidate_answer>", evaluator_input)
+        self.assertIn("END_OF_EXACT_TOOL_PROMPT", evaluator_input)
+        self.assertIn("input_truncated=false", "\n".join(logs.output))
+
+    def test_changing_tool_prompt_changes_evaluator_outcome_without_code_change(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+
+        def run(prompt):
+            order = []
+
+            def executor(profile, messages, images, metadata):
+                order.append(profile.name)
+                if profile.name == policy.evaluator:
+                    task_and_answer = messages[1]["content"]
+                    text = "YES" if "Return JSON" in task_and_answer else "NO"
+                else:
+                    text = f"answer-from-{profile.name}"
+                return model_router.ImplementationResult(
+                    self._completion(text), {"text": text}
+                )
+
+            executors = {
+                profile.kind: executor for profile in policy.implementations.values()
+            }
+            with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+                answer = model_router.run_cascade(policy, prompt, b"image")
+            return answer, order
+
+        plain_answer, plain_order = run(
+            "Identify important mail and briefly label each important item."
+        )
+        json_answer, json_order = run(
+            "Identify important mail. Return JSON with a mail_type field."
+        )
+
+        self.assertEqual(plain_answer, "answer-from-gpt5")
+        self.assertEqual(json_answer, "answer-from-moondream_cloud")
+        self.assertEqual(plain_order[-1], "gpt5")
+        self.assertEqual(json_order, ["moondream_cloud", "gpt4o-mini"])
+
+    def test_both_modes_resolve_order_and_evaluator_from_execution_policy(self):
+        for mode in ("take-photo", "streaming"):
+            policy = model_router.resolve_execution_policy(mode)
+            self.assertEqual(
+                policy.candidates,
+                ("moondream_cloud", "gemini_flash_lite", "gpt5"),
+            )
+            self.assertEqual(policy.evaluator, "gpt4o-mini")
+            self.assertEqual(policy.result_passing, "none")
+            self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
+
+    def test_policy_executor_runs_configured_order_and_c2_fresh_context(self):
+        policy = model_router.resolve_execution_policy("take-photo")
         image = object()
-        responses = [self._completion("Gemini failed answer marker."), self._completion("NO")]
-        with patch.object(litellm_utils, "call_model", side_effect=responses), \
-             patch.object(
-                 litellm_utils, "_call_gpt5_responses", return_value="GPT-5 answer"
-             ) as gpt5:
-            answer = litellm_utils.call_c2_no_result_passing(
-                image, "Original fused prompt", mode="take-photo", request_id="photo-1"
+        order = []
+        candidate_calls = []
+        decisions = iter(("NO", "NO"))
+
+        def executor(profile, messages, images, metadata):
+            order.append(profile.name)
+            if profile.name == policy.evaluator:
+                return model_router.ImplementationResult(
+                    self._completion(next(decisions)), {"text": "decision"}
+                )
+            candidate_calls.append((profile.name, messages, images, metadata))
+            return model_router.ImplementationResult(
+                self._completion(f"answer-from-{profile.name}"),
+                {"text": f"answer-from-{profile.name}"},
             )
 
-        self.assertEqual(answer, "GPT-5 answer")
-        gpt5.assert_called_once_with(image, "Original fused prompt")
-        fallback_args = " ".join(repr(arg) for arg in gpt5.call_args.args)
-        self.assertNotIn("Gemini failed answer marker", fallback_args)
-
-    def test_gemini_failure_directly_calls_gpt5_and_skips_evaluator(self):
-        image = b"original-image"
-        with patch.object(litellm_utils, "call_model", side_effect=TimeoutError("secret")) as call, \
-             patch.object(
-                 litellm_utils, "_call_gpt5_responses", return_value="Fallback answer"
-             ) as gpt5:
-            answer = litellm_utils.call_c2_no_result_passing(
-                image, "Original prompt", mode="streaming", request_id="frame-7"
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+            answer = model_router.run_cascade(
+                policy, "Original fused prompt", image, request_id="photo-1"
             )
 
-        self.assertEqual(answer, "Fallback answer")
-        self.assertEqual(call.call_count, 1)
-        gpt5.assert_called_once_with(image, "Original prompt")
+        self.assertEqual(answer, "answer-from-gpt5")
+        self.assertEqual(
+            order,
+            ["moondream_cloud", "gpt4o-mini", "gemini_flash_lite", "gpt4o-mini", "gpt5"],
+        )
+        self.assertEqual([call[0] for call in candidate_calls], list(policy.candidates))
+        for _name, messages, images, metadata in candidate_calls:
+            self.assertEqual(messages, [{"role": "user", "content": "Original fused prompt"}])
+            self.assertEqual(images, [image])
+            self.assertTrue(metadata["preserve_original_prompt"])
+            serialized = repr((messages, images, metadata))
+            self.assertNotIn("answer-from-moondream_cloud", serialized)
+            self.assertNotIn("answer-from-gemini_flash_lite", serialized)
+
+    def test_evaluator_yes_stops_policy_cascade_before_later_models(self):
+        policy = model_router.resolve_execution_policy("streaming")
+        order = []
+
+        def executor(profile, messages, images, metadata):
+            order.append(profile.name)
+            text = "YES" if profile.name == policy.evaluator else "Useful Moondream answer"
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+            answer = model_router.run_cascade(policy, "Prompt", b"frame")
+
+        self.assertEqual(answer, "Useful Moondream answer")
+        self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
+
+    def test_changing_yaml_candidate_list_changes_actual_mode_cascade(self):
+        source = Path(model_router.EXECUTION_POLICY_PATH)
+        config = yaml.safe_load(source.read_text(encoding="utf-8"))
+        config["cascade_profiles"]["default_reasoning"]["candidates"] = [
+            "gemini_flash_lite", "gpt5"
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path = Path(directory) / "execution_policy.yaml"
+            policy_path.write_text(yaml.safe_dump(config), encoding="utf-8")
+            policies = {
+                mode: model_router.resolve_execution_policy(mode, policy_path)
+                for mode in ("take-photo", "streaming")
+            }
+
+        for mode, policy in policies.items():
+            with self.subTest(mode=mode):
+                order = []
+
+                def executor(profile, messages, images, metadata):
+                    order.append(profile.name)
+                    text = "NO" if profile.name == policy.evaluator else f"{profile.name}-answer"
+                    return model_router.ImplementationResult(
+                        self._completion(text), {"text": text}
+                    )
+
+                executors = {
+                    profile.kind: executor for profile in policy.implementations.values()
+                }
+                with patch.dict(
+                    model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True
+                ):
+                    answer = model_router.run_cascade(policy, "Prompt", b"image")
+
+                self.assertEqual(answer, "gpt5-answer")
+                self.assertEqual(
+                    order, ["gemini_flash_lite", "gpt4o-mini", "gpt5"]
+                )
 
     def test_gpt5_responses_request_preserves_multimodal_format_and_reasoning(self):
         client = type("Client", (), {})()
@@ -100,8 +236,8 @@ class TestTakePhotoBaseline(unittest.TestCase):
         )
         client.responses.create = create
         with patch("openai.OpenAI", return_value=client) as openai_client:
-            answer = litellm_utils._call_gpt5_responses(
-                b"raw-image", "Original fused prompt"
+            answer = litellm_utils.call_openai_responses_model(
+                "gpt-5", "Original fused prompt", b"raw-image"
             )
 
         self.assertEqual(answer, "Fresh fallback")
@@ -225,6 +361,26 @@ def main(image, input_data):
             mode="take-photo", request_id=None,
         )
         router.assert_not_called()
+
+    def test_runtime_uses_updated_tool_prompt_from_modified_code(self):
+        original = 'TOOL_NAME = "mail"\nTOOL_PROMPT = "Identify important mail."\n'
+        updated = (
+            'TOOL_NAME = "mail"\n'
+            'TOOL_PROMPT = "Identify important mail and briefly label each important item."\n'
+        )
+        with patch.object(
+            stream_server, "call_take_photo_baseline_vlm", return_value="answer"
+        ) as helper:
+            stream_server._run_take_photo_baseline("mail", original, b"image")
+            stream_server._run_take_photo_baseline("mail", updated, b"image")
+
+        self.assertEqual(
+            [call.kwargs["prompt"] for call in helper.call_args_list],
+            [
+                "Identify important mail.",
+                "Identify important mail and briefly label each important item.",
+            ],
+        )
 
     def test_runtime_rejects_tools_without_a_prompt(self):
         with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):

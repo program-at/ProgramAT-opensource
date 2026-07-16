@@ -73,7 +73,6 @@ from model_router import (
     system_llm_call,
 )
 from litellm_utils import (
-    TAKE_PHOTO_BASELINE_MODEL,
     call_take_photo_baseline_vlm,
     extract_text,
 )
@@ -1575,13 +1574,12 @@ def _run_take_photo_baseline(
     mode: str = 'take-photo',
     request_id: Optional[str] = None,
 ) -> str:
-    """Execute the P2 fused prompt through the shared Experiment 2 C2 cascade."""
+    """Execute the P2 fused prompt through the mode's policy-configured cascade."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
     logger.info(
-        "[P2 C2] mode=%s prompt_author=copilot planner_mode=P2_FUSED_PROMPT "
-        "condition=C2_NO_RESULT_PASSING first_model=%s request_id=%s",
+        "[P2] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
+        "request_id=%s",
         mode,
-        TAKE_PHOTO_BASELINE_MODEL,
         request_id or 'generated',
     )
     return call_take_photo_baseline_vlm(
@@ -2360,6 +2358,39 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
 
     exec_env['exec_globals_base']['copilot_llm_call'] = streaming_copilot_llm_call
 
+    # P2 streaming resolves the same mode policy as take-photo before any legacy
+    # planner-disabled or generated-tool execution path can select a model.
+    if tool_language == 'python' and tool_code:
+        execution_id = tool_config.get('current_execution_id')
+        try:
+            cascade_result = await asyncio.to_thread(
+                _run_take_photo_baseline,
+                tool_name,
+                tool_code,
+                image,
+                'streaming',
+                str(execution_id or 'unknown'),
+            )
+        except Exception as exc:
+            logger.error(
+                "[Streaming] policy cascade failed client=%s execution=%s error=%s",
+                client_id, execution_id, exc,
+            )
+            return False
+        if streaming_cancelled():
+            logger.info(
+                "[Streaming] policy cascade result discarded as stale client=%s execution=%s",
+                client_id, execution_id,
+            )
+            return False
+        response_data = _build_mobile_tool_response(
+            'tool_stream_result', tool_name, cascade_result, now
+        )
+        response_data['execution_id'] = execution_id
+        _log_final_tool_response(tool_name, response_data)
+        await websocket.send(json.dumps(response_data))
+        return True
+
     try:
         single_stage_result = await asyncio.to_thread(
             _single_stage_tool_result,
@@ -2391,40 +2422,6 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         await websocket.send(json.dumps(response_data))
         return True
 
-    # P2-only Experiment 2: run the same fused-prompt C2 job used by take-photo.
-    # The scheduler still owns frame selection and this boundary still owns stale
-    # result suppression; no intermediate Gemini result is exposed to the client.
-    if tool_language == 'python' and tool_code:
-        execution_id = tool_config.get('current_execution_id')
-        try:
-            c2_result = await asyncio.to_thread(
-                _run_take_photo_baseline,
-                tool_name,
-                tool_code,
-                image,
-                'streaming',
-                str(execution_id or 'unknown'),
-            )
-        except Exception as exc:
-            logger.error(
-                "[Streaming] C2 cascade failed client=%s execution=%s error=%s",
-                client_id, execution_id, exc,
-            )
-            return False
-        if streaming_cancelled():
-            logger.info(
-                "[Streaming] C2 result discarded as stale client=%s execution=%s",
-                client_id, execution_id,
-            )
-            return False
-        response_data = _build_mobile_tool_response(
-            'tool_stream_result', tool_name, c2_result, now
-        )
-        response_data['execution_id'] = execution_id
-        _log_final_tool_response(tool_name, response_data)
-        await websocket.send(json.dumps(response_data))
-        return True
-    
     # Execute the tool (Python only for now)
     if tool_language == 'python' and tool_code:
         logger.info(f"Starting execution of streaming tool {tool_name} for {client_id}")

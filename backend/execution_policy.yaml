@@ -14,6 +14,14 @@ streaming:
     max_similarity_to_last_sent: 0.990
     max_skip_frames: 20
 
+mode_execution:
+  take-photo:
+    cascade: default_reasoning
+    planner_mode: P2_FUSED_PROMPT
+  streaming:
+    cascade: default_reasoning
+    planner_mode: P2_FUSED_PROMPT
+
 implementations:
   moondream_cloud:
     kind: moondream_cloud
@@ -40,8 +48,8 @@ implementations:
     model: openai/gpt-4o-mini
 
   gpt5:
-    kind: model
-    model: openai/gpt-5
+    kind: openai_responses
+    model: gpt-5
 
   google_vision:
     kind: google_vision
@@ -61,8 +69,10 @@ cascade_profiles:
     candidates:
       - moondream_cloud
       - gemini_flash_lite
-      - gpt4o
+      - gpt5
     evaluator: gpt4o-mini
+    result_passing: none
+    condition: C2_NO_RESULT_PASSING
 
   ocr:
     candidates:
