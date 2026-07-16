@@ -395,24 +395,49 @@ class MetaWearablesModule: NSObject {
         )
     }
 
-    /// Polls the stream state until it reports .streaming, throwing on
-    /// timeout. `Stream.start()` only requests the start and returns before
-    /// the camera pipeline is actually producing frames, so callers must wait
-    /// for this before treating the stream as usable.
+    /// Waits for the stream's statePublisher to announce .streaming, throwing
+    /// on timeout. `Stream.start()` only requests the start and returns
+    /// before the camera pipeline is actually producing frames, so callers
+    /// must wait for this before treating the stream as usable. Listens on
+    /// the same event stream that already logs every state transition,
+    /// rather than polling `stream.state`, in case that getter lags or
+    /// otherwise disagrees with what the publisher announces.
     private func waitForStreamStreaming(_ stream: MWDATCamera.Stream) async throws {
 
-        for _ in 0..<100 {  // up to ~20 seconds at 200ms intervals
-            if stream.state == .streaming {
-                return
-            }
-            try await Task.sleep(nanoseconds: 200_000_000)
+        if stream.state == .streaming {
+            return
         }
 
-        throw NSError(
-            domain: "MetaWearablesModule",
-            code: 1003,
-            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the Ray-Ban stream to start streaming."]
-        )
+        let streamTask = Task { () -> Bool in
+            for await state in AsyncStream<MWDATCamera.StreamState> { continuation in
+                let token = stream.statePublisher.listen { state in
+                    continuation.yield(state)
+                }
+                continuation.onTermination = { _ in
+                    Task { await token.cancel() }
+                }
+            } {
+                if Task.isCancelled { return false }
+                if state == .streaming { return true }
+            }
+            return false
+        }
+
+        let timeoutTask = Task {
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            streamTask.cancel()
+        }
+
+        let reached = await streamTask.value
+        timeoutTask.cancel()
+
+        guard reached else {
+            throw NSError(
+                domain: "MetaWearablesModule",
+                code: 1003,
+                userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the Ray-Ban stream to start streaming."]
+            )
+        }
     }
 
     /// Logs a registration state alongside its raw value so the numeric
