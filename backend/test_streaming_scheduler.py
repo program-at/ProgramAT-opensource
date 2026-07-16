@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -195,6 +195,50 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         output = "\n".join(logs.output)
         self.assertIn("[Streaming] skipped frame (already running)", output)
         self.assertIn("[Streaming] execution finished", output)
+
+    async def test_c2_streaming_result_is_dropped_when_session_is_superseded(self):
+        tool_config = {
+            "generation": 4,
+            "current_execution_id": 9,
+            "tool": {
+                "name": "describe",
+                "language": "python",
+                "code": 'TOOL_PROMPT = "Original fused streaming prompt."',
+                "input": {},
+            },
+            "exec_env": {
+                "parsed_input": {},
+                "common_modules": {},
+                "stdout_capture": __import__("io").StringIO(),
+                "exec_globals_base": {},
+            },
+        }
+        stream_server.active_streaming_tools["client"] = tool_config
+        websocket = AsyncMock()
+
+        def finish_after_restart(*args, **kwargs):
+            self.assertEqual(args[3], "streaming")
+            self.assertEqual(args[4], "9")
+            stream_server.active_streaming_tools["client"] = {
+                "generation": 5, "tool": tool_config["tool"]
+            }
+            return "Completed old-frame C2 result"
+
+        with patch.object(
+            stream_server, "_single_stage_tool_result", return_value=None
+        ), patch.object(
+            stream_server, "_run_take_photo_baseline", side_effect=finish_after_restart
+        ) as cascade, patch.object(
+            stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline
+        ), self.assertLogs(stream_server.logger, level="INFO") as logs:
+            sent = await stream_server._execute_streaming_tools_unlocked(
+                websocket, "client", b"frame", "base64-frame"
+            )
+
+        self.assertFalse(sent)
+        cascade.assert_called_once()
+        websocket.send.assert_not_awaited()
+        self.assertIn("C2 result discarded as stale", "\n".join(logs.output))
 
     async def test_stable_candidate_too_similar_to_last_sent_is_skipped(self):
         now = asyncio.get_running_loop().time()

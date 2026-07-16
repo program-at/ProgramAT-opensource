@@ -39,6 +39,10 @@ implementations:
     kind: model
     model: openai/gpt-4o-mini
 
+  gpt5:
+    kind: model
+    model: openai/gpt-5
+
   google_vision:
     kind: google_vision
 

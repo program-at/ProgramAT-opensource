@@ -62,6 +62,7 @@ class TestIssueTemplateGuidance(unittest.TestCase):
 
         for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
             self.assertIn(f"## {heading}", template)
+            self.assertIn(f"## {heading}\n\n<!--", template)
         self.assertIn("call_take_photo_baseline_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
         self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
@@ -70,10 +71,30 @@ class TestIssueTemplateGuidance(unittest.TestCase):
 
         instructions_path = template_path.parent.parent / "copilot-instructions.md"
         instructions = instructions_path.read_text(encoding="utf-8")
-        self.assertIn("Simple example: `Identify the visible hand gesture", instructions)
-        self.assertIn("Complex example: `Inspect the image for chairs", instructions)
-        self.assertIn("should be direct, without steps", instructions)
-        self.assertIn("only when later reasoning depends", instructions)
+        self.assertTrue(instructions.startswith("# ProgramAT Copilot instructions\n"))
+        self.assertIn("### Prompt examples", instructions)
+        self.assertIn("Simple task—use one direct instruction with no steps", instructions)
+        self.assertIn("Complex task—use one fused prompt", instructions)
+        self.assertEqual(instructions.count("```text"), 2)
+        self.assertIn("requested task is achievable", instructions)
+        self.assertIn("as one operation", instructions)
+        self.assertIn("Default to the simpler prompt", instructions)
+        self.assertIn("does not need steps", instructions)
+        self.assertIn("Do not create steps merely to restate", instructions)
+        self.assertIn("one direct instruction", instructions)
+        self.assertIn("ordered sequence of sub-tasks inside the single", instructions)
+        self.assertIn("may use numbered instructions", instructions)
+        self.assertIn("Never turn them", instructions)
+        self.assertIn("into runtime stages, multiple model calls", instructions)
+
+        self.assertIn("### Take-photo implementation guidance", template)
+        self.assertIn("Default to no steps", template)
+        self.assertIn("one operation is sufficient", template)
+        self.assertIn("Do not create steps merely to restate", template)
+        self.assertIn("numbered instructions", template)
+        self.assertIn("are optional when they improve reliability", template)
+        self.assertIn("Never turn", template)
+        self.assertIn("multiple model calls", template)
 
 
 class TestParserStageIssueIntegration(unittest.TestCase):
