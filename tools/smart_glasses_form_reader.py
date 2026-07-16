@@ -5,8 +5,8 @@ Assists blind or low vision users wearing smart glasses to read and fill out
 paper forms using a finger or pen.
 
 Operates in two modes based on what is visible in the camera frame:
-- Reading mode  (finger only): identifies text or field labels under the finger
-- Writing mode  (pen present): provides spatial directions to align pen with the
+- Reading mode (finger only): identifies text or field labels under the finger
+- Writing mode (pen present): provides spatial directions to align pen with the
   correct input field
 
 In live/streaming mode responses are capped at 15 words.
