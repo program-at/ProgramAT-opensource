@@ -25,7 +25,7 @@ from model_router_client import copilot_llm_call
 TOOL_NAME = "smart_glasses_form_reader"
 STREAMING_WORD_LIMIT = 15
 
-_PROMPT = (
+TOOL_PROMPT = (
     "You are an assistant for a blind user wearing smart glasses who is "
     "interacting with a paper form.\n\n"
     "Look at the image and decide the current mode:\n"
@@ -89,7 +89,7 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
                 "Read the paper form or guide pen alignment for a blind user "
                 "based on whether a pen or only a finger is visible."
             ),
-            messages=[{"role": "user", "content": _PROMPT}],
+            messages=[{"role": "user", "content": TOOL_PROMPT}],
             images=[image],
             metadata={
                 "tool_name": TOOL_NAME,
