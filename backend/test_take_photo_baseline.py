@@ -184,7 +184,8 @@ class TestTakePhotoBaseline(unittest.TestCase):
                 ("moondream_cloud", "gemini_flash_lite", "gpt5"),
             )
             self.assertEqual(policy.evaluator, "gpt4o-mini")
-            self.assertEqual(policy.result_passing, "none")
+            self.assertEqual(policy.result_passing, "failed_attempts")
+            self.assertEqual(policy.condition, "C3_PASS_FAILED_ATTEMPTS")
             self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
 
     def test_take_photo_and_streaming_use_same_shared_policy_executor(self):
@@ -209,12 +210,12 @@ class TestTakePhotoBaseline(unittest.TestCase):
             ["Photo prompt", "Streaming prompt"],
         )
 
-    def test_policy_executor_runs_configured_order_and_c2_fresh_context(self):
+    def test_policy_executor_passes_ordered_failures_with_original_inputs_in_c3(self):
         policy = model_router.resolve_execution_policy("take-photo")
         image = object()
         order = []
         candidate_calls = []
-        decisions = iter(("NO", "NO"))
+        decisions = iter(("NO evaluator-secret-1", "NO evaluator-secret-2"))
 
         def executor(profile, messages, images, metadata):
             order.append(profile.name)
@@ -232,9 +233,10 @@ class TestTakePhotoBaseline(unittest.TestCase):
             profile.kind: executor for profile in policy.implementations.values()
         }
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
-            answer = model_router.run_cascade(
-                policy, "Original fused prompt", image, request_id="photo-1"
-            )
+            with self.assertLogs(model_router.logger, level="INFO") as captured_logs:
+                answer = model_router.run_cascade(
+                    policy, "Original fused prompt", image, request_id="photo-1"
+                )
 
         self.assertEqual(answer, "answer-from-gpt5")
         self.assertEqual(
@@ -242,13 +244,111 @@ class TestTakePhotoBaseline(unittest.TestCase):
             ["moondream_cloud", "gpt4o-mini", "gemini_flash_lite", "gpt4o-mini", "gpt5"],
         )
         self.assertEqual([call[0] for call in candidate_calls], list(policy.candidates))
-        for _name, messages, images, metadata in candidate_calls:
-            self.assertEqual(messages, [{"role": "user", "content": "Original fused prompt"}])
-            self.assertEqual(images, [image])
+        first_prompt = candidate_calls[0][1][0]["content"]
+        second_prompt = candidate_calls[1][1][0]["content"]
+        third_prompt = candidate_calls[2][1][0]["content"]
+        self.assertEqual(first_prompt, "Original fused prompt")
+        self.assertIn("Original fused prompt", second_prompt)
+        self.assertIn("Failed attempt 1:\nanswer-from-moondream_cloud", second_prompt)
+        self.assertNotIn("answer-from-gemini_flash_lite", second_prompt)
+        self.assertIn("Failed attempt 1:\nanswer-from-moondream_cloud", third_prompt)
+        self.assertIn("Failed attempt 2:\nanswer-from-gemini_flash_lite", third_prompt)
+        self.assertLess(
+            third_prompt.index("answer-from-moondream_cloud"),
+            third_prompt.index("answer-from-gemini_flash_lite"),
+        )
+        for index, (_name, messages, images, metadata) in enumerate(candidate_calls):
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(len(images), 1)
+            self.assertIs(images[0], image)
             self.assertTrue(metadata["preserve_original_prompt"])
+            self.assertEqual(metadata["task_text"], "Original fused prompt")
+            self.assertEqual(metadata["failed_attempt_count"], index)
             serialized = repr((messages, images, metadata))
-            self.assertNotIn("answer-from-moondream_cloud", serialized)
-            self.assertNotIn("answer-from-gemini_flash_lite", serialized)
+            self.assertNotIn("evaluator-secret", serialized)
+
+        handoff_logs = [
+            line for line in captured_logs.output
+            if "[Policy Cascade C3 Handoff]" in line
+        ]
+        self.assertEqual(len(handoff_logs), 2)
+        self.assertIn("target_candidate=gemini_flash_lite", handoff_logs[0])
+        self.assertIn("failed_attempt_count=1", handoff_logs[0])
+        self.assertIn("'source_model': 'moondream_cloud'", handoff_logs[0])
+        self.assertIn("'preview': 'answer-from-moondream_cloud'", handoff_logs[0])
+        self.assertIn("target_candidate=gpt5", handoff_logs[1])
+        self.assertIn("failed_attempt_count=2", handoff_logs[1])
+        self.assertLess(
+            handoff_logs[1].index("'source_model': 'moondream_cloud'"),
+            handoff_logs[1].index("'source_model': 'gemini_flash_lite'"),
+        )
+        for line in handoff_logs:
+            self.assertIn("original_image_reused=true", line)
+            self.assertIn("evaluator_feedback_passed=false", line)
+            self.assertNotIn("evaluator-secret", line)
+
+    def test_selected_answer_is_not_rewritten_or_reformatted(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+        raw_answer = "**Vehicle**\n- Black Toyota\n- Plate uncertain\n{\"status\":\"partial\"}"
+        evaluator_inputs = []
+
+        def executor(profile, messages, images, metadata):
+            if profile.name == policy.evaluator:
+                evaluator_inputs.append(messages[1]["content"])
+                text = "YES"
+            else:
+                text = f"  {raw_answer}  "
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+            answer = model_router.run_cascade(policy, "Identify the vehicle.", b"image")
+
+        self.assertEqual(answer, raw_answer)
+        self.assertIn(f"<candidate_answer>\n{raw_answer}\n</candidate_answer>", evaluator_inputs[0])
+
+    def test_streaming_uses_the_same_c3_failed_attempt_context(self):
+        policy = model_router.resolve_execution_policy("streaming")
+        image = object()
+        candidate_prompts = []
+
+        def executor(profile, messages, images, metadata):
+            if profile.name == policy.evaluator:
+                text = "NO" if len(candidate_prompts) == 1 else "YES"
+            else:
+                candidate_prompts.append(messages[0]["content"])
+                self.assertIs(images[0], image)
+                text = f"stream-answer-{profile.name}"
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+            with self.assertLogs(model_router.logger, level="INFO") as captured_logs:
+                answer = model_router.run_cascade(
+                    policy, "Original streaming fused prompt", image
+                )
+
+        self.assertEqual(answer, "stream-answer-gemini_flash_lite")
+        self.assertEqual(candidate_prompts[0], "Original streaming fused prompt")
+        self.assertIn("Original streaming fused prompt", candidate_prompts[1])
+        self.assertIn(
+            "Failed attempt 1:\nstream-answer-moondream_cloud",
+            candidate_prompts[1],
+        )
+        handoff_log = next(
+            line for line in captured_logs.output
+            if "[Policy Cascade C3 Handoff]" in line
+        )
+        self.assertIn("mode=streaming", handoff_log)
+        self.assertIn("target_candidate=gemini_flash_lite", handoff_log)
+        self.assertIn("failed_attempt_count=1", handoff_log)
+        self.assertIn("'source_model': 'moondream_cloud'", handoff_log)
+        self.assertIn("original_image_reused=true", handoff_log)
+        self.assertIn("evaluator_feedback_passed=false", handoff_log)
 
     def test_evaluator_yes_stops_policy_cascade_before_later_models(self):
         policy = model_router.resolve_execution_policy("streaming")

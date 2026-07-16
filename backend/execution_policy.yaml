@@ -71,8 +71,8 @@ cascade_profiles:
       - gemini_flash_lite
       - gpt5
     evaluator: gpt4o-mini
-    result_passing: none
-    condition: C2_NO_RESULT_PASSING
+    result_passing: failed_attempts
+    condition: C3_PASS_FAILED_ATTEMPTS
 
   ocr:
     candidates:

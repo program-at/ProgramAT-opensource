@@ -79,7 +79,7 @@ cascade_profiles:
   default_reasoning:
     candidates: [moondream_cloud, gemini_flash_lite, gpt5]
     evaluator: gpt4o-mini
-    result_passing: none
+    result_passing: failed_attempts
   ocr:
     candidates: [mistral_ocr, google_vision]
     evaluator: gpt4o-mini

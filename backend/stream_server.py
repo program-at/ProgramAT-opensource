@@ -1420,22 +1420,7 @@ def _response_field_only(result: Any) -> str:
         if value is None:
             return ''
         if isinstance(value, str):
-            text = value.strip()
-            parsed = None
-            if len(text) <= 1_000_000 and text.startswith('{') and text.endswith('}'):
-                for parser in (json.loads, ast.literal_eval):
-                    try:
-                        candidate = parser(text)
-                    except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
-                        continue
-                    if isinstance(candidate, dict) and 'response' in candidate:
-                        parsed = candidate
-                        break
-            if parsed is None:
-                return value
-            logger.debug("Unwrapped serialized execution result at mobile boundary")
-            value = parsed
-            continue
+            return value.strip()
         if isinstance(value, (int, float, bool)):
             return str(value)
 

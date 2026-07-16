@@ -60,11 +60,10 @@ class TestMobileResponseBoundary(unittest.TestCase):
         self.assertNotIn("metadata", payload["audio"])
         self.assertNotIn("debug print", payload["result"])
 
-    def test_unwraps_python_repr_and_json_execution_results(self):
-        expected = "Walk straight ahead toward the wooden door. The door handle is located at 2 o'clock."
+    def test_string_model_output_is_not_decoded_or_rewritten(self):
         structured = {
-            "response": expected,
-            "artifact": {"text": expected},
+            "response": "Walk straight ahead toward the wooden door.",
+            "artifact": {"text": "internal"},
             "implementation": "gemini",
             "capability": "navigation",
         }
@@ -73,9 +72,8 @@ class TestMobileResponseBoundary(unittest.TestCase):
             payload = stream_server._build_mobile_tool_response(
                 "tool_result", "locate_nearest_exit", serialized, datetime(2026, 7, 1)
             )
-            self.assertEqual(payload["result"], expected)
-            self.assertEqual(payload["audio"]["text"], expected)
-            self.assertNotIn("artifact", payload["result"])
+            self.assertEqual(payload["result"], serialized)
+            self.assertEqual(payload["audio"]["text"], serialized)
 
     def test_unknown_object_is_not_stringified_into_mobile_payload(self):
         opaque = SimpleNamespace(artifact={"secret": "internal"})
@@ -224,7 +222,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             stream_server.active_streaming_tools["client"] = {
                 "generation": 5, "tool": tool_config["tool"]
             }
-            return "Completed old-frame C2 result"
+            return "Completed old-frame C3 result"
 
         with patch.object(
             stream_server, "_single_stage_tool_result", return_value=None

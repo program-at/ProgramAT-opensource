@@ -203,7 +203,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
             "Answer the visual task directly and briefly: Identify every visible package.",
         )
 
-    def test_card_response_is_normalized_to_rank_and_suit(self):
+    def test_card_response_is_returned_without_postprocessing(self):
         original = (
             "The card is a Queen of Spades, depicted in black ink on a white background."
         )
@@ -224,7 +224,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                 },
             )
 
-        self.assertEqual(model_router._response_text(result.response), "Queen of spades.")
+        self.assertEqual(model_router._response_text(result.response), original)
         output = "\n".join(logs.output)
         self.assertIn("card_mode=true", output)
         self.assertIn("matched identify+cards", output)
@@ -232,14 +232,14 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
             'original_task_goal="Identify the cards and their properties"',
             output,
         )
-        self.assertIn("postprocess=card_rank_suit_only", output)
+        self.assertIn("postprocess=none", output)
         self.assertIn("[Moondream] final_prompt_sent=", output)
         self.assertIn("[Moondream] raw_response=", output)
         self.assertIn("card_prompt_variant=multi_card_left_to_right", output)
         self.assertIn('[Moondream] extracted_cards=["Queen of spades"]', output)
         self.assertIn('[Moondream] deduped_cards=["Queen of spades"]', output)
         self.assertIn("mirrored_corner_filter_applied=false", output)
-        self.assertIn('[Moondream] final_card_response="Queen of spades."', output)
+        self.assertIn('[Moondream] parsed_card_response="Queen of spades."', output)
 
     def test_multiple_card_response_extracts_all_rank_suit_pairs(self):
         text = "I can see a Jack of Hearts and a King of Spades."
@@ -387,7 +387,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                 images=[self.image_bytes()],
             )
 
-        self.assertEqual(result["response"], "Jack of diamonds.")
+        self.assertEqual(result["response"], "J♦")
         self.assertEqual(result["implementation"], "moondream")
         self.assertEqual(evaluator_messages, [])
         output = "\n".join(logs.output)
@@ -396,7 +396,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
         self.assertIn("skipped=true", output)
         self.assertIn("[Evaluator] skipped: single visible card for visual_representation_understanding", output)
 
-    def test_gemini_fallback_card_response_uses_shared_normalizer(self):
+    def test_gemini_fallback_card_response_is_not_normalized(self):
         calls = []
 
         def fake_executor(profile, _messages, _images, _metadata):
@@ -427,7 +427,10 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
 
         self.assertEqual(calls, ["moondream", "judge", "gemini"])
         self.assertEqual(result["implementation"], "gemini")
-        self.assertEqual(result["response"], "Jack of diamonds.")
+        self.assertEqual(
+            result["response"],
+            "The only card in your hand is the jack of diamonds.",
+        )
 
     def test_unclean_moondream_card_result_keeps_evaluator_behavior(self):
         calls = []
@@ -439,7 +442,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
                     "King of Hearts Clubs Diamonds"
                 )
                 return model_router.ImplementationResult(
-                    response(details["final_response"]), details
+                    response("King of Hearts Clubs Diamonds"), details
                 )
             if profile.name == "judge":
                 return model_router.ImplementationResult(response("NO"))
@@ -463,7 +466,7 @@ class TestMoondreamCloudExecutor(unittest.TestCase):
             )
 
         self.assertEqual(calls, ["moondream", "judge", "gemini"])
-        self.assertEqual(result["response"], "Jack of diamonds.")
+        self.assertEqual(result["response"], "Jack of diamonds")
         output = "\n".join(logs.output)
         self.assertIn('conflicting_suits=["Hearts", "Clubs", "Diamonds"]', output)
         self.assertIn("card_result_valid=false", output)
@@ -1248,7 +1251,7 @@ class TestOcrCascadeRouting(unittest.TestCase):
 
 
 class TestAtomicCopilotCall(unittest.TestCase):
-    def test_generation_prompt_requires_single_line_plain_audio_text(self):
+    def test_generation_format_is_prompted_but_output_is_not_rewritten(self):
         calls = []
 
         def executor(_profile, messages, _images, _metadata):
@@ -1274,10 +1277,10 @@ class TestAtomicCopilotCall(unittest.TestCase):
         self.assertIn("commas or semicolons", prompt)
         self.assertEqual(
             result["response"],
-            "Jack of spades, Ten of spades.",
+            "From left to right:\n1. **Jack of Spades**\n2. `Ten of Spades`",
         )
-        self.assertNotIn("\n", result["response"])
-        self.assertNotIn("**", result["response"])
+        self.assertIn("\n", result["response"])
+        self.assertIn("**", result["response"])
 
     def test_evaluator_prompt_does_not_receive_generation_format_prompt(self):
         calls = []

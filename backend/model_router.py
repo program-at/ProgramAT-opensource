@@ -391,9 +391,10 @@ def resolve_execution_policy(
         raise ExecutionPolicyError(f"Cascade {cascade_name!r} requires candidates")
     if len(candidates) > 1 and not evaluator:
         raise ExecutionPolicyError(f"Cascade {cascade_name!r} requires an evaluator")
-    if result_passing != "none":
+    if result_passing != "failed_attempts":
         raise ExecutionPolicyError(
-            f"Unsupported result_passing={result_passing!r}; C2 requires 'none'"
+            f"Unsupported result_passing={result_passing!r}; "
+            "C3 requires 'failed_attempts'"
         )
     implementations = load_implementation_profiles(path)
     referenced = {*candidates, evaluator} if evaluator else set(candidates)
@@ -528,28 +529,6 @@ def _response_text(response: Any) -> str:
         return extract_text(response).strip()
     except Exception:
         return str(response).strip()
-
-
-def _single_line_audio_text(text: Any) -> str:
-    """Normalize generated user-facing text into plain, single-line speech."""
-    lines = []
-    for raw_line in str(text or "").splitlines():
-        line = raw_line.strip()
-        if not line:
-            continue
-        line = re.sub(r"^#{1,6}\s*", "", line)
-        line = re.sub(r"^(?:[-*+]\s+|\d+[.)]\s+)", "", line)
-        line = line.replace("**", "").replace("__", "").replace("`", "")
-        lines.append(" ".join(line.split()))
-    result = ""
-    for line in lines:
-        if not result:
-            result = line
-        elif result.endswith(":"):
-            result += " " + line
-        else:
-            result += "; " + line
-    return result
 
 
 try:
@@ -976,9 +955,12 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
         )
         raw_text = _moondream_response_text(completion)
         logger.info("[Moondream] raw_response=%s", json.dumps(raw_text, ensure_ascii=False))
+        text = raw_text.strip()
+        card_details = None
         if card_mode:
+            # Card parsing remains diagnostic metadata only. Never replace the
+            # model's generated text with the parsed/normalized representation.
             card_details = moondream_provider.card_response_details(raw_text)
-            text = card_details["final_response"]
             logger.info(
                 "[Moondream] compact_notation_detected=%s",
                 str(card_details["compact_notation_detected"]).lower(),
@@ -999,24 +981,17 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
                 str(card_details["mirrored_corner_filter_applied"]).lower(),
             )
             logger.info(
-                "[Moondream] final_card_response=%s",
-                json.dumps(text, ensure_ascii=False),
+                "[Moondream] parsed_card_response=%s",
+                json.dumps(card_details["final_response"], ensure_ascii=False),
             )
             logger.info(
                 "[Moondream] card_result_valid=%s card_result_clean=%s",
                 str(card_details["card_result_valid"]).lower(),
                 str(card_details["card_result_clean"]).lower(),
             )
-        else:
-            text = " ".join(raw_text.split())
         if not text:
             raise RuntimeError("Moondream returned an empty or malformed response")
-        postprocess = (
-            "card_rank_suit_only"
-            if card_mode
-            else "whitespace_only" if text != raw_text.strip() else "none"
-        )
-        logger.info("[Moondream] postprocess=%s", postprocess)
+        logger.info("[Moondream] postprocess=none")
         _record_moondream_success()
         logger.info(
             "[Moondream] response status=200 request_id=%s latency_ms=%.1f text_chars=%d",
@@ -1025,7 +1000,7 @@ def _moondream_cloud_executor(profile, messages, images, metadata) -> Implementa
             len(text),
         )
         artifact = {"text": text}
-        if card_mode:
+        if card_details is not None:
             artifact.update(card_details)
         return ImplementationResult(_simple_response(text), artifact)
     except Exception as exc:
@@ -1403,6 +1378,26 @@ IMPLEMENTATION_EXECUTORS: Dict[str, ImplementationExecutor] = {
 }
 
 
+def _c3_candidate_prompt(
+    original_prompt: str,
+    failed_attempts: Sequence[str],
+) -> str:
+    """Combine the original task with rejected outputs, preserving their order."""
+    if not failed_attempts:
+        return original_prompt
+    attempts = "\n\n".join(
+        f"Failed attempt {index}:\n{attempt}"
+        for index, attempt in enumerate(failed_attempts, start=1)
+    )
+    return (
+        f"{original_prompt}\n\n"
+        "The following previous answers were rejected as insufficient. Use the "
+        "original image and task above to produce a better final answer. Do not merely "
+        "critique the attempts; answer the original task directly.\n\n"
+        f"{attempts}"
+    )
+
+
 def run_cascade(
     policy: ResolvedExecutionPolicy,
     original_prompt: str,
@@ -1410,8 +1405,8 @@ def run_cascade(
     *,
     request_id: Optional[str] = None,
 ) -> str:
-    """Execute a resolved C2 cascade using fresh original inputs for every candidate."""
-    if policy.result_passing != "none":
+    """Execute C3 with original inputs plus ordered rejected textual attempts."""
+    if policy.result_passing != "failed_attempts":
         raise ExecutionPolicyError(
             f"Unsupported result_passing={policy.result_passing!r}"
         )
@@ -1423,6 +1418,8 @@ def run_cascade(
     selected_answer = ""
     selected_candidate = ""
     evaluator_decision = "SKIPPED"
+    failed_attempts: List[str] = []
+    failed_attempt_sources: List[str] = []
 
     for index, candidate_name in enumerate(policy.candidates):
         profile = policy.implementations[candidate_name]
@@ -1433,11 +1430,37 @@ def run_cascade(
             )
         candidate_started = time.perf_counter()
         try:
-            # New containers on every iteration are intentional: C2 candidates get
-            # no prior answer, evaluator feedback, error text, or accumulated history.
+            candidate_prompt = _c3_candidate_prompt(prompt, failed_attempts)
+            if failed_attempts:
+                handoff_attempts = [
+                    {
+                        "attempt": attempt_index,
+                        "source_model": source_model,
+                        "chars": len(attempt),
+                        "preview": attempt[:240],
+                    }
+                    for attempt_index, (source_model, attempt) in enumerate(
+                        zip(failed_attempt_sources, failed_attempts), start=1
+                    )
+                ]
+                logger.info(
+                    "[Policy Cascade C3 Handoff] mode=%s cascade=%s request_id=%s "
+                    "target_candidate=%s failed_attempt_count=%d "
+                    "failed_attempts=%r original_prompt_chars=%d "
+                    "original_image_reused=true evaluator_feedback_passed=false",
+                    policy.mode,
+                    policy.cascade,
+                    inference_id,
+                    candidate_name,
+                    len(failed_attempts),
+                    handoff_attempts,
+                    len(prompt),
+                )
+            # Every candidate receives the unchanged original image. C3 passes only
+            # rejected textual outputs, never evaluator feedback or artifacts.
             candidate_output = executor(
                 profile,
-                [{"role": "user", "content": prompt}],
+                [{"role": "user", "content": candidate_prompt}],
                 [original_image],
                 {
                     "num_retries": 0,
@@ -1445,11 +1468,12 @@ def run_cascade(
                     "preserve_original_prompt": True,
                     "prompt_source": "tool_prompt",
                     "task_text": prompt,
+                    "failed_attempt_count": len(failed_attempts),
                     "mode": policy.mode,
                     "request_id": inference_id,
                 },
             )
-            answer = _single_line_audio_text(_response_text(candidate_output.response))
+            answer = _response_text(candidate_output.response)
             if not answer:
                 raise RuntimeError("candidate returned an empty response")
         except Exception as exc:
@@ -1498,6 +1522,8 @@ def run_cascade(
                 candidate_ms,
                 policy.evaluator,
             )
+            failed_attempts.append(answer)
+            failed_attempt_sources.append(candidate_name)
             continue
 
         evaluator_profile = policy.implementations[policy.evaluator]
@@ -1560,6 +1586,8 @@ def run_cascade(
             selected_answer = answer
             selected_candidate = candidate_name
             break
+        failed_attempts.append(answer)
+        failed_attempt_sources.append(candidate_name)
 
     if not selected_answer:
         if not best_answer:
@@ -1572,10 +1600,12 @@ def run_cascade(
     logger.info(
         "[Policy Cascade] mode=%s condition=%s planner_mode=%s cascade=%s "
         "request_id=%s candidates=%s evaluator=%s result_passing=%s "
-        "final_model=%s total_ms=%.1f fallback_context=original_prompt_and_image_only",
+        "final_model=%s total_ms=%.1f fallback_context="
+        "original_prompt_image_and_failed_attempts failed_attempt_count=%d",
         policy.mode, policy.condition, policy.planner_mode, policy.cascade,
         inference_id, list(policy.candidates), policy.evaluator, policy.result_passing,
         selected_candidate, (time.perf_counter() - total_started) * 1000,
+        len(failed_attempts),
     )
     return selected_answer
 
@@ -1655,7 +1685,7 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
     )
     model_ms = (time.perf_counter() - model_started) * 1000
     _raise_if_streaming_cancelled(call_metadata, "single_stage_result", streaming)
-    text = _single_line_audio_text(_response_text(response))
+    text = _response_text(response)
     if streaming:
         normalized_model = profile.model.lower()
         gemini_ms = model_ms if "gemini" in normalized_model else 0.0
@@ -1740,7 +1770,7 @@ def copilot_llm_call(
         " ".join(str(value) for value in grounding_context if value)
     )
     if card_task_mode:
-        logger.info("[Card Normalizer] card_mode=true reason=%s", card_task_reason)
+        logger.info("[Card Analysis] card_mode=true reason=%s", card_task_reason)
     if not target_labels and any(_mentions_exit(value) for value in grounding_context):
         target_labels = list(EXIT_TARGET_LABELS)
         call_metadata["target_labels"] = target_labels
@@ -1883,7 +1913,7 @@ def copilot_llm_call(
         _raise_if_streaming_cancelled(
             call_metadata, f"evaluator_after:{candidate}", streaming_log
         )
-        response_text = _single_line_audio_text(_response_text(candidate_output.response))
+        response_text = _response_text(candidate_output.response)
         raw_main_model_output = response_text
         tool_name = call_metadata.get("tool_name", "")
         task_type = call_metadata.get("task_type") or declared
@@ -1898,7 +1928,7 @@ def copilot_llm_call(
             raw_card_response = upstream_artifact.get("raw_response", response_text)
             raw_main_model_output = raw_card_response
             logger.info(
-                "[Card Normalizer] implementation=%s raw_response=%s",
+                "[Card Analysis] implementation=%s raw_response=%s",
                 candidate,
                 json.dumps(raw_card_response, ensure_ascii=False),
             )
@@ -1915,12 +1945,11 @@ def copilot_llm_call(
                 }
             else:
                 card_details = moondream_provider.card_response_details(raw_card_response)
-            response_text = card_details["final_response"]
             card_result_valid = card_details["card_result_valid"]
             card_result_clean = card_details["card_result_clean"]
             logger.info(
-                "[Card Normalizer] compact_notation_detected=%s extracted_cards=%s "
-                "discarded_card_tokens=%s conflicting_suits=%s final_card_response=%s "
+                "[Card Analysis] compact_notation_detected=%s extracted_cards=%s "
+                "discarded_card_tokens=%s conflicting_suits=%s candidate_response=%s "
                 "card_result_valid=%s card_result_clean=%s",
                 str(card_details["compact_notation_detected"]).lower(),
                 json.dumps(card_details["extracted_cards"], ensure_ascii=False),
@@ -1932,7 +1961,7 @@ def copilot_llm_call(
             )
             artifact = upstream_artifact
             artifact.update(card_details)
-            candidate_output = ImplementationResult(_simple_response(response_text), artifact)
+            candidate_output.artifact = artifact
         if declared == "ocr":
             logger.info(
                 "[OCR] implementation=%s latency_ms=%.1f text_chars=%s",
@@ -2174,14 +2203,7 @@ def copilot_llm_call(
             )
             implementation = "fallback"
             logger.warning("[Execution Policy] capability=%s fallback=none", declared)
-    final_text = _single_line_audio_text(_response_text(output.response))
-    if card_task_mode:
-        final_details = moondream_provider.card_response_details(final_text)
-        if final_details["card_result_valid"]:
-            final_text = final_details["final_response"]
-            artifact = dict(output.artifact) if isinstance(output.artifact, dict) else {}
-            artifact.update(final_details)
-            output = ImplementationResult(_simple_response(final_text), artifact)
+    final_text = _response_text(output.response)
     artifact = output.artifact
     if artifact is None:
         artifact = {"text": final_text}
