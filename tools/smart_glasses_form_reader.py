@@ -25,13 +25,29 @@ from model_router_client import copilot_llm_call
 TOOL_NAME = "smart_glasses_form_reader"
 STREAMING_WORD_LIMIT = 15
 
-_PEN_LABELS = [
-    "pen", "pencil", "marker", "ballpoint pen", "writing instrument", "stylus",
-]
-_HAND_LABELS = [
-    "finger", "hand", "index finger", "pointing finger",
-]
-_ALL_LABELS = _PEN_LABELS + _HAND_LABELS
+TOOL_PROMPT = (
+    "You are an assistant for a blind user wearing smart glasses who is "
+    "interacting with a paper form.\n\n"
+    "Look at the image and decide the current mode:\n"
+    "- WRITING MODE: a pen, pencil, or other writing instrument is visible "
+    "alongside a hand or finger.\n"
+    "- READING MODE: only a finger or hand is visible (no pen).\n\n"
+    "WRITING MODE instructions:\n"
+    "Determine where the pen tip is positioned relative to the nearest form "
+    "input field. If the pen is centered over a field say: "
+    "'Writing centered on field <field name>, ready to write.' "
+    "Otherwise say the direction the pen must move and the field name, e.g. "
+    "'Slightly left to field student name.'\n\n"
+    "READING MODE instructions:\n"
+    "Read the text or field label directly under or nearest to the pointing "
+    "finger. If the finger points to a plain text area say: 'Reading <text>.' "
+    "If it points to a form field label say: 'Reading field <label>.' or "
+    "'Field <label>.' "
+    "For multiple fields in the same row read them left to right. "
+    "If the form cannot be read (e.g. due to poor lighting) say: "
+    "'Cannot read form: <reason>.'\n\n"
+    "Reply in 15 words or fewer. Do not include mode labels or explanations."
+)
 
 
 def _trim(text: str, limit: int = STREAMING_WORD_LIMIT) -> str:
@@ -67,100 +83,24 @@ def main(image: np.ndarray, input_data: Optional[Dict] = None) -> Any:
         input_data = {}
 
     try:
-        # ------------------------------------------------------------------
-        # Stage 1 – detect finger and pen to determine the operating mode
-        # ------------------------------------------------------------------
-        detection_result = copilot_llm_call(
-            capability="object_detection_localization",
+        result = copilot_llm_call(
+            capability="general_reasoning",
             goal=(
-                "Detect any fingers, hands, pens, pencils, markers, or writing "
-                "instruments visible in this image of a paper form."
+                "Read the paper form or guide pen alignment for a blind user "
+                "based on whether a pen or only a finger is visible."
             ),
+            messages=[{"role": "user", "content": TOOL_PROMPT}],
             images=[image],
             metadata={
                 "tool_name": TOOL_NAME,
-                "route_text": "detect finger hand and pen or writing instrument on paper form",
-                "target_labels": _ALL_LABELS,
-            },
-        )
-
-        detection_artifact = detection_result.get("artifact") or {}
-        detections = (
-            detection_artifact.get("detections", [])
-            if isinstance(detection_artifact, dict)
-            else []
-        )
-
-        # Pen present → writing mode; finger only → reading mode
-        pen_present = any(
-            str(d.get("label", "")).lower() in {lbl.lower() for lbl in _PEN_LABELS}
-            for d in detections
-        )
-
-        # ------------------------------------------------------------------
-        # Stage 2a – Writing mode: spatial guidance for pen alignment
-        # ------------------------------------------------------------------
-        if pen_present:
-            stage2 = copilot_llm_call(
-                capability="spatial_reasoning",
-                goal=(
-                    "A user is filling out a paper form with a pen. "
-                    "Determine where the pen tip is positioned relative to the "
-                    "form's input fields. Say whether the pen is centered on a "
-                    "field, or needs to move left, right, up, or down. "
-                    "Name the specific field (e.g. 'student name', 'ID'). "
-                    "If the pen is centered, say 'Writing centered on field "
-                    "<field name>, ready to write.' "
-                    "Otherwise say the direction and the field name, e.g. "
-                    "'Slightly left to field student name.' "
-                    "Reply in 15 words or fewer."
+                "route_text": (
+                    "smart glasses form reader: detect pen or finger and either "
+                    "read form text or provide pen alignment guidance"
                 ),
-                images=[image],
-                metadata={
-                    "tool_name": TOOL_NAME,
-                    "route_text": "spatial pen alignment guidance for paper form field",
-                    "previous_stage_artifact": detection_artifact,
-                },
-            )
-            response = (stage2.get("response") or "").strip()
-            if not response:
-                return ""
-            trimmed = _trim(response)
-            return {
-                "audio": {
-                    "type": "speech",
-                    "text": trimmed,
-                    "rate": 1.0,
-                    "interrupt": True,
-                },
-                "text": trimmed,
-            }
-
-        # ------------------------------------------------------------------
-        # Stage 2b – Reading mode: OCR the text/label under the finger
-        # ------------------------------------------------------------------
-        stage2 = copilot_llm_call(
-            capability="ocr",
-            goal=(
-                "A blind user is pointing at a paper form with their finger. "
-                "Read the text or field label that is directly under or nearest "
-                "to the pointing finger. "
-                "If the finger points to a plain text area, say 'Reading <text>.' "
-                "If the finger points to a form field label, say 'Reading field "
-                "<label>.' or 'Field <label>.' "
-                "For multiple fields in the same row read them left to right. "
-                "If the form cannot be read (e.g. due to poor lighting) say "
-                "'Cannot read form: <reason>.' "
-                "Reply in 15 words or fewer."
-            ),
-            images=[image],
-            metadata={
-                "tool_name": TOOL_NAME,
-                "route_text": "read text or field label under pointing finger on paper form",
-                "previous_stage_artifact": detection_artifact,
             },
         )
-        response = (stage2.get("response") or "").strip()
+
+        response = (result.get("response") or "").strip()
         if not response:
             return ""
         trimmed = _trim(response)
