@@ -12,13 +12,13 @@ Operates in two modes based on what is visible in the camera frame:
 In live/streaming mode responses are capped at 15 words.
 
 Example outputs:
-  Reading mode (fillable field)  : "Field: student name."
-  Reading mode (sub-field)       : "Chair/Co-Chairs, Title."
-  Reading mode (sub-field long)  : "Field: Chair/Co-Chairs, Name and UM email address."
-  Reading mode (heading)         : "Dissertation Committee Request Form."
-  Writing mode (move left)       : "Move left, student name."
-  Writing mode (far right)       : "Move left, far from start of student name."
-  Writing mode (ready)           : "Ready to write, student name."
+  Reading mode (fillable field)  : "Reading mode. Field: student name."
+  Reading mode (sub-field)       : "Reading mode. Chair/Co-Chairs, Title."
+  Reading mode (sub-field long)  : "Reading mode. Field: Chair/Co-Chairs, Name and UM email address."
+  Reading mode (heading)         : "Reading mode. Dissertation Committee Request Form."
+  Writing mode (move left)       : "Writing mode. Move left, student name."
+  Writing mode (far right)       : "Writing mode. Move left, far from start of student name."
+  Writing mode (ready)           : "Writing mode. Ready to write, student name."
 """
 
 import numpy as np
@@ -49,17 +49,18 @@ TOOL_PROMPT = (
     "individual field. Guide the pen relative to the specific field it is "
     "nearest to. Use this scale:\n"
     "- Pen is near the left portion of that field's line or box (and at or "
-    "above the line): say 'Ready to write, <field name>.'\n"
-    "- Pen is in the middle of that field: say 'Move left, <field name>.'\n"
-    "- Pen is far to the right within that field: say 'Move left, far from "
+    "above the line): say 'Writing mode. Ready to write, <field name>.'\n"
+    "- Pen is in the middle of that field: say 'Writing mode. Move left, <field name>.'\n"
+    "- Pen is far to the right within that field: say 'Writing mode. Move left, far from "
     "start of <field name>.'\n"
-    "- Pen is not yet over any field: give a direction cue that matches the "
+    "- Pen is not yet over any field: begin with 'Writing mode.' then give a direction cue that matches the "
     "actual position of the nearest field relative to the pen — say 'Move down' "
     "only if the field is physically below the pen, 'Move up' if above, "
     "'Move right' if to the right, 'Move left' if to the left, or combine "
-    "directions if needed (e.g. 'Move right and down to <field name>.').\n"
+    "directions if needed (e.g. 'Writing mode. Move right and down to <field name>.').\n"
     "Always name the specific field the pen is targeting.\n\n"
     "READING MODE instructions:\n"
+    "Begin every reading mode response with 'Reading mode.' followed by the content.\n"
     "Read the text or label directly under or nearest to the pointing finger.\n"
     "- Use the word 'field' ONLY for actual fillable elements: blank input "
     "lines, text boxes, or checkboxes where the user is meant to write "
@@ -74,7 +75,7 @@ TOOL_PROMPT = (
     "For multiple fillable fields in the same row read them left to right.\n"
     "If the form cannot be read (e.g. due to poor lighting) say: "
     "'Cannot read form: <reason>.'\n\n"
-    "Reply in 15 words or fewer. Do not include mode labels or explanations."
+    "Reply in 15 words or fewer. Do not include any other labels or explanations beyond the mode prefix."
 )
 
 
