@@ -177,12 +177,6 @@ class MetaWearablesModule: NSObject {
                 }
 
                 await stream.start()
-
-                // stream.start() only requests the start; it returns before
-                // the stream reaches .streaming. Resolving right away told
-                // the app "connected" even when the stream stayed stuck in
-                // .waitingForDevice/.starting and never produced a frame.
-                try await self.waitForStreamStreaming(stream)
                 print("[Meta] Ray-Ban stream started")
 
                 resolve(true)
@@ -334,9 +328,11 @@ class MetaWearablesModule: NSObject {
     private func handleRayBanFrame(_ frame: VideoFrame) {
 
         guard let image = frame.makeUIImage() else {
+            print("[Meta] Ray-Ban frame received but makeUIImage() returned nil")
             return
         }
 
+        print("[Meta] Ray-Ban frame decoded:", image.size.width, "x", image.size.height)
         self.latestRayBanImage = image
     }
 
@@ -393,51 +389,6 @@ class MetaWearablesModule: NSObject {
             code: 1001,
             userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the session to start."]
         )
-    }
-
-    /// Waits for the stream's statePublisher to announce .streaming, throwing
-    /// on timeout. `Stream.start()` only requests the start and returns
-    /// before the camera pipeline is actually producing frames, so callers
-    /// must wait for this before treating the stream as usable. Listens on
-    /// the same event stream that already logs every state transition,
-    /// rather than polling `stream.state`, in case that getter lags or
-    /// otherwise disagrees with what the publisher announces.
-    private func waitForStreamStreaming(_ stream: MWDATCamera.Stream) async throws {
-
-        if stream.state == .streaming {
-            return
-        }
-
-        let streamTask = Task { () -> Bool in
-            for await state in AsyncStream<MWDATCamera.StreamState> { continuation in
-                let token = stream.statePublisher.listen { state in
-                    continuation.yield(state)
-                }
-                continuation.onTermination = { _ in
-                    Task { await token.cancel() }
-                }
-            } {
-                if Task.isCancelled { return false }
-                if state == .streaming { return true }
-            }
-            return false
-        }
-
-        let timeoutTask = Task {
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            streamTask.cancel()
-        }
-
-        let reached = await streamTask.value
-        timeoutTask.cancel()
-
-        guard reached else {
-            throw NSError(
-                domain: "MetaWearablesModule",
-                code: 1003,
-                userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for the Ray-Ban stream to start streaming."]
-            )
-        }
     }
 
     /// Logs a registration state alongside its raw value so the numeric
