@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using the issue fields and repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, and `TOOL_NAME`, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Write this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using the issue fields and repository instructions. Copy Difficulty start into `TOOL_DIFFICULTY_START`, pass it as `difficulty_start=TOOL_DIFFICULTY_START`, and do not recompute it at runtime. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, `TOOL_NAME`, and the stored difficulty, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls. Open a PR rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -66,6 +66,7 @@ jobs:
             Requirements:
             - Write the code for this tool inside the tools folder.
             - For take-photo mode, author one concise fused `TOOL_PROMPT` from the issue fields.
+            - Copy Difficulty start into `TOOL_DIFFICULTY_START`; pass it to the helper and never recompute it at runtime.
             - Import `call_take_photo_baseline_vlm` from `litellm_utils`.
             - Call that helper exactly once with the supplied image and prompt, then return its answer directly.
             - Do not create runtime stages or call a planner/router/evaluator.

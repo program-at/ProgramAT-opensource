@@ -29,6 +29,14 @@ assignees: ''
 
 <!-- Enter exactly: take-photo or streaming. -->
 
+## Difficulty start
+
+<!-- Computed once by the task parser: moondream, gemini_flash_lite, or gpt5. -->
+
+Store this parser prediction in the generated Python tool as
+`TOOL_DIFFICULTY_START`, for both take-photo and streaming tools. Runtime code
+must reuse it and must not predict task difficulty from individual images.
+
 ### Take-photo implementation guidance
 
 For a take-photo tool, author one concise, task-specific `TOOL_PROMPT` from
@@ -50,6 +58,9 @@ unless naturally needed.
 
 Every take-photo tool must define exactly one `TOOL_PROMPT`, call
 `call_take_photo_baseline_vlm` exactly once, and return its answer directly.
+Copy the issue's Difficulty start value into a `TOOL_DIFFICULTY_START` constant
+and pass it to the helper as `difficulty_start=TOOL_DIFFICULTY_START`. Do not
+recompute task difficulty at runtime.
 
 Tools belong in `tools/`, must be Python, and must expose `main(image,
 input_data)`. Return concise audio-friendly text. Do not connect to the backend

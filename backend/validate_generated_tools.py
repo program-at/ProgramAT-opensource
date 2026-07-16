@@ -227,6 +227,20 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_PROMPT constant.")
     if "TOOL_NAME" not in constants:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_NAME constant.")
+    difficulty_match = re.search(
+        r"^##\s+Difficulty\s+start\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*"
+        r"(moondream|gemini_flash_lite|gpt5)\s*$",
+        issue_text,
+        re.IGNORECASE | re.MULTILINE,
+    )
+    expected_difficulty = difficulty_match.group(1).lower() if difficulty_match else ""
+    if expected_difficulty:
+        stored_difficulty = str(constants.get("TOOL_DIFFICULTY_START") or "").lower()
+        if stored_difficulty != expected_difficulty:
+            failures.append(
+                f"{rel_path}: TOOL_DIFFICULTY_START must copy the issue Difficulty "
+                f"start value {expected_difficulty!r}."
+            )
     prompt_uses = []
     for call in baseline_calls:
         prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
@@ -247,6 +261,22 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
         )
     if tool_name_uses != [True]:
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_NAME directly as tool_name.")
+    if expected_difficulty:
+        difficulty_uses = []
+        for call in baseline_calls:
+            keyword = next(
+                (kw for kw in call.keywords if kw.arg == "difficulty_start"), None
+            )
+            difficulty_uses.append(
+                keyword is not None
+                and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "TOOL_DIFFICULTY_START"
+            )
+        if difficulty_uses != [True]:
+            failures.append(
+                f"{rel_path}: take-photo tools must pass TOOL_DIFFICULTY_START "
+                "directly as difficulty_start."
+            )
     if extract_copilot_llm_task_categories(tool_text):
         failures.append(f"{rel_path}: take-photo tools must not call copilot_llm_call().")
     return failures

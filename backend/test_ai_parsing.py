@@ -60,12 +60,17 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
-        for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
+        for heading in (
+            "Tool name", "Task", "Expected output", "Constraints / examples",
+            "Mode", "Difficulty start",
+        ):
             self.assertIn(f"## {heading}", template)
             self.assertIn(f"## {heading}\n\n<!--", template)
         self.assertIn("call_take_photo_baseline_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
         self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
+        self.assertIn("TOOL_DIFFICULTY_START", template)
+        self.assertIn("Do not\nrecompute task difficulty at runtime", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
 
@@ -86,6 +91,8 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("may use numbered instructions", instructions)
         self.assertIn("Never turn them", instructions)
         self.assertIn("into runtime stages, multiple model calls", instructions)
+        self.assertIn("TOOL_DIFFICULTY_START", instructions)
+        self.assertIn("creation-time task metadata", instructions)
 
         self.assertIn("### Take-photo implementation guidance", template)
         self.assertIn("Default to no steps", template)
@@ -157,12 +164,49 @@ class TestParserStageIssueIntegration(unittest.TestCase):
 
         self.assertNotIn('"fused_vlm_prompt"', extraction)
         self.assertIn("Do not generate or improve a VLM prompt", extraction)
-        self.assertIn("Do not return stages, subtasks, reasoning steps", extraction)
+        self.assertIn("do not return stages, subtasks, reasoning steps", extraction)
+        self.assertIn('"difficulty_start"', extraction)
+        self.assertIn('"moondream", "gemini_flash_lite", or "gpt5"', extraction)
+        self.assertIn("tool task itself", extraction)
+        self.assertIn("not a prediction about any", extraction)
         self.assertNotIn('"stages"', extraction)
 
     def test_take_photo_parser_contract_has_no_prompt_or_stage_fields(self):
         extraction = self.extraction_prompt("Read the medication label.")
         self.assertNotIn('"fused_vlm_prompt"', extraction)
+
+    def test_difficulty_prediction_is_normalized_and_defaults_safely(self):
+        base = {
+            "description": "Read a medication label.",
+            "example_usage": "Speak the dosage.",
+        }
+        for raw, expected in (
+            ("moondream", "moondream"),
+            ("GEMINI_FLASH_LITE", "gemini_flash_lite"),
+            ("gpt5", "gpt5"),
+            (None, "gemini_flash_lite"),
+            ("invalid", "gemini_flash_lite"),
+        ):
+            with self.subTest(raw=raw):
+                normalized = self.normalize_requirements(
+                    {**base, "difficulty_start": raw}, "Read my medication label."
+                )
+                self.assertEqual(normalized["difficulty_start"], expected)
+
+    def test_parser_difficulty_uses_existing_issue_extraction_call(self):
+        source = (Path(__file__).resolve().parent / "stream_server.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(source)
+        parser = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "parse_transcript_with_ai"
+        )
+        parser_source = ast.get_source_segment(source, parser)
+
+        self.assertIn("issue_data = _parse_llm_json_object(issue_raw)", parser_source)
+        self.assertNotIn("difficulty_start", parser_source)
 
     def test_merges_only_stages_into_issue_data(self):
         issue_data = {"title": "Find my Uber", "missing_fields": []}

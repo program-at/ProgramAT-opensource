@@ -1542,6 +1542,38 @@ def _take_photo_tool_prompt(tool_name: str, tool_code: str) -> str:
     )
 
 
+def _tool_difficulty_start(tool_name: str, tool_code: str) -> str:
+    """Read creation-time difficulty metadata, defaulting safely for older tools."""
+    try:
+        tree = ast.parse(tool_code or '')
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(
+                isinstance(target, ast.Name)
+                and target.id == 'TOOL_DIFFICULTY_START'
+                for target in targets
+            ):
+                value = ast.literal_eval(node.value)
+                normalized = str(value or '').strip().lower()
+                if normalized in {'moondream', 'gemini_flash_lite', 'gpt5'}:
+                    return normalized
+                break
+    except (SyntaxError, ValueError, TypeError):
+        logger.debug(
+            "Could not extract TOOL_DIFFICULTY_START from %s",
+            tool_name,
+            exc_info=True,
+        )
+    logger.warning(
+        "[Difficulty Routing] tool=%s missing_or_invalid_prediction=true "
+        "safe_default=gemini_flash_lite",
+        tool_name,
+    )
+    return 'gemini_flash_lite'
+
+
 def _run_take_photo_baseline(
     tool_name: str,
     tool_code: str,
@@ -1551,17 +1583,20 @@ def _run_take_photo_baseline(
 ) -> str:
     """Execute the P2 fused prompt through the mode's policy-configured cascade."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
+    difficulty_start = _tool_difficulty_start(tool_name, tool_code)
     logger.info(
         "[P2] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
-        "request_id=%s",
+        "request_id=%s predicted_difficulty=%s",
         mode,
         request_id or 'generated',
+        difficulty_start,
     )
     return call_take_photo_baseline_vlm(
         image=image,
         prompt=prompt,
         mode=mode,
         request_id=request_id,
+        difficulty_start=difficulty_start,
     )
 
 
@@ -5047,13 +5082,24 @@ Extract only these user-facing fields:
 - example_usage: expected output
 - additional: constraints and examples
 - execution_mode: exactly "take-photo", "streaming", or empty when unstated
+- difficulty_start: predict the difficulty of the tool task itself as exactly
+  "moondream", "gemini_flash_lite", or "gpt5"
 - missing_fields: only missing important fields
 
 Only block creation when the core task is genuinely unclear.
 - Tool name, task, and expected output are the core fields.
 - Constraints/examples and execution_mode may be empty when unstated.
+- difficulty_start is task-level creation metadata, not a prediction about any
+  individual runtime image. Always infer it from the complete tool request.
+- Use "moondream" for simple recognition, obvious classification, or basic
+  visual extraction.
+- Use "gemini_flash_lite" for moderate tasks involving several details, OCR
+  plus reasoning, spatial relationships, or simple guidance.
+- Use "gpt5" for complex, ambiguous, safety-sensitive, or multi-part reasoning
+  requiring strong visual interpretation.
 - Do not generate or improve a VLM prompt.
-- Do not return stages, subtasks, reasoning steps, capabilities, routes, or models.
+- Apart from difficulty_start, do not return stages, subtasks, reasoning steps,
+  capabilities, routes, or models.
 
 Return ONLY this JSON object:
 {{
@@ -5063,6 +5109,7 @@ Return ONLY this JSON object:
   "example_usage": "...",
   "additional": "...",
   "execution_mode": "...",
+  "difficulty_start": "moondream | gemini_flash_lite | gpt5",
   "missing_fields": []
 }}
 {context_info}
@@ -5101,6 +5148,12 @@ def _normalize_issue_creation_requirements(
 
     normalized['custom_gpt'] = custom_gpt
     normalized['gpt_query'] = '' if custom_gpt == 'no' else gpt_query
+    difficulty_start = str(normalized.get('difficulty_start') or '').strip().lower()
+    normalized['difficulty_start'] = (
+        difficulty_start
+        if difficulty_start in {'moondream', 'gemini_flash_lite', 'gpt5'}
+        else 'gemini_flash_lite'
+    )
 
     has_context = bool(str(normalized.get('description') or '').strip())
     has_goal = bool(str(normalized.get('example_usage') or '').strip())
@@ -5290,6 +5343,10 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                             ensure_string(parsed_data.get('additional', '')))
     filled = filled.replace('<!-- Enter exactly: take-photo or streaming. -->',
                             ensure_string(parsed_data.get('execution_mode', '')))
+    filled = filled.replace(
+        '<!-- Computed once by the task parser: moondream, gemini_flash_lite, or gpt5. -->',
+        ensure_string(parsed_data.get('difficulty_start', 'gemini_flash_lite')),
+    )
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])

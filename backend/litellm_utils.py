@@ -206,6 +206,7 @@ def call_take_photo_baseline_vlm(
     *,
     mode: str = "take-photo",
     request_id: Optional[str] = None,
+    difficulty_start: Optional[str] = None,
 ) -> str:
     """Delegate the P2 fused prompt to the mode's YAML-configured cascade."""
     # Imported lazily because model_router uses the individual provider wrappers
@@ -213,5 +214,9 @@ def call_take_photo_baseline_vlm(
     from model_router import run_mode_cascade
 
     return run_mode_cascade(
-        mode=mode, prompt=prompt, image=image, request_id=request_id
+        mode=mode,
+        prompt=prompt,
+        image=image,
+        request_id=request_id,
+        difficulty_start=difficulty_start,
     )

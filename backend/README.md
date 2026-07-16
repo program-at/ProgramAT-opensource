@@ -78,6 +78,11 @@ mode_execution:
 cascade_profiles:
   default_reasoning:
     candidates: [moondream_cloud, gemini_flash_lite, gpt5]
+    difficulty_starts:
+      moondream: moondream_cloud
+      gemini_flash_lite: gemini_flash_lite
+      gpt5: gpt5
+    default_difficulty_start: gemini_flash_lite
     evaluator: gpt4o-mini
     result_passing: failed_attempts
   ocr:
@@ -92,6 +97,11 @@ ocr:
 ```
 
 Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
+
+The issue parser predicts `difficulty_start` once when the tool task is authored.
+Generated tools store it as `TOOL_DIFFICULTY_START`. At runtime that key selects
+the corresponding suffix of `default_reasoning`; missing or invalid metadata
+uses `gemini_flash_lite`. Runtime frames do not trigger another difficulty call.
 
 Execution modes are distinct:
 

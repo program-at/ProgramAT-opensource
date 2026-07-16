@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using Task, Expected output, Constraints / examples, and the repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, and `TOOL_NAME`, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls.";
+            const extraLine = "\n\nWrite this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using Task, Expected output, Constraints / examples, and the repository instructions. Copy Difficulty start into `TOOL_DIFFICULTY_START`, pass it to `call_take_photo_baseline_vlm` as `difficulty_start=TOOL_DIFFICULTY_START`, and do not recompute it at runtime. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, `TOOL_NAME`, and the stored difficulty, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,

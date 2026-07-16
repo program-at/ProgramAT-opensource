@@ -214,6 +214,8 @@ class ResolvedExecutionPolicy:
     result_passing: str
     condition: str
     planner_mode: str
+    difficulty_starts: Mapping[str, str]
+    default_difficulty_start: str
     implementations: Mapping[str, ImplementationProfile]
 
 
@@ -387,6 +389,36 @@ def resolve_execution_policy(
     )
     evaluator = str(profile.get("evaluator") or "").strip()
     result_passing = str(profile.get("result_passing") or "").strip().lower()
+    raw_difficulty_starts = profile.get("difficulty_starts", {})
+    if not isinstance(raw_difficulty_starts, dict):
+        raise ExecutionPolicyError(
+            f"Cascade {cascade_name!r} difficulty_starts must be a mapping"
+        )
+    difficulty_starts = {
+        str(key).strip().lower(): str(value).strip()
+        for key, value in raw_difficulty_starts.items()
+        if str(key).strip() and str(value).strip()
+    }
+    expected_difficulties = {"moondream", "gemini_flash_lite", "gpt5"}
+    if set(difficulty_starts) != expected_difficulties:
+        raise ExecutionPolicyError(
+            f"Cascade {cascade_name!r} difficulty_starts must define exactly "
+            f"{sorted(expected_difficulties)}"
+        )
+    unknown_starts = set(difficulty_starts.values()) - set(candidates)
+    if unknown_starts:
+        raise ExecutionPolicyError(
+            f"Cascade {cascade_name!r} difficulty_starts reference candidates "
+            f"outside the cascade: {sorted(unknown_starts)}"
+        )
+    default_difficulty_start = str(
+        profile.get("default_difficulty_start") or ""
+    ).strip().lower()
+    if default_difficulty_start != "gemini_flash_lite":
+        raise ExecutionPolicyError(
+            f"Cascade {cascade_name!r} default_difficulty_start must be "
+            "'gemini_flash_lite'"
+        )
     if not candidates:
         raise ExecutionPolicyError(f"Cascade {cascade_name!r} requires candidates")
     if len(candidates) > 1 and not evaluator:
@@ -411,6 +443,8 @@ def resolve_execution_policy(
         result_passing=result_passing,
         condition=str(profile.get("condition") or "").strip(),
         planner_mode=str(mode_config.get("planner_mode") or "").strip(),
+        difficulty_starts=difficulty_starts,
+        default_difficulty_start=default_difficulty_start,
         implementations=implementations,
     )
 
@@ -1398,12 +1432,36 @@ def _c3_candidate_prompt(
     )
 
 
+def _difficulty_candidate_suffix(
+    policy: ResolvedExecutionPolicy,
+    difficulty_start: Any,
+) -> tuple[str, str, tuple[str, ...], str]:
+    """Return the validated prediction and policy-owned cascade suffix."""
+    requested = str(difficulty_start or "").strip().lower()
+    if requested in policy.difficulty_starts:
+        predicted = requested
+        source = "tool_metadata"
+    else:
+        predicted = policy.default_difficulty_start
+        source = "safe_default"
+    start_model = policy.difficulty_starts[predicted]
+    try:
+        start_index = policy.candidates.index(start_model)
+    except ValueError as exc:
+        raise ExecutionPolicyError(
+            f"Difficulty start {predicted!r} resolves to {start_model!r}, which is "
+            f"not in cascade {policy.cascade!r}"
+        ) from exc
+    return predicted, start_model, policy.candidates[start_index:], source
+
+
 def run_cascade(
     policy: ResolvedExecutionPolicy,
     original_prompt: str,
     original_image: Any,
     *,
     request_id: Optional[str] = None,
+    difficulty_start: Any = None,
 ) -> str:
     """Execute C3 with original inputs plus ordered rejected textual attempts."""
     if policy.result_passing != "failed_attempts":
@@ -1420,8 +1478,36 @@ def run_cascade(
     evaluator_decision = "SKIPPED"
     failed_attempts: List[str] = []
     failed_attempt_sources: List[str] = []
+    actual_models_called: List[str] = []
+    candidate_models_called: List[str] = []
+    predicted_difficulty, start_model, candidates, prediction_source = (
+        _difficulty_candidate_suffix(policy, difficulty_start)
+    )
+    logger.info(
+        "[Difficulty Routing] mode=%s request_id=%s predicted_difficulty=%s "
+        "start_model=%s prediction_source=%s cascade=%s candidate_suffix=%s",
+        policy.mode,
+        inference_id,
+        predicted_difficulty,
+        start_model,
+        prediction_source,
+        policy.cascade,
+        list(candidates),
+    )
 
-    for index, candidate_name in enumerate(policy.candidates):
+    def log_actual_models_called() -> None:
+        logger.info(
+            "[Difficulty Routing] mode=%s request_id=%s predicted_difficulty=%s "
+            "start_model=%s actual_models_called=%s candidate_models_called=%s",
+            policy.mode,
+            inference_id,
+            predicted_difficulty,
+            start_model,
+            actual_models_called,
+            candidate_models_called,
+        )
+
+    for index, candidate_name in enumerate(candidates):
         profile = policy.implementations[candidate_name]
         executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
         if executor is None:
@@ -1429,6 +1515,8 @@ def run_cascade(
                 f"No executor for implementation kind {profile.kind!r}"
             )
         candidate_started = time.perf_counter()
+        actual_models_called.append(candidate_name)
+        candidate_models_called.append(candidate_name)
         try:
             candidate_prompt = _c3_candidate_prompt(prompt, failed_attempts)
             if failed_attempts:
@@ -1489,7 +1577,7 @@ def run_cascade(
         candidate_ms = (time.perf_counter() - candidate_started) * 1000
         best_answer = answer
         best_candidate = candidate_name
-        is_final_candidate = index == len(policy.candidates) - 1
+        is_final_candidate = index == len(candidates) - 1
         if is_final_candidate:
             selected_answer = answer
             selected_candidate = candidate_name
@@ -1539,6 +1627,7 @@ def run_cascade(
             policy.mode, inference_id, policy.evaluator, len(prompt), len(answer),
         )
         evaluator_started = time.perf_counter()
+        actual_models_called.append(policy.evaluator)
         try:
             evaluation = evaluator(
                 evaluator_profile,
@@ -1591,6 +1680,7 @@ def run_cascade(
 
     if not selected_answer:
         if not best_answer:
+            log_actual_models_called()
             raise RuntimeError(
                 f"Cascade {policy.cascade!r} produced no usable response"
             )
@@ -1603,10 +1693,11 @@ def run_cascade(
         "final_model=%s total_ms=%.1f fallback_context="
         "original_prompt_image_and_failed_attempts failed_attempt_count=%d",
         policy.mode, policy.condition, policy.planner_mode, policy.cascade,
-        inference_id, list(policy.candidates), policy.evaluator, policy.result_passing,
+        inference_id, list(candidates), policy.evaluator, policy.result_passing,
         selected_candidate, (time.perf_counter() - total_started) * 1000,
         len(failed_attempts),
     )
+    log_actual_models_called()
     return selected_answer
 
 
@@ -1616,12 +1707,17 @@ def run_mode_cascade(
     image: Any,
     *,
     request_id: Optional[str] = None,
+    difficulty_start: Any = None,
     path: Path = EXECUTION_POLICY_PATH,
 ) -> str:
     """Resolve a mode policy, then execute its configured cascade."""
     policy = resolve_execution_policy(mode, path)
     return run_cascade(
-        policy, prompt, image, request_id=request_id
+        policy,
+        prompt,
+        image,
+        request_id=request_id,
+        difficulty_start=difficulty_start,
     )
 
 

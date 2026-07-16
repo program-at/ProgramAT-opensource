@@ -17,15 +17,23 @@ from litellm_utils import call_take_photo_baseline_vlm
 
 TOOL_NAME = "tool_name"
 TOOL_PROMPT = "One task-specific instruction."
+TOOL_DIFFICULTY_START = "gemini_flash_lite"
 
 
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
     return call_take_photo_baseline_vlm(
-        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
+        image=image,
+        prompt=TOOL_PROMPT,
+        tool_name=TOOL_NAME,
+        difficulty_start=TOOL_DIFFICULTY_START,
     )
 ```
+
+Copy `TOOL_DIFFICULTY_START` exactly from the issue's Difficulty start field.
+It is creation-time task metadata; do not classify difficulty from runtime
+images and do not make a model call to recompute it.
 
 Before writing `TOOL_PROMPT`, analyze whether the requested task is achievable
 as one operation or contains genuinely dependent visual or reasoning
@@ -81,6 +89,9 @@ experiment's model execution.
 
 Preserve the repository's existing streaming patterns and cadence. Keep output
 to about 15 spoken words and return an empty string when nothing useful changed.
+Copy the issue's Difficulty start value into a `TOOL_DIFFICULTY_START` string
+constant; the backend reads this creation-time metadata before running the
+policy cascade. Never recompute difficulty from a streaming frame.
 Do not alter NVIDIA hosted streaming or RTVI code while implementing a tool.
 
 ## General conventions

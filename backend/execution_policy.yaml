@@ -70,6 +70,11 @@ cascade_profiles:
       - moondream_cloud
       - gemini_flash_lite
       - gpt5
+    difficulty_starts:
+      moondream: moondream_cloud
+      gemini_flash_lite: gemini_flash_lite
+      gpt5: gpt5
+    default_difficulty_start: gemini_flash_lite
     evaluator: gpt4o-mini
     result_passing: failed_attempts
     condition: C3_PASS_FAILED_ATTEMPTS

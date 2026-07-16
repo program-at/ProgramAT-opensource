@@ -70,7 +70,10 @@ class TestTakePhotoBaseline(unittest.TestCase):
         }
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True), \
              self.assertLogs(model_router.logger, level="INFO") as logs:
-            answer = model_router.run_cascade(policy, prompt, b"image", request_id="mail-1")
+            answer = model_router.run_cascade(
+                policy, prompt, b"image", request_id="mail-1",
+                difficulty_start="moondream",
+            )
 
         self.assertEqual(answer, "Important: medical letter.")
         first_evaluation = evaluator_messages[0]
@@ -107,7 +110,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
                 profile.kind: executor for profile in policy.implementations.values()
             }
             with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
-                answer = model_router.run_cascade(policy, prompt, b"image")
+                answer = model_router.run_cascade(
+                    policy, prompt, b"image", difficulty_start="moondream"
+                )
             return answer, order
 
         plain_answer, plain_order = run(
@@ -145,6 +150,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
                 policy,
                 "Identify the car. If none is visible, say 'No car is clearly visible.'",
                 b"image",
+                difficulty_start="moondream",
             )
 
         self.assertEqual(
@@ -171,7 +177,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
             profile.kind: executor for profile in policy.implementations.values()
         }
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
-            answer = model_router.run_cascade(policy, "Identify my Uber.", b"image")
+            answer = model_router.run_cascade(
+                policy, "Identify my Uber.", b"image", difficulty_start="moondream"
+            )
 
         self.assertEqual(answer, partial)
         self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
@@ -187,6 +195,87 @@ class TestTakePhotoBaseline(unittest.TestCase):
             self.assertEqual(policy.result_passing, "failed_attempts")
             self.assertEqual(policy.condition, "C3_PASS_FAILED_ATTEMPTS")
             self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
+            self.assertEqual(
+                dict(policy.difficulty_starts),
+                {
+                    "moondream": "moondream_cloud",
+                    "gemini_flash_lite": "gemini_flash_lite",
+                    "gpt5": "gpt5",
+                },
+            )
+            self.assertEqual(policy.default_difficulty_start, "gemini_flash_lite")
+
+    def test_each_prediction_selects_policy_suffix_for_both_modes(self):
+        expected_candidates = {
+            "moondream": ["moondream_cloud", "gemini_flash_lite", "gpt5"],
+            "gemini_flash_lite": ["gemini_flash_lite", "gpt5"],
+            "gpt5": ["gpt5"],
+        }
+        for mode in ("take-photo", "streaming"):
+            policy = model_router.resolve_execution_policy(mode)
+            for prediction, expected in expected_candidates.items():
+                with self.subTest(mode=mode, prediction=prediction):
+                    candidate_order = []
+
+                    def executor(profile, messages, images, metadata):
+                        if profile.name == policy.evaluator:
+                            text = "NO"
+                        else:
+                            candidate_order.append(profile.name)
+                            text = f"answer-from-{profile.name}"
+                        return model_router.ImplementationResult(
+                            self._completion(text), {"text": text}
+                        )
+
+                    executors = {
+                        profile.kind: executor
+                        for profile in policy.implementations.values()
+                    }
+                    with patch.dict(
+                        model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True
+                    ), self.assertLogs(model_router.logger, level="INFO") as logs:
+                        answer = model_router.run_cascade(
+                            policy,
+                            "Original fused prompt",
+                            b"image",
+                            difficulty_start=prediction,
+                        )
+
+                    self.assertEqual(candidate_order, expected)
+                    self.assertEqual(answer, f"answer-from-{expected[-1]}")
+                    output = "\n".join(logs.output)
+                    self.assertIn(f"predicted_difficulty={prediction}", output)
+                    self.assertIn(f"start_model={expected[0]}", output)
+                    self.assertIn(f"candidate_models_called={expected!r}", output)
+
+    def test_missing_or_invalid_prediction_defaults_to_gemini_suffix(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+        for prediction in (None, "", "invalid"):
+            with self.subTest(prediction=prediction):
+                candidate_order = []
+
+                def executor(profile, messages, images, metadata):
+                    if profile.name == policy.evaluator:
+                        text = "NO"
+                    else:
+                        candidate_order.append(profile.name)
+                        text = f"answer-from-{profile.name}"
+                    return model_router.ImplementationResult(
+                        self._completion(text), {"text": text}
+                    )
+
+                executors = {
+                    profile.kind: executor for profile in policy.implementations.values()
+                }
+                with patch.dict(
+                    model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True
+                ), self.assertLogs(model_router.logger, level="INFO") as logs:
+                    model_router.run_cascade(
+                        policy, "Prompt", b"image", difficulty_start=prediction
+                    )
+
+                self.assertEqual(candidate_order, ["gemini_flash_lite", "gpt5"])
+                self.assertIn("prediction_source=safe_default", "\n".join(logs.output))
 
     def test_take_photo_and_streaming_use_same_shared_policy_executor(self):
         with patch.object(
@@ -208,6 +297,10 @@ class TestTakePhotoBaseline(unittest.TestCase):
         self.assertEqual(
             [call.kwargs["prompt"] for call in shared.call_args_list],
             ["Photo prompt", "Streaming prompt"],
+        )
+        self.assertEqual(
+            [call.kwargs["difficulty_start"] for call in shared.call_args_list],
+            [None, None],
         )
 
     def test_policy_executor_passes_ordered_failures_with_original_inputs_in_c3(self):
@@ -235,7 +328,8 @@ class TestTakePhotoBaseline(unittest.TestCase):
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
             with self.assertLogs(model_router.logger, level="INFO") as captured_logs:
                 answer = model_router.run_cascade(
-                    policy, "Original fused prompt", image, request_id="photo-1"
+                    policy, "Original fused prompt", image, request_id="photo-1",
+                    difficulty_start="moondream",
                 )
 
         self.assertEqual(answer, "answer-from-gpt5")
@@ -304,7 +398,10 @@ class TestTakePhotoBaseline(unittest.TestCase):
             profile.kind: executor for profile in policy.implementations.values()
         }
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
-            answer = model_router.run_cascade(policy, "Identify the vehicle.", b"image")
+            answer = model_router.run_cascade(
+                policy, "Identify the vehicle.", b"image",
+                difficulty_start="moondream",
+            )
 
         self.assertEqual(answer, raw_answer)
         self.assertIn(f"<candidate_answer>\n{raw_answer}\n</candidate_answer>", evaluator_inputs[0])
@@ -329,7 +426,8 @@ class TestTakePhotoBaseline(unittest.TestCase):
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
             with self.assertLogs(model_router.logger, level="INFO") as captured_logs:
                 answer = model_router.run_cascade(
-                    policy, "Original streaming fused prompt", image
+                    policy, "Original streaming fused prompt", image,
+                    difficulty_start="moondream",
                 )
 
         self.assertEqual(answer, "stream-answer-gemini_flash_lite")
@@ -363,7 +461,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
             profile.kind: executor for profile in policy.implementations.values()
         }
         with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
-            answer = model_router.run_cascade(policy, "Prompt", b"frame")
+            answer = model_router.run_cascade(
+                policy, "Prompt", b"frame", difficulty_start="moondream"
+            )
 
         self.assertEqual(answer, "Useful Moondream answer")
         self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
@@ -374,6 +474,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
         config["cascade_profiles"]["default_reasoning"]["candidates"] = [
             "gemini_flash_lite", "gpt5"
         ]
+        config["cascade_profiles"]["default_reasoning"]["difficulty_starts"][
+            "moondream"
+        ] = "gemini_flash_lite"
         with tempfile.TemporaryDirectory() as directory:
             policy_path = Path(directory) / "execution_policy.yaml"
             policy_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -438,6 +541,47 @@ def main(image, input_data):
     return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
         self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/read_label.py")), [])
+
+    def test_take_photo_validator_preserves_issue_difficulty_metadata(self):
+        issue = (
+            "## Mode\n\ntake-photo\n\n"
+            "## Difficulty start\n\n<!-- parser prediction -->\nmoondream\n"
+        )
+        tool = '''
+from litellm_utils import call_take_photo_baseline_vlm
+TOOL_NAME = "read_label"
+TOOL_PROMPT = "Read the label."
+TOOL_DIFFICULTY_START = "moondream"
+def main(image, input_data):
+    return call_take_photo_baseline_vlm(
+        image=image,
+        prompt=TOOL_PROMPT,
+        tool_name=TOOL_NAME,
+        difficulty_start=TOOL_DIFFICULTY_START,
+    )
+'''
+        self.assertEqual(
+            validate_take_photo_baseline(tool, issue, Path("tools/read_label.py")),
+            [],
+        )
+
+        failures = validate_take_photo_baseline(
+            tool.replace('TOOL_DIFFICULTY_START = "moondream"',
+                         'TOOL_DIFFICULTY_START = "gpt5"'),
+            issue,
+            Path("tools/read_label.py"),
+        )
+        self.assertTrue(any("must copy the issue Difficulty start" in item for item in failures))
+
+        failures = validate_take_photo_baseline(
+            tool.replace(
+                "difficulty_start=TOOL_DIFFICULTY_START,",
+                'difficulty_start="moondream",',
+            ),
+            issue,
+            Path("tools/read_label.py"),
+        )
+        self.assertTrue(any("must pass TOOL_DIFFICULTY_START" in item for item in failures))
 
     def test_take_photo_validator_rejects_router_and_multiple_calls(self):
         issue = "## Mode\n\ntake-photo\n"
@@ -526,8 +670,12 @@ def main(image, input_data):
         self.assertNotIn("copilot_llm_call", calls)
         self.assertNotIn("execute_capability_sequence", calls)
 
-    def test_runtime_sends_copilot_prompt_to_gemini_exactly_once(self):
-        code = 'TOOL_NAME = "gesture"\nTOOL_PROMPT = "Return only the visible gesture."\n'
+    def test_runtime_sends_copilot_prompt_and_stored_difficulty_exactly_once(self):
+        code = (
+            'TOOL_NAME = "gesture"\n'
+            'TOOL_PROMPT = "Return only the visible gesture."\n'
+            'TOOL_DIFFICULTY_START = "moondream"\n'
+        )
         with patch.object(
             stream_server, "call_take_photo_baseline_vlm", return_value="Waving"
         ) as gemini, patch.object(stream_server, "tool_copilot_llm_call") as router:
@@ -536,7 +684,7 @@ def main(image, input_data):
         self.assertEqual(result, "Waving")
         gemini.assert_called_once_with(
             image=b"image", prompt="Return only the visible gesture.",
-            mode="take-photo", request_id=None,
+            mode="take-photo", request_id=None, difficulty_start="moondream",
         )
         router.assert_not_called()
 
@@ -559,6 +707,26 @@ def main(image, input_data):
                 "Identify important mail and briefly label each important item.",
             ],
         )
+        self.assertEqual(
+            [call.kwargs["difficulty_start"] for call in helper.call_args_list],
+            ["gemini_flash_lite", "gemini_flash_lite"],
+        )
+
+    def test_runtime_defaults_invalid_tool_prediction_to_gemini(self):
+        code = (
+            'TOOL_NAME = "mail"\n'
+            'TOOL_PROMPT = "Identify important mail."\n'
+            'TOOL_DIFFICULTY_START = "not-valid"\n'
+        )
+        with patch.object(
+            stream_server, "call_take_photo_baseline_vlm", return_value="answer"
+        ) as helper, self.assertLogs(stream_server.logger, level="WARNING") as logs:
+            stream_server._run_take_photo_baseline("mail", code, b"image")
+
+        self.assertEqual(
+            helper.call_args.kwargs["difficulty_start"], "gemini_flash_lite"
+        )
+        self.assertIn("safe_default=gemini_flash_lite", "\n".join(logs.output))
 
     def test_runtime_rejects_tools_without_a_prompt(self):
         with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):
