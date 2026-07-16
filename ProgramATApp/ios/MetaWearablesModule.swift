@@ -155,7 +155,7 @@ class MetaWearablesModule: NSObject {
                 try await self.waitForSessionStarted(session)
 
                 let config = StreamConfiguration(
-                    videoCodec: .hvc1,
+                    videoCodec: .raw,
                     resolution: .low,
                     frameRate: 15
                 )
