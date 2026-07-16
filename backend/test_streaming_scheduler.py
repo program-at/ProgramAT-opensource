@@ -195,6 +195,8 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         output = "\n".join(logs.output)
         self.assertIn("[Streaming] skipped frame (already running)", output)
         self.assertIn("[Streaming] execution finished", output)
+        self.assertIn("streaming_executor=policy_cascade", output)
+        self.assertIn("nvidia_hosted_active=false", output)
 
     async def test_c2_streaming_result_is_dropped_when_session_is_superseded(self):
         tool_config = {
@@ -239,6 +241,51 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         cascade.assert_called_once()
         websocket.send.assert_not_awaited()
         self.assertIn("policy cascade result discarded as stale", "\n".join(logs.output))
+
+    async def test_streaming_sends_only_final_policy_cascade_result(self):
+        tool_config = {
+            "generation": 4,
+            "current_execution_id": 10,
+            "tool": {
+                "name": "describe",
+                "language": "python",
+                "code": 'TOOL_PROMPT = "Original fused streaming prompt."',
+                "input": {},
+            },
+            "exec_env": {
+                "parsed_input": {},
+                "common_modules": {},
+                "stdout_capture": __import__("io").StringIO(),
+                "exec_globals_base": {},
+            },
+        }
+        stream_server.active_streaming_tools["client"] = tool_config
+        websocket = AsyncMock()
+
+        with patch.object(
+            stream_server,
+            "_run_take_photo_baseline",
+            return_value="Final accepted cascade answer",
+        ) as cascade, patch.object(
+            stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline
+        ):
+            sent = await stream_server._execute_streaming_tools_unlocked(
+                websocket, "client", b"selected-frame", "base64-frame"
+            )
+
+        self.assertTrue(sent)
+        cascade.assert_called_once_with(
+            "describe",
+            'TOOL_PROMPT = "Original fused streaming prompt."',
+            b"selected-frame",
+            "streaming",
+            "10",
+        )
+        websocket.send.assert_awaited_once()
+        payload = json.loads(websocket.send.await_args.args[0])
+        self.assertEqual(payload["result"], "Final accepted cascade answer")
+        self.assertEqual(payload["audio"]["text"], "Final accepted cascade answer")
+        self.assertEqual(payload["execution_id"], 10)
 
     async def test_stable_candidate_too_similar_to_last_sent_is_skipped(self):
         now = asyncio.get_running_loop().time()

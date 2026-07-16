@@ -600,20 +600,22 @@ def _env_flag(name: str, default: bool = False) -> bool:
 
 
 _configured_nvidia_streaming_mode = os.getenv('NVIDIA_STREAMING_MODE', '').strip().lower()
-if _configured_nvidia_streaming_mode:
-    NVIDIA_STREAMING_MODE = _configured_nvidia_streaming_mode
-elif _env_flag('NVIDIA_RTVI_STREAMING_ENABLED'):
+if not _configured_nvidia_streaming_mode and _env_flag('NVIDIA_RTVI_STREAMING_ENABLED'):
     # Backwards compatibility for the previously implemented RTVI flag.
-    NVIDIA_STREAMING_MODE = 'rtvi'
-else:
-    NVIDIA_STREAMING_MODE = 'disabled'
+    _configured_nvidia_streaming_mode = 'rtvi'
 NVIDIA_STREAMING_MODES = {'disabled', 'original', 'rtvi', 'hosted_multiframe'}
-if NVIDIA_STREAMING_MODE not in NVIDIA_STREAMING_MODES:
+if _configured_nvidia_streaming_mode and _configured_nvidia_streaming_mode not in NVIDIA_STREAMING_MODES:
     raise ValueError(
         f"NVIDIA_STREAMING_MODE must be one of {sorted(NVIDIA_STREAMING_MODES)}, "
-        f"got {NVIDIA_STREAMING_MODE!r}"
+        f"got {_configured_nvidia_streaming_mode!r}"
     )
-NVIDIA_RTVI_STREAMING_ENABLED = NVIDIA_STREAMING_MODE == 'rtvi'
+# Experiment 2 always uses the same policy cascade as take-photo. Keep the
+# NVIDIA implementations available for future experiments, but do not let an
+# environment variable select a different active streaming executor.
+STREAMING_EXECUTOR = 'policy_cascade'
+NVIDIA_HOSTED_ACTIVE = False
+NVIDIA_STREAMING_MODE = 'disabled'
+NVIDIA_RTVI_STREAMING_ENABLED = False
 NVIDIA_RTVI_BASE_URL = os.getenv('NVIDIA_RTVI_BASE_URL', 'http://localhost:8000').rstrip('/')
 NVIDIA_RTVI_MODEL = os.getenv('NVIDIA_RTVI_MODEL', '').strip()
 NVIDIA_RTVI_CHUNK_DURATION_SECONDS = float(
@@ -1223,19 +1225,7 @@ async def _dispatch_active_streaming_frame(
     image_base64: str,
     frame_timestamp: float | None = None,
 ) -> asyncio.Task | None:
-    """Select exactly one streaming pipeline for an incoming client frame."""
-    if NVIDIA_STREAMING_MODE == 'rtvi':
-        if client_id in active_rtvi_sessions:
-            await _offer_rtvi_frame(websocket, client_id, image_base64)
-        return None
-    if NVIDIA_STREAMING_MODE == 'hosted_multiframe':
-        if client_id in active_hosted_nvidia_sessions:
-            await _offer_hosted_nvidia_frame(
-                client_id,
-                image_base64,
-                frame_timestamp if frame_timestamp is not None else time.time(),
-            )
-        return None
+    """Dispatch an incoming frame only to the policy-cascade scheduler."""
     if image is None or client_id not in active_streaming_tools:
         return None
     task = asyncio.create_task(
@@ -2238,12 +2228,20 @@ async def run_streaming_tools(websocket, client_id: str, image, image_base64: st
     execution_id = tool_config.get('execution_sequence', 0) + 1
     tool_config['execution_sequence'] = execution_id
     async with execution_lock:
+        logger.info(
+            "[Streaming] streaming_executor=%s nvidia_hosted_active=%s "
+            "client=%s execution=%s",
+            STREAMING_EXECUTOR,
+            str(NVIDIA_HOSTED_ACTIVE).lower(),
+            client_id,
+            execution_id,
+        )
         logger.info("[Streaming] execution started client=%s execution=%s", client_id, execution_id)
         context_token = STREAMING_EXECUTION_CONTEXT.set(True)
         try:
             logger.info("[Streaming] routing started client=%s execution=%s", client_id, execution_id)
             logger.info(
-                "[Streaming] planner selected pre-generated tool stages client=%s execution=%s",
+                "[Streaming] using Copilot-authored fused tool prompt client=%s execution=%s",
                 client_id,
                 execution_id,
             )
@@ -2360,6 +2358,15 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
 
     # P2 streaming resolves the same mode policy as take-photo before any legacy
     # planner-disabled or generated-tool execution path can select a model.
+    if tool_language != 'python' or not tool_code:
+        logger.error(
+            "[Streaming] policy cascade requires a Python tool with TOOL_PROMPT "
+            "client=%s tool=%s language=%s",
+            client_id,
+            tool_name,
+            tool_language,
+        )
+        return False
     if tool_language == 'python' and tool_code:
         execution_id = tool_config.get('current_execution_id')
         try:
@@ -6692,6 +6699,8 @@ async def handle_client(websocket):
             'model_routing': True,
             'routing_mode': 'semantic',
             'nvidia_streaming_mode': NVIDIA_STREAMING_MODE,
+            'streaming_executor': STREAMING_EXECUTOR,
+            'nvidia_hosted_active': NVIDIA_HOSTED_ACTIVE,
             'streaming_frame_interval_ms': (
                 max(
                     100,
@@ -6741,50 +6750,18 @@ async def handle_client(websocket):
                 if msg_type == 'start_streaming_tool':
                     logger.info(f"Client {client_id} started streaming tool: {data.get('tool_name')}")
                     session_log.log("INFO", f"Started streaming tool: {data.get('tool_name')}")
-
-                    if NVIDIA_STREAMING_MODE in {'disabled', 'original'}:
-                        await _cleanup_rtvi_session(client_id, reason='mode_switch')
-                        await _cleanup_hosted_nvidia_session(client_id, reason='mode_switch')
-
-                    if NVIDIA_STREAMING_MODE in {'rtvi', 'hosted_multiframe'}:
-                        # Experimental branches deliberately precede tool resolution and
-                        # scheduler setup: the selected NVIDIA path is the only inference path.
-                        if client_id in active_streaming_tasks:
-                            old_task = active_streaming_tasks.pop(client_id)
-                            if not old_task.done():
-                                old_task.cancel()
-                        previous_config = active_streaming_tools.pop(client_id, None)
-                        if previous_config:
-                            for task_key in ('cascade_task', 'debounce_task'):
-                                previous_task = previous_config.get(task_key)
-                                if previous_task is not None and not previous_task.done():
-                                    previous_task.cancel()
-                            if previous_config.get('gemini_live') and gemini_live_manager:
-                                await gemini_live_manager.stop_session(client_id)
-                        await _cleanup_rtvi_session(client_id, reason='mode_switch')
-                        await _cleanup_hosted_nvidia_session(client_id, reason='mode_switch')
-                        try:
-                            if NVIDIA_STREAMING_MODE == 'rtvi':
-                                await _start_rtvi_session(websocket, client_id, data)
-                            else:
-                                await _start_hosted_nvidia_session(websocket, client_id, data)
-                        except Exception as exc:
-                            logger.error(
-                                "[NVIDIA Streaming] failed to start mode=%s client=%s error=%s",
-                                NVIDIA_STREAMING_MODE,
-                                client_id,
-                                exc,
-                            )
-                            await websocket.send(json.dumps({
-                                'type': 'tool_stream_result',
-                                'tool_name': data.get('tool_name', 'unknown'),
-                                'result': f'NVIDIA {NVIDIA_STREAMING_MODE} streaming error: {exc}',
-                                'status': 'error',
-                                'error': str(exc),
-                                'mode': NVIDIA_STREAMING_MODE,
-                                'timestamp': datetime.now().isoformat(),
-                            }))
-                        continue
+                    await _cleanup_rtvi_session(client_id, reason='policy_cascade_active')
+                    await _cleanup_hosted_nvidia_session(
+                        client_id, reason='policy_cascade_active'
+                    )
+                    logger.info(
+                        "[Streaming] streaming_executor=%s nvidia_hosted_active=%s "
+                        "configured_nvidia_mode=%s client=%s",
+                        STREAMING_EXECUTOR,
+                        str(NVIDIA_HOSTED_ACTIVE).lower(),
+                        _configured_nvidia_streaming_mode or 'disabled',
+                        client_id,
+                    )
 
                     # Cancel any in-flight task from the previous tool so its
                     # stale result can't arrive after the new tool is registered.
@@ -6795,6 +6772,13 @@ async def handle_client(websocket):
 
                     custom_gpt = data.get('custom_gpt', False)
                     gpt_query = data.get('gpt_query', '')
+                    if custom_gpt:
+                        logger.info(
+                            "[Streaming] custom Gemini Live request bypassed; "
+                            "streaming_executor=policy_cascade client=%s",
+                            client_id,
+                        )
+                    custom_gpt = False
                     tool_name = data.get('tool_name', 'unknown')
                     tool_path = data.get('tool_path', '')
                     tool_code = resolve_tool_code_for_execution(
@@ -7452,17 +7436,8 @@ async def handle_client(websocket):
                     frame_results = process_frame(data)
                     combined_results['frame'] = frame_results
                     
-                    # Experimental modes consume frames before ProgramAT's
-                    # CLIP/router/cascade scheduler.
                     if (
-                        NVIDIA_STREAMING_MODE == 'rtvi'
-                        and client_id in active_rtvi_sessions
-                    ) or (
-                        NVIDIA_STREAMING_MODE == 'hosted_multiframe'
-                        and client_id in active_hosted_nvidia_sessions
-                    ) or (
-                        NVIDIA_STREAMING_MODE in {'disabled', 'original'}
-                        and last_frame['image'] is not None
+                        last_frame['image'] is not None
                         and client_id in active_streaming_tools
                     ):
                         source_timestamp = data.get('timestamp')
@@ -8294,27 +8269,17 @@ async def main():
     logger.info(f"Frame saving: {'enabled' if SAVE_FRAMES else 'disabled'}")
     logger.info(f"GitHub issue creation: {'enabled' if GITHUB_TOKEN else 'disabled'}")
 
-    logger.info("[NVIDIA Streaming] selected mode=%s", NVIDIA_STREAMING_MODE)
-    if NVIDIA_STREAMING_MODE == 'rtvi':
-        logger.info(
-            "[NVIDIA RTVI] experimental streaming enabled base_url=%s rtsp_base=%s",
-            NVIDIA_RTVI_BASE_URL,
-            PROGRAMAT_RTSP_PUBLIC_BASE_URL,
-        )
-    elif NVIDIA_STREAMING_MODE == 'hosted_multiframe':
-        logger.info(
-            "[NVIDIA Hosted] experimental streaming enabled base_url=%s "
-            "window_seconds=%s sample_frames=%s interval_seconds=%s",
-            NVIDIA_HOSTED_API_BASE_URL,
-            NVIDIA_HOSTED_WINDOW_SECONDS,
-            NVIDIA_HOSTED_SAMPLE_FRAMES,
-            NVIDIA_HOSTED_REQUEST_INTERVAL_SECONDS,
-        )
-    else:
-        try:
-            await asyncio.to_thread(warm_streaming_frame_selector)
-        except Exception as exc:
-            logger.warning("[Streaming] CLIP warm-up failed; frame gating will fail open: %s", exc)
+    logger.info(
+        "[Streaming] streaming_executor=%s nvidia_hosted_active=%s "
+        "configured_nvidia_mode=%s",
+        STREAMING_EXECUTOR,
+        str(NVIDIA_HOSTED_ACTIVE).lower(),
+        _configured_nvidia_streaming_mode or 'disabled',
+    )
+    try:
+        await asyncio.to_thread(warm_streaming_frame_selector)
+    except Exception as exc:
+        logger.warning("[Streaming] CLIP warm-up failed; frame gating will fail open: %s", exc)
 
     app = web.Application(client_max_size=20 * 1024 * 1024)
     app.router.add_get('/', websocket_handler)

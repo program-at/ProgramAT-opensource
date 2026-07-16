@@ -265,36 +265,21 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(session["scheduler_task"].cancelled())
         self.assertTrue(session["request_task"].cancelled())
 
-    async def test_mode_dispatch_keeps_hosted_rtvi_and_original_separate(self):
+    async def test_active_dispatch_ignores_nvidia_mode_and_uses_policy_scheduler(self):
         stream_server.active_hosted_nvidia_sessions["client"] = self._session()
+        stream_server.active_rtvi_sessions["client"] = {"session_id": "rtvi"}
+        stream_server.active_streaming_tools["client"] = {"tool": {"name": "tool"}}
         with patch.object(stream_server, "NVIDIA_STREAMING_MODE", "hosted_multiframe"), \
              patch.object(stream_server, "_offer_hosted_nvidia_frame", new=AsyncMock()) as hosted, \
              patch.object(stream_server, "_offer_rtvi_frame", new=AsyncMock()) as rtvi, \
              patch.object(stream_server, "schedule_streaming_frame", new=AsyncMock()) as original:
-            await stream_server._dispatch_active_streaming_frame(
+            task = await stream_server._dispatch_active_streaming_frame(
                 "ws", "client", "image", "base64", 10.0
             )
-        hosted.assert_awaited_once_with("client", "base64", 10.0)
+            await task
         rtvi.assert_not_awaited()
-        original.assert_not_awaited()
-
-        stream_server.active_rtvi_sessions["client"] = {"session_id": "rtvi"}
-        with patch.object(stream_server, "NVIDIA_STREAMING_MODE", "rtvi"), \
-             patch.object(stream_server, "_offer_rtvi_frame", new=AsyncMock()) as rtvi:
-            await stream_server._dispatch_active_streaming_frame(
-                "ws", "client", "image", "base64", 11.0
-            )
-        rtvi.assert_awaited_once_with("ws", "client", "base64")
-
-        stream_server.active_streaming_tools["client"] = {"tool": {"name": "tool"}}
-        for mode in ("original", "disabled"):
-            with patch.object(stream_server, "NVIDIA_STREAMING_MODE", mode), \
-                 patch.object(stream_server, "schedule_streaming_frame", new=AsyncMock()) as original:
-                task = await stream_server._dispatch_active_streaming_frame(
-                    "ws", "client", "image", "base64", 12.0
-                )
-                await task
-            original.assert_awaited_once_with("ws", "client", "image", "base64")
+        hosted.assert_not_awaited()
+        original.assert_awaited_once_with("ws", "client", "image", "base64")
 
 
 if __name__ == "__main__":

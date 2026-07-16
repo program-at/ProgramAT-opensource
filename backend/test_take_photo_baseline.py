@@ -131,6 +131,28 @@ class TestTakePhotoBaseline(unittest.TestCase):
             self.assertEqual(policy.result_passing, "none")
             self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
 
+    def test_take_photo_and_streaming_use_same_shared_policy_executor(self):
+        with patch.object(
+            model_router, "run_mode_cascade", side_effect=("photo", "stream")
+        ) as shared:
+            photo = litellm_utils.call_take_photo_baseline_vlm(
+                b"photo", "Photo prompt", mode="take-photo", request_id="p1"
+            )
+            stream = litellm_utils.call_take_photo_baseline_vlm(
+                b"frame", "Streaming prompt", mode="streaming", request_id="s1"
+            )
+
+        self.assertEqual((photo, stream), ("photo", "stream"))
+        self.assertEqual(shared.call_count, 2)
+        self.assertEqual(
+            [call.kwargs["mode"] for call in shared.call_args_list],
+            ["take-photo", "streaming"],
+        )
+        self.assertEqual(
+            [call.kwargs["prompt"] for call in shared.call_args_list],
+            ["Photo prompt", "Streaming prompt"],
+        )
+
     def test_policy_executor_runs_configured_order_and_c2_fresh_context(self):
         policy = model_router.resolve_execution_policy("take-photo")
         image = object()
