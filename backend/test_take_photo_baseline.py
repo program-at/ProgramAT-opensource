@@ -77,6 +77,8 @@ class TestTakePhotoBaseline(unittest.TestCase):
         self.assertEqual(first_evaluation[0]["role"], "system")
         self.assertIn("actually satisfies", first_evaluation[0]["content"])
         self.assertIn("requested output format", first_evaluation[0]["content"])
+        self.assertIn("prefer NO so the cascade can try the next model", first_evaluation[0]["content"])
+        self.assertIn("only one specific detail cannot be confirmed", first_evaluation[0]["content"])
         self.assertEqual(first_evaluation[1]["role"], "user")
         evaluator_input = first_evaluation[1]["content"]
         self.assertIn(f"<task_prompt>\n{prompt}\n</task_prompt>", evaluator_input)
@@ -119,6 +121,60 @@ class TestTakePhotoBaseline(unittest.TestCase):
         self.assertEqual(json_answer, "answer-from-moondream_cloud")
         self.assertEqual(plain_order[-1], "gpt5")
         self.assertEqual(json_order, ["moondream_cloud", "gpt4o-mini"])
+
+    def test_no_visible_content_advances_without_accepting_first_candidate(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+        order = []
+
+        def executor(profile, messages, images, metadata):
+            order.append(profile.name)
+            if profile.name == "moondream_cloud":
+                text = "No car is clearly visible."
+            elif profile.name == policy.evaluator:
+                text = "YES"
+            else:
+                text = "A black Toyota sedan is directly ahead; the plate is unreadable."
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True), \
+             self.assertLogs(model_router.logger, level="INFO") as logs:
+            answer = model_router.run_cascade(
+                policy,
+                "Identify the car. If none is visible, say 'No car is clearly visible.'",
+                b"image",
+            )
+
+        self.assertEqual(
+            answer,
+            "A black Toyota sedan is directly ahead; the plate is unreadable.",
+        )
+        self.assertEqual(order, ["moondream_cloud", "gemini_flash_lite", "gpt4o-mini"])
+        self.assertIn(
+            "reason=no_relevant_information_sufficiency_rule",
+            "\n".join(logs.output),
+        )
+
+    def test_useful_partial_answer_still_reaches_evaluator(self):
+        policy = model_router.resolve_execution_policy("take-photo")
+        order = []
+        partial = "The car appears to be a black Toyota, but the license plate is not readable."
+
+        def executor(profile, messages, images, metadata):
+            order.append(profile.name)
+            text = "YES" if profile.name == policy.evaluator else partial
+            return model_router.ImplementationResult(self._completion(text), {"text": text})
+
+        executors = {
+            profile.kind: executor for profile in policy.implementations.values()
+        }
+        with patch.dict(model_router.IMPLEMENTATION_EXECUTORS, executors, clear=True):
+            answer = model_router.run_cascade(policy, "Identify my Uber.", b"image")
+
+        self.assertEqual(answer, partial)
+        self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
 
     def test_both_modes_resolve_order_and_evaluator_from_execution_policy(self):
         for mode in ("take-photo", "streaming"):

@@ -109,6 +109,8 @@ The answer need not be perfect or exhaustive. Minor omissions and appropriately 
 
 Return NO when the answer omits the task's core operation, violates an explicit output format, is only a generic category or data fragment, mainly says it cannot determine anything useful, or asks the user to inspect unexplained visual information.
 
+If the answer mainly says that no relevant information is visible, nothing can be found, or the image does not contain the requested content or enough information, prefer NO so the cascade can try the next model. Apply this sufficiency rule even when the task prompt explicitly asks the candidate to state that nothing was found. Examples include "No important mail is visible" and "I cannot identify any vehicle." Do not apply this rule when the answer provides substantial useful information and only one specific detail cannot be confirmed; for example, "The car appears to be a black Toyota, but the license plate is not readable" may still be YES.
+
 Example: if the task asks to identify important mail and briefly label each important item, a response such as {"mail_type":"Medical/Healthcare"} is NO. It gives a related category but does not identify the important item or provide the requested brief label. JSON is acceptable only when the task requests JSON.
 
 You cannot see the image, so do not reject a claim solely because you cannot independently verify it. Judge task fulfillment, format compliance, usefulness, internal plausibility, and accessibility from the task and answer.
@@ -122,6 +124,24 @@ P2_EVALUATION_INPUT_TEMPLATE = """<task_prompt>
 <candidate_answer>
 {answer}
 </candidate_answer>"""
+P2_NO_RELEVANT_INFORMATION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"^\s*(?:no|nothing)\b[^.!?]{0,160}\b(?:visible|found|present|detected|identified)\b[.!?]?\s*$",
+        r"^\s*(?:i\s+)?(?:cannot|can't|could not|couldn't|am unable to)\s+(?:find|identify|locate|see|detect|determine)\b[^.!?]{0,160}[.!?]?\s*$",
+        r"^\s*(?:the\s+)?image\b[^.!?]{0,80}\b(?:does not|doesn't|cannot|can't)\b[^.!?]{0,80}\b(?:contain|show|provide|have)\b[^.!?]*[.!?]?\s*$",
+    )
+)
+
+
+def _candidate_mainly_reports_no_relevant_information(answer: str) -> bool:
+    """Return true for a short, standalone no-content result."""
+    text = " ".join(str(answer or "").split())
+    return bool(text) and any(
+        pattern.fullmatch(text) for pattern in P2_NO_RELEVANT_INFORMATION_PATTERNS
+    )
+
+
 STREAMING_RESPONSE_PROMPT = (
     "You are responding to a live camera stream. Answer in 1-2 short, audio-friendly "
     "sentences. Prioritize only the most useful information for the user right now. "
@@ -1456,6 +1476,29 @@ def run_cascade(
                 policy.mode, policy.cascade, inference_id, candidate_name, candidate_ms,
             )
             break
+
+        if _candidate_mainly_reports_no_relevant_information(answer):
+            evaluator_decision = "NO"
+            logger.info(
+                "[Policy Evaluator] mode=%s request_id=%s evaluator=%s "
+                "decision=NO reason=no_relevant_information_sufficiency_rule "
+                "candidate=%r",
+                policy.mode,
+                inference_id,
+                policy.evaluator,
+                answer,
+            )
+            logger.info(
+                "[Policy Cascade] mode=%s cascade=%s request_id=%s candidate=%s "
+                "latency_ms=%.1f evaluator=%s evaluator_ms=0.0 decision=NO",
+                policy.mode,
+                policy.cascade,
+                inference_id,
+                candidate_name,
+                candidate_ms,
+                policy.evaluator,
+            )
+            continue
 
         evaluator_profile = policy.implementations[policy.evaluator]
         evaluator = IMPLEMENTATION_EXECUTORS.get(evaluator_profile.kind)
