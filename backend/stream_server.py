@@ -12,6 +12,7 @@ python stream_server.py
 
 import asyncio
 import ast
+import hashlib
 import websockets
 import json
 import base64
@@ -79,6 +80,7 @@ from litellm_utils import (
 from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
 from module_manager import get_module_manager
 import copilot_db
+import tool_metadata_store
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
 from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
@@ -1542,8 +1544,12 @@ def _take_photo_tool_prompt(tool_name: str, tool_code: str) -> str:
     )
 
 
-def _tool_difficulty_start(tool_name: str, tool_code: str) -> str:
-    """Read creation-time difficulty metadata, defaulting safely for older tools."""
+_TOOL_DIFFICULTY_LOCKS: Dict[str, threading.Lock] = {}
+_TOOL_DIFFICULTY_LOCKS_GUARD = threading.Lock()
+
+
+def _stored_tool_difficulty_start(tool_code: str) -> Optional[str]:
+    """Read valid creation-time difficulty metadata without modifying tool code."""
     try:
         tree = ast.parse(tool_code or '')
         for node in tree.body:
@@ -1561,17 +1567,144 @@ def _tool_difficulty_start(tool_name: str, tool_code: str) -> str:
                     return normalized
                 break
     except (SyntaxError, ValueError, TypeError):
-        logger.debug(
-            "Could not extract TOOL_DIFFICULTY_START from %s",
-            tool_name,
-            exc_info=True,
-        )
-    logger.warning(
-        "[Difficulty Routing] tool=%s missing_or_invalid_prediction=true "
-        "safe_default=gemini_flash_lite",
-        tool_name,
+        logger.debug("Could not extract TOOL_DIFFICULTY_START", exc_info=True)
+    return None
+
+
+def _stable_tool_identifier(
+    tool_name: str,
+    tool_path: str = '',
+    metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Build one source-aware identity shared by take-photo and streaming."""
+    metadata = dict(metadata or {})
+    normalized_path = str(tool_path or '').strip().replace('\\', '/')
+    normalized_path = normalized_path or f"tools/{Path(tool_name).name}.py"
+    if metadata.get('pr_number') not in (None, ''):
+        source = f"pr:{metadata['pr_number']}"
+    elif str(metadata.get('branch_name') or '').strip():
+        source = f"branch:{str(metadata['branch_name']).strip()}"
+    else:
+        source = str(metadata.get('source') or 'local').strip().lower()
+    repository = str(metadata.get('repository') or GITHUB_REPO or 'local').strip()
+    return f"{repository}|{source}|{normalized_path}|{Path(tool_name).name}"
+
+
+def _tool_difficulty_lock(tool_identifier: str) -> threading.Lock:
+    with _TOOL_DIFFICULTY_LOCKS_GUARD:
+        return _TOOL_DIFFICULTY_LOCKS.setdefault(tool_identifier, threading.Lock())
+
+
+def _predict_legacy_tool_difficulty(
+    tool_name: str,
+    tool_prompt: str,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Reuse the existing Llama issue parser for one legacy-tool prediction."""
+    metadata = dict(metadata or {})
+    relevant_metadata = {
+        key: metadata[key]
+        for key in ('task', 'mode', 'tool_path', 'pr_number', 'branch_name', 'source')
+        if metadata.get(key) not in (None, '')
+    }
+    parser_input = (
+        f"Tool name: {tool_name}\n"
+        f"Existing TOOL_PROMPT: {tool_prompt}\n"
+        f"Relevant metadata: {json.dumps(relevant_metadata, ensure_ascii=False)}"
     )
-    return 'gemini_flash_lite'
+    issue_prompt = _build_issue_extraction_prompt(parser_input)
+    response = system_llm_call(
+        messages=[{'role': 'user', 'content': issue_prompt}],
+        metadata={'response_format': {'type': 'json_object'}},
+    )
+    parsed = _parse_llm_json_object(extract_text(response))
+    predicted = str(parsed.get('difficulty_start') or '').strip().lower()
+    if predicted not in {'moondream', 'gemini_flash_lite', 'gpt5'}:
+        raise ValueError(f"invalid difficulty_start prediction: {predicted!r}")
+    return predicted
+
+
+def _resolve_tool_difficulty_start(
+    tool_name: str,
+    tool_code: str,
+    *,
+    tool_path: str = '',
+    metadata: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve generation metadata or lazily persist one prompt-bound prediction."""
+    generated = _stored_tool_difficulty_start(tool_code)
+    tool_identifier = _stable_tool_identifier(tool_name, tool_path, metadata)
+    if generated:
+        logger.info(
+            "[Difficulty Routing] tool=%s tool_id=%s difficulty_start=%s "
+            "difficulty_source=generation",
+            tool_name,
+            tool_identifier,
+            generated,
+        )
+        return generated
+
+    prompt = _take_photo_tool_prompt(tool_name, tool_code)
+    prompt_sha256 = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+    lock = _tool_difficulty_lock(tool_identifier)
+    with lock:
+        try:
+            cached = tool_metadata_store.get_difficulty_start(
+                tool_identifier, prompt_sha256
+            )
+        except Exception as exc:
+            cached = None
+            logger.warning(
+                "[Difficulty Routing] tool=%s tool_id=%s metadata_cache_read_failed=%s",
+                tool_name,
+                tool_identifier,
+                type(exc).__name__,
+            )
+        if cached in {'moondream', 'gemini_flash_lite', 'gpt5'}:
+            logger.info(
+                "[Difficulty Routing] tool=%s tool_id=%s difficulty_start=%s "
+                "difficulty_source=cache prompt_sha256=%s",
+                tool_name,
+                tool_identifier,
+                cached,
+                prompt_sha256,
+            )
+            return cached
+
+        prediction_failed = False
+        try:
+            predicted = _predict_legacy_tool_difficulty(tool_name, prompt, metadata)
+        except Exception as exc:
+            prediction_failed = True
+            predicted = 'gemini_flash_lite'
+            logger.warning(
+                "[Difficulty Routing] tool=%s tool_id=%s lazy_prediction_failed=%s "
+                "fallback=gemini_flash_lite",
+                tool_name,
+                tool_identifier,
+                type(exc).__name__,
+            )
+        try:
+            tool_metadata_store.put_difficulty_start(
+                tool_identifier, prompt_sha256, predicted
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Difficulty Routing] tool=%s tool_id=%s metadata_cache_write_failed=%s",
+                tool_name,
+                tool_identifier,
+                type(exc).__name__,
+            )
+        logger.info(
+            "[Difficulty Routing] tool=%s tool_id=%s difficulty_start=%s "
+            "difficulty_source=lazy_prediction prompt_sha256=%s fallback=%s",
+            tool_name,
+            tool_identifier,
+            predicted,
+            prompt_sha256,
+            str(prediction_failed).lower(),
+        )
+        return predicted
 
 
 def _run_take_photo_baseline(
@@ -1580,10 +1713,19 @@ def _run_take_photo_baseline(
     image,
     mode: str = 'take-photo',
     request_id: Optional[str] = None,
+    difficulty_start: Optional[str] = None,
+    tool_path: str = '',
+    tool_metadata: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Execute the P2 fused prompt through the mode's policy-configured cascade."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
-    difficulty_start = _tool_difficulty_start(tool_name, tool_code)
+    if difficulty_start not in {'moondream', 'gemini_flash_lite', 'gpt5'}:
+        difficulty_start = _resolve_tool_difficulty_start(
+            tool_name,
+            tool_code,
+            tool_path=tool_path,
+            metadata=tool_metadata,
+        )
     logger.info(
         "[P2] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
         "request_id=%s predicted_difficulty=%s",
@@ -2395,8 +2537,11 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
                 tool_name,
                 tool_code,
                 image,
-                'streaming',
-                str(execution_id or 'unknown'),
+                mode='streaming',
+                request_id=str(execution_id or 'unknown'),
+                difficulty_start=tool.get('difficulty_start'),
+                tool_path=tool.get('path', ''),
+                tool_metadata=tool.get('difficulty_metadata'),
             )
         except Exception as exc:
             logger.error(
@@ -6828,6 +6973,22 @@ async def handle_client(websocket):
                         tool_path=tool_path,
                         client_tool_code=data.get('tool_code', ''),
                     )
+                    tool_identity_metadata = {
+                        'task': data.get('task', ''),
+                        'mode': 'streaming',
+                        'tool_path': tool_path,
+                        'pr_number': data.get('pr_number'),
+                        'branch_name': data.get('branch_name'),
+                        'source': data.get('source'),
+                        'repository': data.get('repository'),
+                    }
+                    difficulty_start = await asyncio.to_thread(
+                        _resolve_tool_difficulty_start,
+                        tool_name,
+                        tool_code,
+                        tool_path=tool_path,
+                        metadata=tool_identity_metadata,
+                    )
                     
                     previous_config = active_streaming_tools.get(client_id)
                     previous_task = previous_config.get('cascade_task') if previous_config else None
@@ -6844,6 +7005,8 @@ async def handle_client(websocket):
                             'language': data.get('tool_language', 'python'),
                             'input': data.get('input', ''),
                             'task': data.get('task', ''),
+                            'difficulty_start': difficulty_start,
+                            'difficulty_metadata': tool_identity_metadata,
                         },
                         'last_run': None,
                         'throttle_ms': data.get('throttle_ms', 1000),
@@ -7725,6 +7888,17 @@ async def handle_client(websocket):
                                 tool_name,
                                 tool_code,
                                 frame_image,
+                                mode='take-photo',
+                                tool_path=tool_path,
+                                tool_metadata={
+                                    'task': data.get('task', ''),
+                                    'mode': 'take-photo',
+                                    'tool_path': tool_path,
+                                    'pr_number': data.get('pr_number'),
+                                    'branch_name': data.get('branch_name'),
+                                    'source': data.get('source'),
+                                    'repository': data.get('repository'),
+                                },
                             )
                             response_data = _build_mobile_tool_response(
                                 'tool_result', tool_name, baseline_result, datetime.now()

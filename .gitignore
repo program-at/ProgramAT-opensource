@@ -8,3 +8,6 @@ backend/user_logs/*
 
 # Copilot logs database (generated at runtime)
 backend/copilot_logs.db
+
+# Lazy legacy-tool metadata (generated at runtime)
+backend/tool_metadata.db

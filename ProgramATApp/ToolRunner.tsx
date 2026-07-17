@@ -46,6 +46,8 @@ interface Tool {
   pr_number?: number;
   pr_title?: string;
   branch_name?: string;
+  source?: string;
+  repository?: string;
   custom_gpt?: boolean;
   gpt_query?: string;
   system_instruction?: string;
@@ -947,6 +949,10 @@ export default function ToolRunner({
       tool_language: selectedTool.language,
       input: '',
       task: selectedTool.description || selectedTool.name,
+      pr_number: selectedTool.pr_number,
+      branch_name: selectedTool.branch_name,
+      source: selectedTool.source,
+      repository: selectedTool.repository,
       frame: {
         base64: frameData.base64,
         width: frameData.width,
@@ -999,6 +1005,10 @@ export default function ToolRunner({
       tool_language: selectedTool.language,
       input: '',
       task: selectedTool.description || selectedTool.name,
+      pr_number: selectedTool.pr_number,
+      branch_name: selectedTool.branch_name,
+      source: selectedTool.source,
+      repository: selectedTool.repository,
       throttle_ms: 1000, // Process 1 frame per second
     };
 

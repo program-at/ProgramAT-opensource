@@ -1,4 +1,6 @@
 import ast
+import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -11,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import litellm_utils
 import model_router
 import stream_server
+import tool_metadata_store
 from validate_generated_tools import validate_take_photo_baseline
 
 
@@ -678,7 +681,11 @@ def main(image, input_data):
         )
         with patch.object(
             stream_server, "call_take_photo_baseline_vlm", return_value="Waving"
-        ) as gemini, patch.object(stream_server, "tool_copilot_llm_call") as router:
+        ) as gemini, patch.object(
+            stream_server, "tool_copilot_llm_call"
+        ) as router, patch.object(
+            stream_server, "_predict_legacy_tool_difficulty"
+        ) as predictor, self.assertLogs(stream_server.logger, level="INFO") as logs:
             result = stream_server._run_take_photo_baseline("gesture", code, b"image")
 
         self.assertEqual(result, "Waving")
@@ -687,12 +694,19 @@ def main(image, input_data):
             mode="take-photo", request_id=None, difficulty_start="moondream",
         )
         router.assert_not_called()
+        predictor.assert_not_called()
+        self.assertIn("difficulty_source=generation", "\n".join(logs.output))
 
     def test_runtime_uses_updated_tool_prompt_from_modified_code(self):
-        original = 'TOOL_NAME = "mail"\nTOOL_PROMPT = "Identify important mail."\n'
+        original = (
+            'TOOL_NAME = "mail"\n'
+            'TOOL_PROMPT = "Identify important mail."\n'
+            'TOOL_DIFFICULTY_START = "gemini_flash_lite"\n'
+        )
         updated = (
             'TOOL_NAME = "mail"\n'
             'TOOL_PROMPT = "Identify important mail and briefly label each important item."\n'
+            'TOOL_DIFFICULTY_START = "gemini_flash_lite"\n'
         )
         with patch.object(
             stream_server, "call_take_photo_baseline_vlm", return_value="answer"
@@ -712,21 +726,98 @@ def main(image, input_data):
             ["gemini_flash_lite", "gemini_flash_lite"],
         )
 
-    def test_runtime_defaults_invalid_tool_prediction_to_gemini(self):
+    def test_lazy_prediction_failure_defaults_and_persists_gemini(self):
         code = (
             'TOOL_NAME = "mail"\n'
             'TOOL_PROMPT = "Identify important mail."\n'
             'TOOL_DIFFICULTY_START = "not-valid"\n'
         )
-        with patch.object(
-            stream_server, "call_take_photo_baseline_vlm", return_value="answer"
-        ) as helper, self.assertLogs(stream_server.logger, level="WARNING") as logs:
-            stream_server._run_take_photo_baseline("mail", code, b"image")
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            tool_metadata_store, "DB_PATH", Path(directory) / "metadata.db"
+        ), patch.object(
+            stream_server,
+            "_predict_legacy_tool_difficulty",
+            side_effect=RuntimeError("parser unavailable"),
+        ) as predictor, self.assertLogs(stream_server.logger, level="INFO") as logs:
+            first = stream_server._resolve_tool_difficulty_start("mail", code)
+            second = stream_server._resolve_tool_difficulty_start("mail", code)
 
-        self.assertEqual(
-            helper.call_args.kwargs["difficulty_start"], "gemini_flash_lite"
-        )
-        self.assertIn("safe_default=gemini_flash_lite", "\n".join(logs.output))
+        self.assertEqual((first, second), ("gemini_flash_lite", "gemini_flash_lite"))
+        predictor.assert_called_once()
+        output = "\n".join(logs.output)
+        self.assertIn("difficulty_source=lazy_prediction", output)
+        self.assertIn("difficulty_source=cache", output)
+
+    def test_legacy_tool_is_predicted_once_persisted_and_shared_by_modes(self):
+        code = 'TOOL_NAME = "legacy"\nTOOL_PROMPT = "Identify the visible object."\n'
+        photo_metadata = {
+            "mode": "take-photo",
+            "task": "Identify the object",
+            "branch_name": "main",
+        }
+        streaming_metadata = {**photo_metadata, "mode": "streaming"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            tool_metadata_store, "DB_PATH", Path(directory) / "metadata.db"
+        ), patch.object(
+            stream_server, "_predict_legacy_tool_difficulty", return_value="moondream"
+        ) as predictor, self.assertLogs(stream_server.logger, level="INFO") as logs:
+            first = stream_server._resolve_tool_difficulty_start(
+                "legacy", code, tool_path="tools/legacy.py", metadata=photo_metadata
+            )
+            second = stream_server._resolve_tool_difficulty_start(
+                "legacy", code, tool_path="tools/legacy.py", metadata=streaming_metadata
+            )
+            tool_id = stream_server._stable_tool_identifier(
+                "legacy", "tools/legacy.py", photo_metadata
+            )
+            prompt_hash = hashlib.sha256(
+                b"Identify the visible object."
+            ).hexdigest()
+            persisted = tool_metadata_store.get_difficulty_start(tool_id, prompt_hash)
+
+        self.assertEqual((first, second, persisted), ("moondream",) * 3)
+        predictor.assert_called_once()
+        output = "\n".join(logs.output)
+        self.assertIn("difficulty_source=lazy_prediction", output)
+        self.assertIn("difficulty_source=cache", output)
+
+    def test_legacy_prediction_is_recomputed_when_tool_prompt_changes(self):
+        original = 'TOOL_PROMPT = "Identify the visible object."\n'
+        updated = 'TOOL_PROMPT = "Read the label and explain the dosage."\n'
+        metadata = {"branch_name": "main"}
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            tool_metadata_store, "DB_PATH", Path(directory) / "metadata.db"
+        ), patch.object(
+            stream_server,
+            "_predict_legacy_tool_difficulty",
+            side_effect=("moondream", "gemini_flash_lite"),
+        ) as predictor:
+            first = stream_server._resolve_tool_difficulty_start(
+                "legacy", original, tool_path="tools/legacy.py", metadata=metadata
+            )
+            second = stream_server._resolve_tool_difficulty_start(
+                "legacy", updated, tool_path="tools/legacy.py", metadata=metadata
+            )
+
+        self.assertEqual((first, second), ("moondream", "gemini_flash_lite"))
+        self.assertEqual(predictor.call_count, 2)
+
+    def test_lazy_prediction_reuses_issue_parser_in_one_llama_call(self):
+        response = self._completion(json.dumps({"difficulty_start": "gpt5"}))
+        with patch.object(
+            stream_server, "system_llm_call", return_value=response
+        ) as llama:
+            predicted = stream_server._predict_legacy_tool_difficulty(
+                "legacy",
+                "Determine whether it is safe to cross and explain uncertainty.",
+                {"mode": "streaming", "task": "Crossing safety guidance"},
+            )
+
+        self.assertEqual(predicted, "gpt5")
+        llama.assert_called_once()
+        parser_prompt = llama.call_args.kwargs["messages"][0]["content"]
+        self.assertIn("Existing TOOL_PROMPT", parser_prompt)
+        self.assertIn("Crossing safety guidance", parser_prompt)
 
     def test_runtime_rejects_tools_without_a_prompt(self):
         with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):

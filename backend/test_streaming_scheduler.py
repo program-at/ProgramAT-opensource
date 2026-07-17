@@ -205,6 +205,8 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
                 "language": "python",
                 "code": 'TOOL_PROMPT = "Original fused streaming prompt."',
                 "input": {},
+                "difficulty_start": "gpt5",
+                "difficulty_metadata": {"branch_name": "main"},
             },
             "exec_env": {
                 "parsed_input": {},
@@ -217,8 +219,8 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         websocket = AsyncMock()
 
         def finish_after_restart(*args, **kwargs):
-            self.assertEqual(args[3], "streaming")
-            self.assertEqual(args[4], "9")
+            self.assertEqual(kwargs["mode"], "streaming")
+            self.assertEqual(kwargs["request_id"], "9")
             stream_server.active_streaming_tools["client"] = {
                 "generation": 5, "tool": tool_config["tool"]
             }
@@ -249,6 +251,8 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
                 "language": "python",
                 "code": 'TOOL_PROMPT = "Original fused streaming prompt."',
                 "input": {},
+                "difficulty_start": "gpt5",
+                "difficulty_metadata": {"branch_name": "main"},
             },
             "exec_env": {
                 "parsed_input": {},
@@ -276,8 +280,11 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             "describe",
             'TOOL_PROMPT = "Original fused streaming prompt."',
             b"selected-frame",
-            "streaming",
-            "10",
+            mode="streaming",
+            request_id="10",
+            difficulty_start="gpt5",
+            tool_path="",
+            tool_metadata={"branch_name": "main"},
         )
         websocket.send.assert_awaited_once()
         payload = json.loads(websocket.send.await_args.args[0])

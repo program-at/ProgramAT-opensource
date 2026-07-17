@@ -103,6 +103,12 @@ Generated tools store it as `TOOL_DIFFICULTY_START`. At runtime that key selects
 the corresponding suffix of `default_reasoning`; missing or invalid metadata
 uses `gemini_flash_lite`. Runtime frames do not trigger another difficulty call.
 
+Legacy tools without the constant are handled lazily on first activation. The
+backend reuses the issue-extraction Llama parser once with the stored
+`TOOL_PROMPT`, then writes the result to `backend/tool_metadata.db`. Cache keys
+include stable tool provenance and the prompt SHA-256, so take-photo and
+streaming share one prediction while a prompt edit triggers recomputation.
+
 Execution modes are distinct:
 
 - `planner_enabled: false`, `routing_enabled: false`: bypass generated tool stages and call `default_llm_when_routing_disabled` once with the original image.
