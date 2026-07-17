@@ -218,5 +218,4 @@ def call_take_photo_baseline_vlm(
         prompt=prompt,
         image=image,
         request_id=request_id,
-        difficulty_start=difficulty_start,
     )

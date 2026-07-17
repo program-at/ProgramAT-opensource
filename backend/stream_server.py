@@ -1719,26 +1719,17 @@ def _run_take_photo_baseline(
 ) -> str:
     """Execute the P2 fused prompt through the mode's policy-configured cascade."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
-    if difficulty_start not in {'moondream', 'gemini_flash_lite', 'gpt5'}:
-        difficulty_start = _resolve_tool_difficulty_start(
-            tool_name,
-            tool_code,
-            tool_path=tool_path,
-            metadata=tool_metadata,
-        )
     logger.info(
         "[P2] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
-        "request_id=%s predicted_difficulty=%s",
+        "request_id=%s condition=C5_PARALLEL_AGGREGATION",
         mode,
         request_id or 'generated',
-        difficulty_start,
     )
     return call_take_photo_baseline_vlm(
         image=image,
         prompt=prompt,
         mode=mode,
         request_id=request_id,
-        difficulty_start=difficulty_start,
     )
 
 

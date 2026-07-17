@@ -16,13 +16,17 @@ streaming:
 
 mode_execution:
   take-photo:
-    cascade: default_reasoning
+    cascade: c5_parallel_aggregation
     planner_mode: P2_FUSED_PROMPT
   streaming:
-    cascade: default_reasoning
+    cascade: c5_parallel_aggregation
     planner_mode: P2_FUSED_PROMPT
 
 implementations:
+  nvidia_hosted_vision:
+    kind: nvidia_hosted
+    model: nvidia/nemotron-nano-12b-v2-vl
+
   moondream_cloud:
     kind: moondream_cloud
     model: moondream/moondream3-preview
@@ -65,6 +69,14 @@ implementations:
     model_name: yolo11n.pt
 
 cascade_profiles:
+  c5_parallel_aggregation:
+    parallel_models:
+      - nvidia_hosted_vision
+      - gemini_flash_lite
+      - gpt4o-mini
+    aggregator: gpt4o-mini
+    condition: C5_PARALLEL_AGGREGATION
+
   default_reasoning:
     candidates:
       - moondream_cloud

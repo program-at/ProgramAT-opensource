@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import asyncio
 import io
 import json
 import logging
@@ -13,6 +14,7 @@ import time
 import uuid
 import urllib.request
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +23,12 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Seque
 
 import yaml
 import moondream_provider
+from nvidia_hosted_client import (
+    NvidiaHostedClient,
+    TimedFrame,
+    build_multi_image_request,
+    normalize_image_data_uri,
+)
 
 from litellm_utils import call_model, call_openai_responses_model, extract_text
 
@@ -217,6 +225,7 @@ class ResolvedExecutionPolicy:
     difficulty_starts: Mapping[str, str]
     default_difficulty_start: str
     implementations: Mapping[str, ImplementationProfile]
+    aggregator: str = ""
 
 
 ImplementationExecutor = Callable[
@@ -383,12 +392,36 @@ def resolve_execution_policy(
         raise ExecutionPolicyError(
             f"Mode {normalized_mode!r} references unknown cascade {cascade_name!r}"
         )
-    candidates = tuple(
+    condition = str(profile.get("condition") or "").strip()
+    parallel_models = tuple(
+        str(value).strip() for value in profile.get("parallel_models", [])
+        if str(value).strip()
+    )
+    candidates = parallel_models or tuple(
         str(value).strip() for value in profile.get("candidates", [])
         if str(value).strip()
     )
+    aggregator = str(profile.get("aggregator") or "").strip()
     evaluator = str(profile.get("evaluator") or "").strip()
     result_passing = str(profile.get("result_passing") or "").strip().lower()
+    implementations = load_implementation_profiles(path)
+    if condition == "C5_PARALLEL_AGGREGATION":
+        if len(candidates) != 3 or not aggregator:
+            raise ExecutionPolicyError(
+                f"Cascade {cascade_name!r} requires three parallel_models and an aggregator"
+            )
+        unknown = {*candidates, aggregator} - set(implementations)
+        if unknown:
+            raise ExecutionPolicyError(
+                f"Cascade {cascade_name!r} references unknown implementations: {sorted(unknown)}"
+            )
+        return ResolvedExecutionPolicy(
+            mode=normalized_mode, cascade=cascade_name, candidates=candidates,
+            evaluator="", result_passing="parallel_answers", condition=condition,
+            planner_mode=str(mode_config.get("planner_mode") or "").strip(),
+            difficulty_starts={}, default_difficulty_start="",
+            implementations=implementations, aggregator=aggregator,
+        )
     raw_difficulty_starts = profile.get("difficulty_starts", {})
     if not isinstance(raw_difficulty_starts, dict):
         raise ExecutionPolicyError(
@@ -428,7 +461,6 @@ def resolve_execution_policy(
             f"Unsupported result_passing={result_passing!r}; "
             "C3 requires 'failed_attempts'"
         )
-    implementations = load_implementation_profiles(path)
     referenced = {*candidates, evaluator} if evaluator else set(candidates)
     unknown = referenced - set(implementations)
     if unknown:
@@ -441,7 +473,7 @@ def resolve_execution_policy(
         candidates=candidates,
         evaluator=evaluator,
         result_passing=result_passing,
-        condition=str(profile.get("condition") or "").strip(),
+        condition=condition,
         planner_mode=str(mode_config.get("planner_mode") or "").strip(),
         difficulty_starts=difficulty_starts,
         default_difficulty_start=default_difficulty_start,
@@ -604,6 +636,50 @@ def _openai_responses_executor(profile, messages, images, metadata) -> Implement
         image_items[0],
         reasoning_effort=str(metadata.get("reasoning_effort") or "medium"),
     )
+    return ImplementationResult(_simple_response(text), {"text": text})
+
+
+def _nvidia_hosted_executor(profile, messages, images, metadata) -> ImplementationResult:
+    """Call the YAML-selected NVIDIA hosted VLM with one original frame."""
+    if not profile.model:
+        raise ExecutionPolicyError(
+            f"NVIDIA hosted implementation {profile.name!r} has no model"
+        )
+    image_items = list(images or [])
+    if not image_items:
+        raise RuntimeError(
+            f"NVIDIA hosted implementation {profile.name!r} requires an image"
+        )
+    prompt = next(
+        (
+            str(message.get("content") or "").strip()
+            for message in reversed(messages or [])
+            if isinstance(message, dict) and message.get("role") == "user"
+        ),
+        "",
+    )
+    image_uri = "data:image/jpeg;base64," + base64.b64encode(
+        _image_bytes(image_items[0])
+    ).decode("ascii")
+    request = build_multi_image_request(
+        profile.model,
+        prompt,
+        [TimedFrame(0.0, normalize_image_data_uri(image_uri))],
+        int(metadata.get("max_tokens") or 160),
+    )
+
+    async def call_hosted() -> str:
+        client = NvidiaHostedClient(
+            os.getenv("NVIDIA_HOSTED_API_BASE_URL", "https://integrate.api.nvidia.com/v1"),
+            os.getenv("NVIDIA_HOSTED_API_KEY", ""),
+            float(os.getenv("NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS", "60")),
+        )
+        try:
+            return await client.chat_completions(request)
+        finally:
+            await client.close()
+
+    text = asyncio.run(call_hosted())
     return ImplementationResult(_simple_response(text), {"text": text})
 
 
@@ -1403,6 +1479,7 @@ def _groundingdino_executor(profile, messages, images, metadata) -> Implementati
 IMPLEMENTATION_EXECUTORS: Dict[str, ImplementationExecutor] = {
     "model": _model_executor,
     "openai_responses": _openai_responses_executor,
+    "nvidia_hosted": _nvidia_hosted_executor,
     "moondream_cloud": _moondream_cloud_executor,
     "mistral_ocr": _mistral_ocr_executor,
     "tesseract": _tesseract_executor,
@@ -1455,6 +1532,144 @@ def _difficulty_candidate_suffix(
     return predicted, start_model, policy.candidates[start_index:], source
 
 
+def _c5_aggregation_prompt(original_prompt: str, answers: Mapping[str, str]) -> str:
+    labeled_answers = "\n\n".join(
+        f"<{model}_answer>\n{answer}\n</{model}_answer>"
+        for model, answer in answers.items()
+    )
+    return (
+        "Give one concise, audio-friendly final answer to the original task using "
+        "the model answers below. Return only the answer, without explanation.\n\n"
+        f"<original_task_prompt>\n{original_prompt}\n</original_task_prompt>\n\n"
+        f"{labeled_answers}"
+    )
+
+
+def run_parallel_aggregation(
+    policy: ResolvedExecutionPolicy,
+    original_prompt: str,
+    original_image: Any,
+    *,
+    request_id: Optional[str] = None,
+) -> str:
+    """Run every C5 vision model concurrently, then aggregate successful answers."""
+    prompt = str(original_prompt).strip()
+    inference_id = request_id or uuid.uuid4().hex
+    total_started = time.perf_counter()
+    answers: Dict[str, str] = {}
+    failed_models: List[str] = []
+
+    def call_candidate(candidate_name: str) -> tuple[str, str, float]:
+        started = time.perf_counter()
+        profile = policy.implementations[candidate_name]
+        executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
+        if executor is None:
+            raise ExecutionPolicyError(
+                f"No executor for implementation kind {profile.kind!r}"
+            )
+        output = executor(
+            profile,
+            [{"role": "user", "content": prompt}],
+            [original_image],
+            {
+                "num_retries": 0,
+                "reasoning_effort": "medium",
+                "preserve_original_prompt": True,
+                "prompt_source": "tool_prompt",
+                "task_text": prompt,
+                "mode": policy.mode,
+                "request_id": inference_id,
+                "condition": policy.condition,
+            },
+        )
+        answer = _response_text(output.response)
+        if not answer:
+            raise RuntimeError("model returned an empty response")
+        return candidate_name, answer, (time.perf_counter() - started) * 1000
+
+    with ThreadPoolExecutor(max_workers=len(policy.candidates)) as pool:
+        futures = {
+            pool.submit(call_candidate, candidate): (candidate, time.perf_counter())
+            for candidate in policy.candidates
+        }
+        for future in as_completed(futures):
+            candidate, submitted_at = futures[future]
+            try:
+                name, answer, latency_ms = future.result()
+                answers[name] = answer
+                logger.info(
+                    "[C5] call_type=parallel_model_call mode=%s request_id=%s "
+                    "model=%s latency_ms=%.1f status=success output=%r",
+                    policy.mode, inference_id, name, latency_ms, answer,
+                )
+            except Exception as exc:
+                failed_models.append(candidate)
+                logger.warning(
+                    "[C5] call_type=parallel_model_call mode=%s request_id=%s "
+                    "model=%s latency_ms=%.1f "
+                    "status=failed error_type=%s",
+                    policy.mode, inference_id, candidate,
+                    (time.perf_counter() - submitted_at) * 1000, type(exc).__name__,
+                )
+
+    parallel_ms = (time.perf_counter() - total_started) * 1000
+    logger.info(
+        "[C5] call_type=parallel_model_call mode=%s request_id=%s "
+        "total_parallel_latency_ms=%.1f failed_models=%s",
+        policy.mode, inference_id, parallel_ms, failed_models,
+    )
+    if not answers:
+        raise RuntimeError(
+            f"C5 parallel models all failed: {', '.join(failed_models)}"
+        )
+
+    # Preserve policy order in the labeled aggregator input despite completion order.
+    ordered_answers = {name: answers[name] for name in policy.candidates if name in answers}
+    aggregator_profile = policy.implementations[policy.aggregator]
+    if aggregator_profile.kind != "model":
+        raise ExecutionPolicyError(
+            f"C5 aggregator {policy.aggregator!r} must use the text-capable model executor"
+        )
+    aggregator = IMPLEMENTATION_EXECUTORS.get(aggregator_profile.kind)
+    if aggregator is None:
+        raise ExecutionPolicyError(
+            f"No executor for aggregator kind {aggregator_profile.kind!r}"
+        )
+    aggregator_started = time.perf_counter()
+    aggregation_prompt = _c5_aggregation_prompt(prompt, ordered_answers)
+    logger.info(
+        "[C5] call_type=aggregator_call mode=%s request_id=%s aggregator=%s "
+        "image_included=false successful_models=%s input=%r",
+        policy.mode, inference_id, policy.aggregator, list(ordered_answers),
+        aggregation_prompt,
+    )
+    aggregated = aggregator(
+        aggregator_profile,
+        [{"role": "user", "content": aggregation_prompt}],
+        [],
+        {
+            "num_retries": 0,
+            "reasoning_effort": "medium",
+            "aggregator": True,
+            "mode": policy.mode,
+            "request_id": inference_id,
+            "condition": policy.condition,
+        },
+    )
+    final_answer = _response_text(aggregated.response)
+    if not final_answer:
+        raise RuntimeError("C5 aggregator returned an empty response")
+    aggregator_ms = (time.perf_counter() - aggregator_started) * 1000
+    logger.info(
+        "[C5] call_type=aggregator_call mode=%s "
+        "condition=C5_PARALLEL_AGGREGATION request_id=%s "
+        "aggregator=%s aggregator_latency_ms=%.1f failed_models=%s output=%r",
+        policy.mode, inference_id, policy.aggregator, aggregator_ms, failed_models,
+        final_answer,
+    )
+    return final_answer
+
+
 def run_cascade(
     policy: ResolvedExecutionPolicy,
     original_prompt: str,
@@ -1464,6 +1679,10 @@ def run_cascade(
     difficulty_start: Any = None,
 ) -> str:
     """Execute C3 with original inputs plus ordered rejected textual attempts."""
+    if policy.condition == "C5_PARALLEL_AGGREGATION":
+        return run_parallel_aggregation(
+            policy, original_prompt, original_image, request_id=request_id
+        )
     if policy.result_passing != "failed_attempts":
         raise ExecutionPolicyError(
             f"Unsupported result_passing={policy.result_passing!r}"
@@ -2321,7 +2540,7 @@ __all__ = [
     "IMPLEMENTATION_EXECUTORS",
     "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
     "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
-    "resolve_execution_policy", "run_cascade", "run_mode_cascade",
+    "resolve_execution_policy", "run_cascade", "run_parallel_aggregation", "run_mode_cascade",
     "validate_execution_configuration",
     "system_llm_call", "single_stage_llm_call", "copilot_llm_call",
     "should_skip_evaluator_for_single_card",
