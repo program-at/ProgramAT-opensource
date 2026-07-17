@@ -59,7 +59,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
             if profile.name == policy.evaluator:
                 evaluator_messages.append(messages)
                 text = next(decisions)
-            elif profile.name == "moondream_cloud":
+            elif profile.name == "gemini_flash_lite":
                 text = candidate
             else:
                 text = "Important: medical letter."
@@ -118,9 +118,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
         )
 
         self.assertEqual(plain_answer, "answer-from-gpt5")
-        self.assertEqual(json_answer, "answer-from-moondream_cloud")
+        self.assertEqual(json_answer, "answer-from-gemini_flash_lite")
         self.assertEqual(plain_order[-1], "gpt5")
-        self.assertEqual(json_order, ["moondream_cloud", "gpt4o-mini"])
+        self.assertEqual(json_order, ["gemini_flash_lite", "gpt4o-mini"])
 
     def test_no_visible_content_advances_without_accepting_first_candidate(self):
         policy = model_router.resolve_execution_policy("take-photo")
@@ -128,7 +128,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
 
         def executor(profile, messages, images, metadata):
             order.append(profile.name)
-            if profile.name == "moondream_cloud":
+            if profile.name == "gemini_flash_lite":
                 text = "No car is clearly visible."
             elif profile.name == policy.evaluator:
                 text = "YES"
@@ -151,7 +151,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
             answer,
             "A black Toyota sedan is directly ahead; the plate is unreadable.",
         )
-        self.assertEqual(order, ["moondream_cloud", "gemini_flash_lite", "gpt4o-mini"])
+        self.assertEqual(order, ["gemini_flash_lite", "gpt5"])
         self.assertIn(
             "reason=no_relevant_information_sufficiency_rule",
             "\n".join(logs.output),
@@ -174,14 +174,14 @@ class TestTakePhotoBaseline(unittest.TestCase):
             answer = model_router.run_cascade(policy, "Identify my Uber.", b"image")
 
         self.assertEqual(answer, partial)
-        self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
+        self.assertEqual(order, ["gemini_flash_lite", "gpt4o-mini"])
 
     def test_both_modes_resolve_order_and_evaluator_from_execution_policy(self):
         for mode in ("take-photo", "streaming"):
             policy = model_router.resolve_execution_policy(mode)
             self.assertEqual(
                 policy.candidates,
-                ("moondream_cloud", "gemini_flash_lite", "gpt5"),
+                ("gemini_flash_lite", "gpt5"),
             )
             self.assertEqual(policy.evaluator, "gpt4o-mini")
             self.assertEqual(policy.result_passing, "failed_attempts")
@@ -241,22 +241,14 @@ class TestTakePhotoBaseline(unittest.TestCase):
         self.assertEqual(answer, "answer-from-gpt5")
         self.assertEqual(
             order,
-            ["moondream_cloud", "gpt4o-mini", "gemini_flash_lite", "gpt4o-mini", "gpt5"],
+            ["gemini_flash_lite", "gpt4o-mini", "gpt5"],
         )
         self.assertEqual([call[0] for call in candidate_calls], list(policy.candidates))
         first_prompt = candidate_calls[0][1][0]["content"]
         second_prompt = candidate_calls[1][1][0]["content"]
-        third_prompt = candidate_calls[2][1][0]["content"]
         self.assertEqual(first_prompt, "Original fused prompt")
         self.assertIn("Original fused prompt", second_prompt)
-        self.assertIn("Failed attempt 1:\nanswer-from-moondream_cloud", second_prompt)
-        self.assertNotIn("answer-from-gemini_flash_lite", second_prompt)
-        self.assertIn("Failed attempt 1:\nanswer-from-moondream_cloud", third_prompt)
-        self.assertIn("Failed attempt 2:\nanswer-from-gemini_flash_lite", third_prompt)
-        self.assertLess(
-            third_prompt.index("answer-from-moondream_cloud"),
-            third_prompt.index("answer-from-gemini_flash_lite"),
-        )
+        self.assertIn("Failed attempt 1:\nanswer-from-gemini_flash_lite", second_prompt)
         for index, (_name, messages, images, metadata) in enumerate(candidate_calls):
             self.assertEqual(len(messages), 1)
             self.assertEqual(len(images), 1)
@@ -271,17 +263,11 @@ class TestTakePhotoBaseline(unittest.TestCase):
             line for line in captured_logs.output
             if "[Policy Cascade C3 Handoff]" in line
         ]
-        self.assertEqual(len(handoff_logs), 2)
-        self.assertIn("target_candidate=gemini_flash_lite", handoff_logs[0])
+        self.assertEqual(len(handoff_logs), 1)
+        self.assertIn("target_candidate=gpt5", handoff_logs[0])
         self.assertIn("failed_attempt_count=1", handoff_logs[0])
-        self.assertIn("'source_model': 'moondream_cloud'", handoff_logs[0])
-        self.assertIn("'preview': 'answer-from-moondream_cloud'", handoff_logs[0])
-        self.assertIn("target_candidate=gpt5", handoff_logs[1])
-        self.assertIn("failed_attempt_count=2", handoff_logs[1])
-        self.assertLess(
-            handoff_logs[1].index("'source_model': 'moondream_cloud'"),
-            handoff_logs[1].index("'source_model': 'gemini_flash_lite'"),
-        )
+        self.assertIn("'source_model': 'gemini_flash_lite'", handoff_logs[0])
+        self.assertIn("'preview': 'answer-from-gemini_flash_lite'", handoff_logs[0])
         for line in handoff_logs:
             self.assertIn("original_image_reused=true", line)
             self.assertIn("evaluator_feedback_passed=false", line)
@@ -332,11 +318,11 @@ class TestTakePhotoBaseline(unittest.TestCase):
                     policy, "Original streaming fused prompt", image
                 )
 
-        self.assertEqual(answer, "stream-answer-gemini_flash_lite")
+        self.assertEqual(answer, "stream-answer-gpt5")
         self.assertEqual(candidate_prompts[0], "Original streaming fused prompt")
         self.assertIn("Original streaming fused prompt", candidate_prompts[1])
         self.assertIn(
-            "Failed attempt 1:\nstream-answer-moondream_cloud",
+            "Failed attempt 1:\nstream-answer-gemini_flash_lite",
             candidate_prompts[1],
         )
         handoff_log = next(
@@ -344,9 +330,9 @@ class TestTakePhotoBaseline(unittest.TestCase):
             if "[Policy Cascade C3 Handoff]" in line
         )
         self.assertIn("mode=streaming", handoff_log)
-        self.assertIn("target_candidate=gemini_flash_lite", handoff_log)
+        self.assertIn("target_candidate=gpt5", handoff_log)
         self.assertIn("failed_attempt_count=1", handoff_log)
-        self.assertIn("'source_model': 'moondream_cloud'", handoff_log)
+        self.assertIn("'source_model': 'gemini_flash_lite'", handoff_log)
         self.assertIn("original_image_reused=true", handoff_log)
         self.assertIn("evaluator_feedback_passed=false", handoff_log)
 
@@ -366,7 +352,7 @@ class TestTakePhotoBaseline(unittest.TestCase):
             answer = model_router.run_cascade(policy, "Prompt", b"frame")
 
         self.assertEqual(answer, "Useful Moondream answer")
-        self.assertEqual(order, ["moondream_cloud", "gpt4o-mini"])
+        self.assertEqual(order, ["gemini_flash_lite", "gpt4o-mini"])
 
     def test_changing_yaml_candidate_list_changes_actual_mode_cascade(self):
         source = Path(model_router.EXECUTION_POLICY_PATH)

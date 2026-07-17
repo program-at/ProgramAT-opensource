@@ -133,45 +133,6 @@ def main(image, input_data=None):
 
         self.assertEqual(validate_generated_tools.validate_files([path]), [])
 
-    def test_rejects_non_canonical_task_category_visual_reasoning(self):
-        path = self._write_temp_tool(
-            "bad_visual_reasoning_tool.py",
-            """
-from model_router_client import copilot_llm_call
-
-def main(image, input_data=None):
-    return copilot_llm_call(
-        task_category="visual_reasoning",
-        messages=[{"role": "user", "content": "Find my Uber and guide me."}],
-        images=[image],
-        metadata={"tool_name": "bad_visual_reasoning_tool"},
-    )
-""",
-        )
-
-        failures = validate_generated_tools.validate_files([path])
-        self.assertTrue(any("non-canonical capability 'visual_reasoning'" in failure for failure in failures))
-
-    def test_rejects_independent_call_when_issue_has_three_stages(self):
-        path = self._write_temp_tool(
-            "uber_single_call_tool.py",
-            """
-from model_router_client import copilot_llm_call
-
-def main(image, input_data=None):
-    return copilot_llm_call(
-        task_category="general_reasoning",
-        messages=[{"role": "user", "content": "Handle all Uber steps in one call."}],
-        images=[image],
-        metadata={"tool_name": "uber_single_call_tool"},
-    )
-""",
-        )
-
-        failures = validate_generated_tools.validate_files([path], issue_text=self.UBER_STAGE_ISSUE)
-
-        self.assertTrue(any("ordered copilot_llm_call capabilities" in failure for failure in failures))
-
     def test_allows_explicit_calls_matching_uber_stage_capabilities(self):
         path = self._write_temp_tool(
             "uber_three_stage_tool.py",

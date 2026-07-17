@@ -67,16 +67,12 @@ from model_router import (
     STREAMING_EXECUTION_CONTEXT,
     StreamingExecutionCancelled,
     TOOL_EXECUTION_IMAGES,
-    load_capability_profiles,
-    load_global_execution_config,
-    single_stage_llm_call,
     system_llm_call,
 )
 from litellm_utils import (
     call_take_photo_baseline_vlm,
     extract_text,
 )
-from stage_decomposition import build_stage_decomposition_prompt, normalize_stage_plan
 from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
@@ -206,33 +202,6 @@ def _parse_llm_json_object(raw_text: str) -> Dict[str, Any]:
     return parsed
 
 
-
-def _build_task_stages_markdown(stage_plan: Dict[str, Any]) -> str:
-    lines = [
-        "## Task Stages",
-        "",
-    ]
-
-    stages = stage_plan.get('stages') or []
-    for index, stage in enumerate(stages, start=1):
-        lines.extend([
-            f"### Stage {index}",
-            "",
-            f"- **Goal:** {stage.get('goal') or 'Not specified'}",
-            f"- **Capability:** {stage.get('capability') or 'Not specified'}",
-            "",
-        ])
-
-    return "\n".join(lines).rstrip()
-
-
-def _append_task_stages_to_issue_body(
-    body: str,
-    stage_plan: Dict[str, Any],
-) -> str:
-    stages_section = _build_task_stages_markdown(stage_plan)
-    base = (body or '').rstrip()
-    return f"{base}\n\n{stages_section}\n"
 
 # Configuration
 HOST = os.environ.get('HOST', '127.0.0.1')
@@ -1503,25 +1472,6 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
     logger.info("[FINAL SPOKEN RESPONSE]\n%s", spoken)
 
 
-def _single_stage_tool_result(
-    tool_name: str, task: str, image, streaming: bool = False,
-    metadata: Optional[Dict[str, Any]] = None,
-):
-    """Return a direct default-model result when planning is disabled."""
-    config = load_global_execution_config()
-    if config['planner_enabled']:
-        return None
-    request_text = str(task or '').strip() or str(tool_name).replace('_', ' ')
-    logger.info("[Execution Policy] planner disabled -> single-stage execution")
-    call_metadata = dict(metadata or {})
-    call_metadata.update({'streaming': streaming, 'tool_name': tool_name})
-    return single_stage_llm_call(
-        task=request_text,
-        images=[image],
-        metadata=call_metadata,
-    )
-
-
 def _take_photo_tool_prompt(tool_name: str, tool_code: str) -> str:
     """Read the Copilot-authored TOOL_PROMPT without executing generated tool code."""
     try:
@@ -2322,27 +2272,8 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         current = active_streaming_tools.get(client_id)
         return current is not tool_config or current.get('generation', 0) != dispatched_generation
 
-    encoded_payload = (image_base64 or '').split(',', 1)[-1]
-    encoded_length = len(encoded_payload)
-    original_payload_bytes = max(0, (encoded_length * 3) // 4 - encoded_payload.count('='))
-
-    def streaming_copilot_llm_call(*args, **kwargs):
-        metadata = dict(kwargs.get('metadata') or {})
-        metadata['streaming'] = True
-        metadata.setdefault('tool_name', tool_name)
-        metadata['streaming_execution_id'] = tool_config.get('current_execution_id')
-        metadata['streaming_original_payload_bytes'] = original_payload_bytes
-        metadata['streaming_original_image'] = image_base64
-        metadata['_streaming_cancelled'] = streaming_cancelled
-        kwargs['metadata'] = metadata
-        if not kwargs.get('images'):
-            kwargs['images'] = [image]
-        return tool_copilot_llm_call(*args, **kwargs)
-
-    exec_env['exec_globals_base']['copilot_llm_call'] = streaming_copilot_llm_call
-
-    # P2 streaming resolves the same mode policy as take-photo before any legacy
-    # planner-disabled or generated-tool execution path can select a model.
+    # P2 streaming resolves the same mode policy as take-photo. Generated tool
+    # bodies are not executed per frame; TOOL_PROMPT is the complete fused task.
     if tool_language != 'python' or not tool_code:
         logger.error(
             "[Streaming] policy cascade requires a Python tool with TOOL_PROMPT "
@@ -2382,277 +2313,6 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         _log_final_tool_response(tool_name, response_data)
         await websocket.send(json.dumps(response_data))
         return True
-
-    try:
-        single_stage_result = await asyncio.to_thread(
-            _single_stage_tool_result,
-            tool_name,
-            tool.get('task', ''),
-            image,
-            True,
-            {
-                'streaming_execution_id': tool_config.get('current_execution_id'),
-                'tool_name': tool_name,
-                'streaming_original_payload_bytes': original_payload_bytes,
-                'streaming_original_image': image_base64,
-                '_streaming_cancelled': streaming_cancelled,
-            },
-        )
-    except StreamingExecutionCancelled:
-        logger.info("[Streaming] single-stage execution cancelled client=%s", client_id)
-        return False
-    if single_stage_result is not None:
-        if streaming_cancelled():
-            logger.info("[Streaming] result discarded after stop client=%s", client_id)
-            return False
-        response_data = _build_mobile_tool_response(
-            'tool_stream_result', tool_name, single_stage_result, now
-        )
-        execution_id = tool_config.get('current_execution_id')
-        response_data['execution_id'] = execution_id
-        _log_final_tool_response(tool_name, response_data)
-        await websocket.send(json.dumps(response_data))
-        return True
-
-    # Execute the tool (Python only for now)
-    if tool_language == 'python' and tool_code:
-        logger.info(f"Starting execution of streaming tool {tool_name} for {client_id}")
-        image_context_token = None
-        try:
-            # Use cached environment with frame-specific data
-            exec_globals = {
-                **exec_env['exec_globals_base'],
-                'input_data': exec_env['parsed_input'],
-                'image': image,
-                'image_base64': image_base64,
-            }
-            exec_locals = {}
-            
-            # Use cached stdout capture and clear it
-            stdout_capture = exec_env['stdout_capture']
-            stdout_capture.seek(0)
-            stdout_capture.truncate(0)
-            
-            # Run exec + function call in a thread so blocking LLM/CV calls
-            # inside the tool don't stall the event loop (which would cause
-            # the aiohttp heartbeat to miss and the app to declare disconnect).
-            import sys
-            import inspect
-            import io as _io
-
-            def _run_tool_in_thread():
-                _capture = _io.StringIO()
-                _old = sys.stdout
-                sys.stdout = _capture
-                try:
-                    exec(tool_code, exec_globals, exec_locals)
-                finally:
-                    sys.stdout = _old
-
-                exec_globals.update(exec_locals)
-
-                _result = None
-                if 'main' in exec_locals and callable(exec_locals['main']):
-                    sig = inspect.signature(exec_locals['main'])
-                    if len(sig.parameters) == 2:
-                        _result = exec_locals['main'](image, parsed_input)
-                    else:
-                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                elif 'run' in exec_locals and callable(exec_locals['run']):
-                    sig = inspect.signature(exec_locals['run'])
-                    if len(sig.parameters) == 2:
-                        _result = exec_locals['run'](image, parsed_input)
-                    else:
-                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                    sig = inspect.signature(exec_locals['process_image'])
-                    if len(sig.parameters) == 2:
-                        _result = exec_locals['process_image'](image, parsed_input)
-                    else:
-                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
-                        verbalizer = exec_locals['get_verbalizer']()
-                        if not verbalizer and GEMINI_API_KEY:
-                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                    _result = exec_locals['process_frame_for_text'](image_base64)
-                elif 'result' in exec_locals:
-                    _result = exec_locals['result']
-                else:
-                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
-                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
-                    if available_funcs or available_classes:
-                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
-
-                return _capture.getvalue(), _result
-
-            retry_count = 0
-            max_retries = 3
-            image_context_token = TOOL_EXECUTION_IMAGES.set([image])
-            printed_output = ''
-            result = None
-
-            while retry_count < max_retries:
-                try:
-                    logger.info(f"Executing {tool_name} code for {client_id}, attempt {retry_count + 1}")
-                    printed_output, result = await asyncio.to_thread(_run_tool_in_thread)
-                    logger.info(f"Tool {tool_name} completed for {client_id}: {type(result)}")
-                    break
-                except (ImportError, ModuleNotFoundError) as e:
-                    error_msg = str(e)
-                    logger.warning(f"Module error in streaming {tool_name}: {error_msg}")
-
-                    tool_config['installing_module'] = True
-                    await websocket.send(json.dumps({
-                        'type': 'module_installing',
-                        'tool_name': tool_name,
-                        'message': f"Pausing streaming to install required module...",
-                        'timestamp': datetime.now().isoformat()
-                    }))
-
-                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
-                    tool_config['installing_module'] = False
-
-                    if installed_module:
-                        logger.info(f"Installed {installed_module}, resuming streaming execution...")
-                        await websocket.send(json.dumps({
-                            'type': 'module_installed',
-                            'tool_name': tool_name,
-                            'module': installed_module,
-                            'message': f"Successfully installed {installed_module}. Resuming streaming...",
-                            'timestamp': datetime.now().isoformat()
-                        }))
-                        common_modules = module_mgr.get_common_modules()
-                        exec_globals.update(common_modules)
-                        retry_count += 1
-                    else:
-                        await websocket.send(json.dumps({
-                            'type': 'module_install_failed',
-                            'tool_name': tool_name,
-                            'error': error_msg,
-                            'message': f"Failed to install module: {error_msg}",
-                            'timestamp': datetime.now().isoformat()
-                        }))
-                        raise
-                except Exception:
-                    raise
-            
-            # Get captured print output
-            printed_output = stdout_capture.getvalue()
-            
-            # IMPORTANT: Merge exec_locals into exec_globals so functions can see each other
-            # This allows main() to call helper functions defined in the same file
-            exec_globals.update(exec_locals)
-            
-            # Get result from function or variable
-            # Check function signatures to avoid calling helper functions
-            import inspect
-            
-            result = None
-            
-            # Try main() - highest priority
-            if 'main' in exec_locals and callable(exec_locals['main']):
-                try:
-                    logger.info(f"Calling main() function for {tool_name} on {client_id}")
-                    sig = inspect.signature(exec_locals['main'])
-                    if len(sig.parameters) == 2:  # Should take (image, input_data)
-                        result = await asyncio.to_thread(exec_locals['main'], image, parsed_input)
-                        logger.info(f"main() returned result for {tool_name}: {type(result)}")
-                    else:
-                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                except Exception as e:
-                    logger.error(f"Error calling main(): {e}")
-            
-            # Try run() - second priority
-            elif 'run' in exec_locals and callable(exec_locals['run']):
-                try:
-                    sig = inspect.signature(exec_locals['run'])
-                    if len(sig.parameters) == 2:
-                        result = await asyncio.to_thread(exec_locals['run'], image, parsed_input)
-                    else:
-                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                except Exception as e:
-                    logger.error(f"Error calling run(): {e}")
-            
-            # Try process_image() - but check signature carefully
-            elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                try:
-                    sig = inspect.signature(exec_locals['process_image'])
-                    # Only call if it takes 2 params (entry point), not 1 (helper function)
-                    if len(sig.parameters) == 2:
-                        result = await asyncio.to_thread(exec_locals['process_image'], image, parsed_input)
-                    else:
-                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                except Exception as e:
-                    logger.error(f"Error calling process_image(): {e}")
-            
-            # Try process_frame_for_text() - special case for text tools
-            elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                try:
-                    # Initialize verbalizer if needed
-                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
-                        verbalizer = exec_locals['get_verbalizer']()
-                        if not verbalizer and GEMINI_API_KEY:
-                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                    result = await asyncio.to_thread(
-                        exec_locals['process_frame_for_text'], image_base64
-                    )
-                except Exception as e:
-                    logger.error(f"Error calling process_frame_for_text(): {e}")
-            
-            # Check for result variable
-            elif 'result' in exec_locals:
-                result = exec_locals['result']
-            else:
-                # Tool is a library - show available functions
-                available_funcs = [name for name, obj in exec_locals.items() 
-                                 if callable(obj) and not name.startswith('_')]
-                available_classes = [name for name, obj in exec_locals.items() 
-                                   if isinstance(obj, type) and not name.startswith('_')]
-                
-                if available_funcs or available_classes:
-                    result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
-                else:
-                    result = None
-            TOOL_EXECUTION_IMAGES.reset(image_context_token)
-            image_context_token = None
-            
-            response_data = _build_mobile_tool_response(
-                'tool_stream_result', tool_name, result, now, printed_output
-            )
-            if streaming_cancelled():
-                logger.info("[Streaming] result discarded after stop client=%s", client_id)
-                return False
-            execution_id = tool_config.get('current_execution_id')
-            response_data['execution_id'] = execution_id
-            _log_final_tool_response(tool_name, response_data)
-            logger.info(
-                "[Streaming] final response generated client=%s execution=%s text=%r",
-                client_id,
-                execution_id,
-                response_data['result'],
-            )
-            await websocket.send(json.dumps(response_data))
-            logger.info(
-                "[Streaming] websocket result sent client=%s execution=%s type=tool_stream_result tool=%s",
-                client_id,
-                execution_id,
-                tool_name,
-            )
-            return True
-            
-        except StreamingExecutionCancelled:
-            if image_context_token is not None:
-                TOOL_EXECUTION_IMAGES.reset(image_context_token)
-            logger.info("[Streaming] cascade execution cancelled client=%s", client_id)
-            return False
-        except Exception as e:
-            if image_context_token is not None:
-                TOOL_EXECUTION_IMAGES.reset(image_context_token)
-            logger.error(f"Error in streaming tool {tool_name}: {e}")
-            # Don't send errors for streaming (would be too noisy)
-            # Just log them for debugging
-            return False
 
     return False
 
@@ -5070,21 +4730,6 @@ Transcript: {transcript}
 """
 
 
-def _stage_decomposition_input(transcript: str, existing_data: Optional[dict] = None) -> str:
-    previous_prompts = list((existing_data or {}).get('original_prompts') or [])
-    prior_text = [entry.split('] ', 1)[-1] for entry in previous_prompts]
-    return "\n".join([*prior_text, transcript]).strip()
-
-
-def _merge_issue_and_stage_outputs(
-    issue_data: Dict[str, Any],
-    decomposition_data: Dict[str, Any],
-) -> Dict[str, Any]:
-    merged = dict(issue_data)
-    merged['stages'] = decomposition_data.get('stages')
-    return merged
-
-
 def _normalize_issue_creation_requirements(
     parsed_data: Dict[str, Any],
     transcript: str,
@@ -5140,96 +4785,25 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             json.dumps(issue_data, ensure_ascii=False),
         )
 
+        parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
         execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
-        if execution_mode != 'streaming':
-            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
-            parsed_data['execution_mode'] = 'take-photo'
-            parsed_data['stages'] = []
-            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
-            logger.info(
-                "Take-photo request: parser returned fields only and skipped stage decomposition",
-            )
-            return parsed_data
-
-        planner_enabled = load_global_execution_config()['planner_enabled']
-        if not planner_enabled:
-            parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
-            parsed_data['stages'] = []
-            existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-            parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
-            logger.info("Model routing disabled; skipping stage decomposition")
-            return parsed_data
-
-        try:
-            capability_names = sorted(load_capability_profiles())
-        except Exception:
-            capability_names = [
-                'general_reasoning', 'ocr', 'object_detection_localization',
-                'structured_visual_understanding', 'spatial_reasoning',
-                'navigation', 'camera_motion', 'temporal_reasoning',
-            ]
-
-        decomposition_input = _stage_decomposition_input(transcript, existing_data)
-        decomposition_prompt = build_stage_decomposition_prompt(decomposition_input)
-        decomposition_response = system_llm_call(
-            messages=[{'role': 'user', 'content': decomposition_prompt}],
-            metadata={'response_format': {'type': 'json_object'}},
+        parsed_data['execution_mode'] = (
+            'streaming' if execution_mode == 'streaming' else 'take-photo'
         )
-        decomposition_raw = extract_text(decomposition_response)
-        logger.info(
-            "Stage decomposition raw response length=%s preview=%s",
-            len(decomposition_raw),
-            decomposition_raw[:2000],
-        )
-        decomposition_data = _parse_llm_json_object(decomposition_raw)
-        logger.info(
-            "Stage decomposition output=%s",
-            json.dumps(decomposition_data, ensure_ascii=False),
-        )
-
-        normalized_decomposition = normalize_stage_plan(
-            decomposition_data,
-            capability_names,
-            source_task=decomposition_input,
-        )
-        parsed_data = _merge_issue_and_stage_outputs(issue_data, normalized_decomposition)
-        logger.info(
-            "Merged parser output=%s",
-            json.dumps(parsed_data, ensure_ascii=False),
-        )
-
-        raw_stages = parsed_data.get('stages')
-        logger.info(
-            "Planner raw stages present=%s stage_count=%s",
-            isinstance(raw_stages, list),
-            len(raw_stages) if isinstance(raw_stages, list) else 0,
-        )
-
-        logger.info(
-            "Planner normalized stage_count=%s",
-            len(parsed_data.get('stages') or []),
-        )
-
-        parsed_data = _normalize_issue_creation_requirements(parsed_data, transcript)
+        parsed_data['stages'] = []
         
         # Preserve the original transcript for bookkeeping
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
 
-        logger.info(
-            "Planner stages for issue=%s",
-            json.dumps(parsed_data.get('stages', []), ensure_ascii=False),
-        )
+        logger.info("P2 issue parser produced one fused-prompt tool with no runtime stages")
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
         return parsed_data
         
     except Exception as e:
-        logger.exception("Failed to complete issue extraction and stage decomposition")
+        logger.exception("Failed to complete issue extraction")
         _log_to_all_sessions("ERROR", f"Issue parser workflow failed: {e}")
         # Fallback to simple parsing
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
@@ -5611,15 +5185,15 @@ async def create_github_issue(text: str):
 
         if parsed_data.get('parser_failed'):
             error_message = parsed_data.get('parser_error') or 'unknown parser error'
-            logger.error("Issue creation stopped because stage decomposition failed: %s", error_message)
+            logger.error("Issue creation stopped because issue parsing failed: %s", error_message)
             _log_to_all_sessions(
                 "ERROR",
-                f"Issue creation stopped because stage decomposition failed: {error_message}",
+                f"Issue creation stopped because issue parsing failed: {error_message}",
             )
             if connected_clients:
                 await _broadcast_ws({
                     'type': 'issue_creation_error',
-                    'message': 'I could not decompose the task, so no incomplete issue was created. Please try again.',
+                    'message': 'I could not parse the task, so no incomplete issue was created. Please try again.',
                 })
             return
         
@@ -5704,23 +5278,6 @@ async def create_github_issue(text: str):
             # Fallback if template doesn't exist
             body = f"**Transcript:**\n{text}\n\n**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
 
-        issue_stages = parsed_data.get('stages') or []
-        logger.info(
-            "Issue body stage handoff: stage_count=%s",
-            len(issue_stages),
-        )
-        if issue_stages:
-            body = _append_task_stages_to_issue_body(body, {'stages': issue_stages})
-            logger.info(
-                "Including Task Stages in GitHub issue: %s",
-                json.dumps(issue_stages, ensure_ascii=False),
-            )
-            _log_to_all_sessions(
-                "INFO",
-                f"Including {len(issue_stages)} Task Stages in GitHub issue: "
-                f"{json.dumps(issue_stages, ensure_ascii=False)}",
-            )
-        
         # Create GitHub client
         g = Github(GITHUB_TOKEN)
         repo = g.get_repo(GITHUB_REPO)
@@ -7675,139 +7232,14 @@ async def handle_client(websocket):
                             _log_final_tool_response(tool_name, response_data)
                             await websocket.send(json.dumps(response_data))
                             continue
-                            
-                            # Get module manager and load common modules dynamically
-                            module_mgr = get_module_manager()
-                            common_modules = module_mgr.get_common_modules()
-                            
-                            # Create a sandboxed execution environment with image data
-                            def frame_copilot_llm_call(*args, **kwargs):
-                                metadata = dict(kwargs.get('metadata') or {})
-                                metadata.setdefault('tool_name', tool_name)
-                                kwargs['metadata'] = metadata
-                                if not kwargs.get('images'):
-                                    kwargs['images'] = [frame_image]
-                                return tool_copilot_llm_call(*args, **kwargs)
-
-                            exec_globals = {
-                                '__builtins__': __builtins__,
-                                '__file__': str(TOOLS_DIR / f'{Path(tool_name).name}.py'),
-                                'copilot_llm_call': frame_copilot_llm_call,
-                                'input_data': parsed_input,  # Use parsed input (dict or string)
-                                'image': frame_image,  # OpenCV image (numpy array)
-                                'image_base64': frame_base64,  # Base64 string
-                                'yolo_model_cache': yolo_model_cache,  # Shared YOLO model cache for performance
-                                **common_modules  # Dynamically loaded modules
-                            }
-                            
-                            # Debug: Log what we're passing to the tool
-                            logger.info(f"EXEC_GLOBALS: image is None: {frame_image is None}, image type: {type(frame_image)}, image shape: {frame_image.shape if frame_image is not None else 'N/A'}")
-                            logger.info(f"EXEC_GLOBALS: image_base64 length: {len(frame_base64) if frame_base64 else 0}")
-                            
-                            exec_locals = {}
-                            image_context_token = TOOL_EXECUTION_IMAGES.set([frame_image])
-
-                            import sys
-                            import inspect
-                            import io as _io
-
-                            _fi = frame_image
-                            _fb = frame_base64
-
-                            def _run_one_shot_in_thread():
-                                _capture = _io.StringIO()
-                                _old = sys.stdout
-                                sys.stdout = _capture
-                                try:
-                                    exec(tool_code, exec_globals, exec_locals)
-                                finally:
-                                    sys.stdout = _old
-
-                                exec_globals.update(exec_locals)
-
-                                _result = None
-                                if 'main' in exec_locals and callable(exec_locals['main']):
-                                    sig = inspect.signature(exec_locals['main'])
-                                    if len(sig.parameters) == 2:
-                                        _result = exec_locals['main'](_fi, parsed_input)
-                                    else:
-                                        logger.warning(f"main() has {len(sig.parameters)} params, expected 2")
-                                elif 'run' in exec_locals and callable(exec_locals['run']):
-                                    sig = inspect.signature(exec_locals['run'])
-                                    if len(sig.parameters) == 2:
-                                        _result = exec_locals['run'](_fi, parsed_input)
-                                    else:
-                                        logger.warning(f"run() has {len(sig.parameters)} params, expected 2")
-                                elif 'process_image' in exec_locals and callable(exec_locals['process_image']):
-                                    sig = inspect.signature(exec_locals['process_image'])
-                                    if len(sig.parameters) == 2:
-                                        _result = exec_locals['process_image'](_fi, parsed_input)
-                                    else:
-                                        logger.info(f"Skipping process_image() - has {len(sig.parameters)} params (likely a helper function)")
-                                elif 'process_frame_for_text' in exec_locals and callable(exec_locals['process_frame_for_text']):
-                                    if 'initialize_verbalizer' in exec_locals and 'get_verbalizer' in exec_locals:
-                                        verbalizer = exec_locals['get_verbalizer']()
-                                        if not verbalizer and GEMINI_API_KEY:
-                                            exec_locals['initialize_verbalizer'](GEMINI_API_KEY)
-                                    _result = exec_locals['process_frame_for_text'](_fb)
-                                elif 'result' in exec_locals:
-                                    _result = exec_locals['result']
-                                else:
-                                    available_funcs = [n for n, o in exec_locals.items() if callable(o) and not n.startswith('_')]
-                                    available_classes = [n for n, o in exec_locals.items() if isinstance(o, type) and not n.startswith('_')]
-                                    if available_funcs or available_classes:
-                                        _result = f"Tool loaded successfully.\n\nAvailable functions: {', '.join(available_funcs) if available_funcs else 'none'}\nAvailable classes: {', '.join(available_classes) if available_classes else 'none'}\n\nNote: This tool is a library. To use it, you may need to call one of these functions."
-
-                                return _capture.getvalue(), _result
-
-                            max_retries = 3
-                            retry_count = 0
-                            printed_output = ''
-                            result = None
-
-                            while retry_count < max_retries:
-                                try:
-                                    printed_output, result = await asyncio.to_thread(_run_one_shot_in_thread)
-                                    break
-                                except (ImportError, ModuleNotFoundError) as e:
-                                    error_msg = str(e)
-                                    logger.warning(f"Module error in {tool_name}: {error_msg}")
-                                    installed_module = await asyncio.to_thread(module_mgr.install_from_error, error_msg)
-                                    if installed_module:
-                                        logger.info(f"Installed {installed_module}, retrying execution...")
-                                        common_modules = module_mgr.get_common_modules()
-                                        exec_globals.update(common_modules)
-                                        retry_count += 1
-                                    else:
-                                        raise
-                                except Exception:
-                                    raise
-                            TOOL_EXECUTION_IMAGES.reset(image_context_token)
-                            image_context_token = None
-                            
-                            response_data = _build_mobile_tool_response(
-                                'tool_result', tool_name, result, datetime.now(), printed_output
-                            )
-                            logger.info(
-                                "Sending tool_result: result length=%d, audio.text length=%d",
-                                len(response_data['result']),
-                                len(response_data['audio']['text']),
-                            )
-                            _log_final_tool_response(tool_name, response_data)
-                            await websocket.send(json.dumps(response_data))
-                            
-                            logger.info(f"Tool {tool_name} executed successfully")
-                            
-                        except Exception as e:
-                            if image_context_token is not None:
-                                TOOL_EXECUTION_IMAGES.reset(image_context_token)
-                            logger.error(f"Error executing tool {tool_name}: {e}")
+                        except Exception as exc:
+                            logger.error("Error executing P2 tool %s: %s", tool_name, exc)
                             await websocket.send(json.dumps({
                                 'type': 'tool_result',
                                 'tool_name': tool_name,
                                 'status': 'error',
-                                'error': str(e),
-                                'timestamp': datetime.now().isoformat()
+                                'error': str(exc),
+                                'timestamp': datetime.now().isoformat(),
                             }))
                     else:
                         await websocket.send(json.dumps({

@@ -196,7 +196,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertIn("streaming_executor=policy_cascade", output)
         self.assertIn("nvidia_hosted_active=false", output)
 
-    async def test_c2_streaming_result_is_dropped_when_session_is_superseded(self):
+    async def test_c3_streaming_result_is_dropped_when_session_is_superseded(self):
         tool_config = {
             "generation": 4,
             "current_execution_id": 9,
@@ -225,8 +225,6 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             return "Completed old-frame C3 result"
 
         with patch.object(
-            stream_server, "_single_stage_tool_result", return_value=None
-        ), patch.object(
             stream_server, "_run_take_photo_baseline", side_effect=finish_after_restart
         ) as cascade, patch.object(
             stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline

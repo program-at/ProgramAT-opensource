@@ -1,10 +1,6 @@
 global:
-  planner_enabled: true
-  routing_enabled: true
   system_model:
     implementation: llama_planner
-  default_llm_when_routing_disabled:
-    implementation: gemini_flash_lite
 
 streaming:
   frame_selector:
@@ -67,40 +63,8 @@ implementations:
 cascade_profiles:
   default_reasoning:
     candidates:
-      - moondream_cloud
       - gemini_flash_lite
       - gpt5
     evaluator: gpt4o-mini
     result_passing: failed_attempts
     condition: C3_PASS_FAILED_ATTEMPTS
-
-  ocr:
-    candidates:
-      - mistral_ocr
-    evaluator: gpt4o-mini
-
-general_reasoning:
-  cascade: default_reasoning
-
-ocr:
-  cascade: ocr
-  specialized: true
-
-object_detection_localization:
-  implementation: yolo
-  specialized: true
-
-structured_visual_understanding:
-  cascade: default_reasoning
-
-spatial_reasoning:
-  cascade: default_reasoning
-
-navigation:
-  cascade: default_reasoning
-
-camera_motion:
-  cascade: default_reasoning
-
-temporal_reasoning:
-  cascade: default_reasoning

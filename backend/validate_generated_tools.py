@@ -10,9 +10,6 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-import yaml
-
-
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
 
@@ -38,47 +35,6 @@ ALLOWED_SHARED_TOOL_FILES = {
     "litellm_utils.py",
     "model_router_client.py",
 }
-
-CAPABILITY_PROFILES_PATH = REPO_ROOT / "backend" / "capability_profiles.yaml"
-
-
-def _load_canonical_task_categories() -> frozenset[str]:
-    with CAPABILITY_PROFILES_PATH.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle) or {}
-    capabilities = data.get("capabilities", {})
-    if not isinstance(capabilities, dict) or not capabilities:
-        raise ValueError(f"No capabilities configured in {CAPABILITY_PROFILES_PATH}")
-    return frozenset(str(name) for name in capabilities)
-
-
-CANONICAL_TASK_CATEGORIES = _load_canonical_task_categories()
-
-
-def _extract_task_stages_section(issue_text: str) -> str:
-    match = re.search(r"^##\s+Task\s+Stages\s*$", issue_text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        return ""
-
-    start = match.end()
-    remainder = issue_text[start:]
-    next_header = re.search(r"^##\s+", remainder, re.MULTILINE)
-    if next_header:
-        return remainder[: next_header.start()]
-    return remainder
-
-
-def extract_stage_capabilities(issue_text: str) -> List[str]:
-    section = _extract_task_stages_section(issue_text)
-    if not section:
-        return []
-
-    capabilities: List[str] = []
-    for cap in re.findall(r"^\s*(?:[-*]\s*)?Capability\s*:\s*`?([a-z_]+)`?\s*$", section, re.IGNORECASE | re.MULTILINE):
-        capability = cap.strip()
-        if capability in CANONICAL_TASK_CATEGORIES:
-            capabilities.append(capability)
-    return capabilities
-
 
 def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
     constants: dict[str, str] = {}
@@ -178,22 +134,6 @@ def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> L
     return failures
 
 
-def validate_stage_enforcement(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
-    failures: List[str] = []
-    stage_capabilities = extract_stage_capabilities(issue_text)
-    if not stage_capabilities:
-        return failures
-
-    actual_capabilities = extract_copilot_llm_task_categories(tool_text)
-    if actual_capabilities != stage_capabilities:
-        failures.append(
-            f"{rel_path}: ordered copilot_llm_call capabilities {actual_capabilities} do not match "
-            f"Task Stages {stage_capabilities}."
-        )
-
-    return failures
-
-
 def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
     """Enforce the unified single-call take-photo generation contract."""
     if not re.search(
@@ -252,27 +192,6 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     return failures
 
 
-def validate_canonical_task_categories(tool_text: str, rel_path: Path) -> List[str]:
-    failures: List[str] = []
-    categories = extract_copilot_llm_task_categories(tool_text)
-    unresolved_indexes = [index + 1 for index, category in enumerate(categories) if category is None]
-
-    if unresolved_indexes:
-        failures.append(
-            f"{rel_path}: copilot_llm_call() missing resolvable capability at call(s) {unresolved_indexes}."
-        )
-
-    for index, category in enumerate(categories):
-        if category is None:
-            continue
-        if category not in CANONICAL_TASK_CATEGORIES:
-            failures.append(
-                f"{rel_path}: non-canonical capability '{category}' in copilot_llm_call #{index + 1}."
-            )
-
-    return failures
-
-
 def _changed_tool_files(base_ref: str) -> List[Path]:
     try:
         result = subprocess.run(
@@ -314,10 +233,8 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
                 line_number = text.count("\n", 0, match.start()) + 1
                 failures.append(f"{rel_path}:{line_number}: forbidden generated-tool pattern: {label}")
 
-        failures.extend(validate_canonical_task_categories(text, rel_path))
         failures.extend(validate_no_stringified_copilot_results(text, rel_path))
         if issue_text:
-            failures.extend(validate_stage_enforcement(text, issue_text, rel_path))
             failures.extend(validate_take_photo_baseline(text, issue_text, rel_path))
 
     return failures
@@ -328,7 +245,7 @@ def main(argv: List[str] | None = None) -> int:
     parser.add_argument("paths", nargs="*", help="Specific tool files to validate.")
     parser.add_argument("--changed", metavar="BASE_REF", help="Validate changed tools relative to BASE_REF.")
     parser.add_argument("--all", action="store_true", help="Validate all Python tool files.")
-    parser.add_argument("--issue-file", help="Optional issue markdown/body file used for Task Stages validation.")
+    parser.add_argument("--issue-file", help="Optional issue markdown/body used for mode validation.")
     args = parser.parse_args(argv)
 
     paths: List[Path] = []

@@ -46,9 +46,9 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; reasoning uses `MOONDREAM_API_KEY`, `GEMINI_API_KEY`, and `OPENAI_API_KEY`; OCR uses `MISTRAL_API_KEY` and optionally `MISTRAL_OCR_MODEL` (default `mistral-ocr-latest`), with Google Application Default Credentials from `GOOGLE_APPLICATION_CREDENTIALS` for the Google Vision fallback.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; the active P2+C3 flow uses `GEMINI_API_KEY` and `OPENAI_API_KEY`.
   - System calls use the fixed system model.
-  - Detection uses one implementation. OCR tries Mistral OCR before Google Vision. Reasoning capabilities try Moondream Cloud, Gemini Flash Lite, and GPT-4o in order, escalating on provider failure or when the evaluator finds a response insufficient.
+  - Gemini 3.1 Flash Lite runs first, GPT-4o-mini evaluates its answer, and GPT-5 runs only when Gemini fails or is rejected.
 
 ### LLM Interfaces
 
@@ -62,9 +62,8 @@ fallback behavior; those backend details are not generated prompt stages.
 
 Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
 
-Generated take-photo tools call `call_take_photo_baseline_vlm(...)`; capability-based
-tools call `copilot_llm_call(...)`. Both resolve concrete implementations from
-`execution_policy.yaml`:
+Generated tools call `call_take_photo_baseline_vlm(...)`. Both take-photo and
+streaming resolve the same concrete implementations from `execution_policy.yaml`:
 
 ```yaml
 mode_execution:
@@ -77,29 +76,15 @@ mode_execution:
 
 cascade_profiles:
   default_reasoning:
-    candidates: [moondream_cloud, gemini_flash_lite, gpt5]
+    candidates: [gemini_flash_lite, gpt5]
     evaluator: gpt4o-mini
     result_passing: failed_attempts
-  ocr:
-    candidates: [mistral_ocr, google_vision]
-    evaluator: gpt4o-mini
-
-navigation:
-  cascade: default_reasoning
-
-ocr:
-  cascade: ocr
 ```
 
-Edit `backend/execution_policy.yaml` to toggle routing, change system/default models, reorder cascade candidates, switch evaluators, or choose a fixed implementation. No Python change is required; concrete implementation metadata lives in the same file.
-
-Execution modes are distinct:
-
-- `planner_enabled: false`, `routing_enabled: false`: bypass generated tool stages and call `default_llm_when_routing_disabled` once with the original image.
-- `planner_enabled: true`, `routing_enabled: false`: execute planned stages; fixed detector/OCR stages remain specialized, while every model stage uses `default_llm_when_routing_disabled` without a cascade.
-- `planner_enabled: true`, `routing_enabled: true`: execute planned stages using their configured fixed implementations or cascades.
-
-`copilot_llm_call(...)` returns a dictionary containing `response`, `artifact`, `implementation`, and `capability`. Generated tools execute planner-produced stages as explicit ordered calls and decide which artifact fields to pass to each subsequent call. The backend does not run capability sequences.
+Edit `backend/execution_policy.yaml` to change the active cascade order or evaluator.
+There are no runtime planner stages, difficulty starts, capability-specific routes,
+or alternate experiment modes. Complex dependent logic belongs inside the single
+Copilot-authored fused `TOOL_PROMPT`.
 
 ### Optional
 

@@ -29,7 +29,6 @@ logger = logging.getLogger(__name__)
 _STREAMING_VLM_DEBUG_LOCK = threading.Lock()
 _STREAMING_VLM_DEBUG_SAVED = False
 BACKEND_DIR = Path(__file__).resolve().parent
-CAPABILITY_PROFILES_PATH = BACKEND_DIR / "capability_profiles.yaml"
 EXECUTION_POLICY_PATH = BACKEND_DIR / "execution_policy.yaml"
 DEFAULT_FALLBACK_CAPABILITY = "general_reasoning"
 LEGACY_CAPABILITY_ALIASES = {
@@ -237,112 +236,6 @@ def normalize_capability_name(capability: Any) -> str:
     return LEGACY_CAPABILITY_ALIASES.get(name, name)
 
 
-def load_capability_profiles(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[str, Dict[str, Any]]:
-    capabilities = _load_yaml(path).get("capabilities", {})
-    if not isinstance(capabilities, dict) or not capabilities:
-        raise ValueError(f"No capabilities configured in {path}")
-    profiles: Dict[str, Dict[str, Any]] = {}
-    for capability, raw in capabilities.items():
-        name = str(capability).strip()
-        if isinstance(raw, list):
-            values = [str(value).strip() for value in raw if str(value).strip()]
-            profiles[name] = {
-                "description": values[0] if values else "",
-                "include_examples": values[1:],
-                "exclude_examples": [],
-                "notes": "",
-            }
-            continue
-        if not isinstance(raw, dict):
-            raise ValueError(f"Capability {name!r} must be a list or mapping")
-        include_examples = raw.get("include_examples", []) or []
-        exclude_examples = raw.get("exclude_examples", []) or []
-        if not isinstance(include_examples, list) or not isinstance(exclude_examples, list):
-            raise ValueError(f"Capability {name!r} examples must be lists")
-        profiles[name] = {
-            "description": str(raw.get("description", "")).strip(),
-            "include_examples": [str(value).strip() for value in include_examples if str(value).strip()],
-            "exclude_examples": [str(value).strip() for value in exclude_examples if str(value).strip()],
-            "notes": str(raw.get("notes", "")).strip(),
-        }
-    return profiles
-
-
-def load_capability_descriptions(path: Path = CAPABILITY_PROFILES_PATH) -> Dict[str, List[str]]:
-    descriptions = {}
-    for capability, profile in load_capability_profiles(path).items():
-        values = [profile["description"], *profile["include_examples"]]
-        if profile["notes"]:
-            values.append(profile["notes"])
-        cleaned = [value for value in values if value]
-        if not cleaned:
-            raise ValueError(f"Capability {capability!r} must have a description or example")
-        descriptions[capability] = cleaned
-    return descriptions
-
-
-def load_execution_policies(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, Dict[str, Any]]:
-    config = _load_yaml(path)
-    config.pop("global", None)
-    config.pop("implementations", None)
-    config.pop("streaming", None)
-    config.pop("mode_execution", None)
-    cascade_profiles = config.pop("cascade_profiles", {})
-    if not isinstance(cascade_profiles, dict):
-        raise ExecutionPolicyError("cascade_profiles must be a mapping")
-
-    policies = {}
-    for capability, raw in config.items():
-        if not isinstance(raw, dict):
-            raise ExecutionPolicyError(f"Capability {capability!r} must be a mapping")
-        implementation = str(raw.get("implementation") or "").strip()
-        cascade_name = str(raw.get("cascade") or "").strip()
-        if bool(implementation) == bool(cascade_name):
-            raise ExecutionPolicyError(
-                f"Capability {capability!r} must define exactly one of implementation or cascade"
-            )
-        if implementation:
-            policy = {
-                "candidates": [implementation],
-                "evaluator": None,
-                "cascade": None,
-                "specialized": bool(raw.get("specialized", False)),
-            }
-        else:
-            profile = cascade_profiles.get(cascade_name)
-            if not isinstance(profile, dict):
-                raise ExecutionPolicyError(
-                    f"Capability {capability!r} references unknown cascade profile {cascade_name!r}"
-                )
-            candidates = [
-                str(value).strip()
-                for value in profile.get("candidates", [])
-                if str(value).strip()
-            ]
-            evaluator = str(profile.get("evaluator") or "").strip()
-            if not candidates or not evaluator:
-                raise ExecutionPolicyError(
-                    f"Cascade profile {cascade_name!r} requires candidates and evaluator"
-                )
-            policy = {
-                "candidates": candidates,
-                "evaluator": evaluator,
-                "cascade": cascade_name,
-                "specialized": bool(raw.get("specialized", False)),
-            }
-        policies[str(capability).strip()] = policy
-    taxonomy = set(load_capability_profiles())
-    if set(policies) != taxonomy:
-        missing = taxonomy - set(policies)
-        extra = set(policies) - taxonomy
-        raise ExecutionPolicyError(
-            "Capability taxonomy mismatch between capability_profiles.yaml and "
-            "execution_policy.yaml; "
-            f"missing_policies={sorted(missing)}, unknown_policies={sorted(extra)}"
-        )
-    return policies
-
-
 def load_implementation_profiles(path: Path = EXECUTION_POLICY_PATH) -> Dict[str, ImplementationProfile]:
     raw_profiles = _load_yaml(path).get("implementations", {})
     if not isinstance(raw_profiles, dict) or not raw_profiles:
@@ -419,19 +312,6 @@ def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str
     raw = _load_yaml(path).get("global", {})
     if not isinstance(raw, dict):
         raise ExecutionPolicyError("global execution policy must be a mapping")
-    planner_enabled = raw.get("planner_enabled")
-    routing_enabled = raw.get("routing_enabled")
-    if not isinstance(planner_enabled, bool):
-        raise ExecutionPolicyError("global.planner_enabled must be true or false")
-    if not isinstance(routing_enabled, bool):
-        raise ExecutionPolicyError("global.routing_enabled must be true or false")
-    if not planner_enabled and routing_enabled:
-        logger.warning(
-            "[Execution Policy] planner_enabled=false with routing_enabled=true is invalid; "
-            "forcing routing_enabled=false"
-        )
-        routing_enabled = False
-
     def implementation_name(field: str) -> str:
         value = raw.get(field)
         if not isinstance(value, dict) or not str(value.get("implementation") or "").strip():
@@ -439,12 +319,7 @@ def load_global_execution_config(path: Path = EXECUTION_POLICY_PATH) -> Dict[str
         return str(value["implementation"]).strip()
 
     return {
-        "planner_enabled": planner_enabled,
-        "routing_enabled": routing_enabled,
         "system_model": implementation_name("system_model"),
-        "default_llm_when_routing_disabled": implementation_name(
-            "default_llm_when_routing_disabled"
-        ),
     }
 
 
@@ -453,23 +328,11 @@ def _log_global_execution_config(
     implementations: Mapping[str, ImplementationProfile],
 ) -> None:
     system_name = config["system_model"]
-    default_name = config["default_llm_when_routing_disabled"]
     system_profile = implementations.get(system_name)
-    default_profile = implementations.get(default_name)
-    logger.info(
-        "[Execution Policy] planner_enabled=%s routing_enabled=%s",
-        str(config["planner_enabled"]).lower(),
-        str(config["routing_enabled"]).lower(),
-    )
     logger.info(
         "[Execution Policy] system_model=%s/%s",
         system_name,
         system_profile.model if system_profile else "<unknown>",
-    )
-    logger.info(
-        "[Execution Policy] default_llm_when_routing_disabled=%s/%s",
-        default_name,
-        default_profile.model if default_profile else "<unknown>",
     )
 
 
@@ -477,43 +340,16 @@ def validate_execution_configuration(
     policies: Optional[Mapping[str, Mapping[str, Any]]] = None,
     implementations: Optional[Mapping[str, ImplementationProfile]] = None,
 ) -> None:
-    validate_default_modes = policies is None and implementations is None
-    taxonomy = set(load_capability_profiles())
-    policies = policies or load_execution_policies()
     implementations = implementations or load_implementation_profiles()
     global_config = load_global_execution_config()
-
-    policy_names = set(policies)
-    if policy_names != taxonomy:
-        missing = taxonomy - policy_names
-        extra = policy_names - taxonomy
-        raise ExecutionPolicyError(
-            "Capability taxonomy mismatch between capability_profiles.yaml and "
-            "execution_policy.yaml; "
-            f"missing_policies={sorted(missing)}, unknown_policies={sorted(extra)}"
-        )
-
-    configured_names = {
-        name
-        for policy in policies.values()
-        for name in [*policy["candidates"], policy.get("evaluator")]
-        if name
-    }
-    unknown = configured_names - set(implementations)
-    if unknown:
-        raise ExecutionPolicyError(f"Unknown implementations: {', '.join(sorted(unknown))}")
-    global_names = {
-        global_config["system_model"],
-        global_config["default_llm_when_routing_disabled"],
-    }
+    global_names = {global_config["system_model"]}
     unknown_global = global_names - set(implementations)
     if unknown_global:
         raise ExecutionPolicyError(
             f"Unknown global implementations: {', '.join(sorted(unknown_global))}"
         )
-    if validate_default_modes:
-        for mode in ("take-photo", "streaming"):
-            resolve_execution_policy(mode)
+    for mode in ("take-photo", "streaming"):
+        resolve_execution_policy(mode)
 
 
 def _response_text(response: Any) -> str:
@@ -1643,69 +1479,6 @@ def system_llm_call(messages=None, images=None, metadata=None):
     return call_model(profile.model, messages or [], images=images, metadata=metadata)
 
 
-def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
-    """Bypass planning and routing and call the configured default model once."""
-    config = load_global_execution_config()
-    implementations = load_implementation_profiles()
-    _log_global_execution_config(config, implementations)
-    implementation = config["default_llm_when_routing_disabled"]
-    profile = implementations[implementation]
-    if profile.kind != "model" or not profile.model:
-        raise ExecutionPolicyError(
-            f"Default implementation {implementation!r} must define kind=model and model"
-        )
-    call_messages = list(messages or [])
-    call_messages.insert(0, {"role": "system", "content": AUDIO_RESPONSE_PROMPT})
-    streaming = bool((metadata or {}).get("streaming") or STREAMING_EXECUTION_CONTEXT.get())
-    if streaming:
-        call_messages.insert(0, {"role": "system", "content": STREAMING_RESPONSE_PROMPT})
-        logger.info("[Streaming] concise response prompt enabled")
-    if task:
-        call_messages.append({"role": "user", "content": str(task)})
-    logger.info("[Execution Policy] planner disabled -> single-stage execution")
-    logger.info(
-        "[Execution Policy] single-stage implementation=%s model=%s",
-        implementation,
-        profile.model,
-    )
-    call_metadata = dict(metadata or {})
-    call_images = list(images or [])
-    total_started = time.perf_counter()
-    preprocess_ms = 0.0
-    _raise_if_streaming_cancelled(call_metadata, "single_stage", streaming)
-    if streaming and call_images:
-        call_images, preprocess_ms = _preprocess_streaming_images(
-            call_images, DEFAULT_FALLBACK_CAPABILITY,
-            call_metadata.get("streaming_original_payload_bytes"),
-            call_metadata.get("streaming_original_image"),
-        )
-    model_started = time.perf_counter()
-    response = call_model(
-        profile.model, call_messages, images=call_images, metadata=call_metadata
-    )
-    model_ms = (time.perf_counter() - model_started) * 1000
-    _raise_if_streaming_cancelled(call_metadata, "single_stage_result", streaming)
-    text = _response_text(response)
-    if streaming:
-        normalized_model = profile.model.lower()
-        gemini_ms = model_ms if "gemini" in normalized_model else 0.0
-        gpt4o_ms = model_ms if "gpt-4o" in normalized_model or "gpt4o" in normalized_model else 0.0
-        logger.info(
-            "[Streaming Timing] execution=%s total_ms=%.1f image_preprocess_ms=%.1f "
-            "moondream_ms=0.0 evaluator1_ms=0.0 gemini_ms=%.1f evaluator2_ms=0.0 "
-            "gpt4o_ms=%.1f selected=%s",
-            call_metadata.get("streaming_execution_id", "unknown"),
-            (time.perf_counter() - total_started) * 1000,
-            preprocess_ms, gemini_ms, gpt4o_ms, implementation,
-        )
-    return {
-        "response": text,
-        "artifact": {"text": text},
-        "implementation": implementation,
-        "capability": DEFAULT_FALLBACK_CAPABILITY,
-    }
-
-
 def copilot_llm_call(
     capability=None,
     messages=None,
@@ -1715,518 +1488,51 @@ def copilot_llm_call(
     task_category=None,
     goal=None,
 ):
-    """Execute exactly one capability using its first configured implementation."""
-    requested = capability or task_category or DEFAULT_FALLBACK_CAPABILITY
-    declared = normalize_capability_name(requested)
-    if declared != str(requested).strip().lower():
-        logger.warning("[Execution Policy] normalized legacy capability %r to %r", requested, declared)
-    implementations = load_implementation_profiles()
-    global_config = load_global_execution_config()
-    _log_global_execution_config(global_config, implementations)
-    if not global_config["planner_enabled"]:
-        return single_stage_llm_call(
-            task=goal or task,
-            messages=messages,
-            images=images,
-            metadata=metadata,
-        )
-    policies = load_execution_policies()
-    if declared not in policies:
-        raise ExecutionPolicyError(
-            f"Unknown capability {declared!r}; supported capabilities are: {sorted(policies)}"
-        )
-    policy = policies[declared]
-    logger.info("[Execution Policy] planner enabled -> executing staged pipeline")
-    if global_config["routing_enabled"]:
-        logger.info("[Execution Policy] routing enabled -> selecting implementations")
-        candidates = policy["candidates"]
-        evaluator_name = policy.get("evaluator")
-    elif policy.get("specialized"):
-        logger.info(
-            "[Execution Policy] routing disabled -> preserving specialized candidates=%s",
-            policy["candidates"],
-        )
-        candidates = policy["candidates"]
-        evaluator_name = policy.get("evaluator")
-    else:
-        logger.info("[Execution Policy] routing disabled -> using default model for all LLM stages")
-        candidates = [global_config["default_llm_when_routing_disabled"]]
-        evaluator_name = None
-
+    """Compatibility tool interface backed only by the active P2+C3 mode policy."""
+    del capability, task_category
     call_metadata = dict(metadata or {})
-    call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
-    call_metadata["capability"] = declared
-    streaming_log = bool(
+    prompt_parts = [
+        str(message.get("content") or "").strip()
+        for message in (messages or [])
+        if isinstance(message, dict)
+        and message.get("role") == "user"
+        and str(message.get("content") or "").strip()
+    ]
+    for value in (task, goal):
+        if str(value or "").strip():
+            prompt_parts.append(str(value).strip())
+    prompt = "\n\n".join(prompt_parts)
+    if not prompt:
+        raise ValueError("copilot_llm_call requires a task-specific prompt")
+    image_items = list(images or TOOL_EXECUTION_IMAGES.get() or [])
+    if not image_items:
+        raise ValueError("copilot_llm_call requires an image")
+    mode = "streaming" if (
         call_metadata.get("streaming") or STREAMING_EXECUTION_CONTEXT.get()
+    ) else "take-photo"
+    answer = run_mode_cascade(
+        mode,
+        prompt,
+        image_items[0],
+        request_id=str(call_metadata.get("streaming_execution_id") or "") or None,
     )
-    if task and "task_text" not in call_metadata:
-        call_metadata["task_text"] = task
-    call_messages = list(messages or [])
-    call_messages.insert(0, {"role": "system", "content": AUDIO_RESPONSE_PROMPT})
-    target_labels = _target_labels(call_metadata)
-    grounding_context = [goal, task, call_metadata.get("goal"), call_metadata.get("task_text")]
-    grounding_context.extend(message.get("content") for message in call_messages if isinstance(message, dict))
-    card_task_mode, card_task_reason = moondream_provider.card_mode_reason(
-        " ".join(str(value) for value in grounding_context if value)
-    )
-    if card_task_mode:
-        logger.info("[Card Analysis] card_mode=true reason=%s", card_task_reason)
-    if not target_labels and any(_mentions_exit(value) for value in grounding_context):
-        target_labels = list(EXIT_TARGET_LABELS)
-        call_metadata["target_labels"] = target_labels
-    if declared == "object_detection_localization":
-        logger.info("[Target Grounding] object_detection_localization target_labels=%s", target_labels)
-    previous_artifact = call_metadata.get("previous_stage_artifact")
-    if declared == "navigation":
-        if not target_labels and isinstance(previous_artifact, dict):
-            target_labels = _target_labels(previous_artifact)
-            call_metadata["target_labels"] = target_labels
-        if target_labels and previous_artifact is not None:
-            previous_artifact = _filter_target_artifact(previous_artifact, target_labels)
-            call_metadata["previous_stage_artifact"] = previous_artifact
-            logger.info("[Target Grounding] navigation target_artifact=%s", previous_artifact)
-        legacy_output = call_metadata.get("previous_stage_output")
-        if target_labels and previous_artifact is None and legacy_output is not None:
-            logger.info("[Target Grounding] navigation target_artifact=%s", legacy_output)
-            matching_alias = any(
-                alias in str(legacy_output).lower()
-                for target in target_labels
-                for alias in TARGET_LABEL_ALIASES.get(target, {target})
-            )
-            if not matching_alias:
-                previous_artifact = None
-        target_text = ", ".join(target_labels) or "the requested destination"
-        call_messages.insert(0, {
-            "role": "system",
-            "content": NAVIGATION_SYSTEM_PROMPT +
-            f" The navigation target is: {target_text}. "
-            "Never substitute another detected object for this target.",
-        })
-    if _artifact_is_useful(previous_artifact):
-        call_messages.append({
-            "role": "user",
-            "content": "Useful previous-stage artifact (additional context): "
-            + json.dumps(previous_artifact, ensure_ascii=False, default=str),
-        })
-    elif previous_artifact is not None or call_metadata.get("previous_stage_output") is not None:
-        logger.info(
-            "[Stage Handoff] previous artifact unusable -> dropping artifact and using original image"
-        )
-    if goal:
-        call_metadata["goal"] = str(goal)
-        call_messages.append({"role": "user", "content": str(goal)})
-    call_images = list(images or TOOL_EXECUTION_IMAGES.get() or [])
-    cascade_started = time.perf_counter()
-    timing = {
-        "image_preprocess_ms": 0.0,
-        "moondream_ms": 0.0,
-        "evaluator1_ms": 0.0,
-        "gemini_ms": 0.0,
-        "evaluator2_ms": 0.0,
-        "gpt4o_ms": 0.0,
-    }
-    if streaming_log and call_images:
-        candidate_kinds = {
-            implementations[name].kind for name in candidates if name in implementations
-        }
-        if declared == "ocr" or candidate_kinds & {"model", "moondream_cloud"}:
-            call_images, timing["image_preprocess_ms"] = _preprocess_streaming_images(
-                call_images, declared,
-                call_metadata.get("streaming_original_payload_bytes"),
-                call_metadata.get("streaming_original_image"),
-            )
-
-    execution_label = call_metadata.get("streaming_execution_id", "unknown")
-
-    def record_candidate_timing(name: str, elapsed_ms: float) -> None:
-        normalized = name.lower()
-        if "moondream" in normalized:
-            timing["moondream_ms"] += elapsed_ms
-        elif "gemini" in normalized:
-            timing["gemini_ms"] += elapsed_ms
-        elif "gpt4o" in normalized or "gpt-4o" in normalized:
-            timing["gpt4o_ms"] += elapsed_ms
-
-    def log_streaming_timing(selected_name: str) -> None:
-        if not streaming_log:
-            return
-        logger.info(
-            "[Streaming Timing] execution=%s total_ms=%.1f image_preprocess_ms=%.1f "
-            "moondream_ms=%.1f evaluator1_ms=%.1f gemini_ms=%.1f "
-            "evaluator2_ms=%.1f gpt4o_ms=%.1f selected=%s",
-            execution_label, (time.perf_counter() - cascade_started) * 1000,
-            timing["image_preprocess_ms"], timing["moondream_ms"],
-            timing["evaluator1_ms"], timing["gemini_ms"],
-            timing["evaluator2_ms"], timing["gpt4o_ms"], selected_name,
-        )
-
-    output = None
-    implementation = ""
-    best_output = None
-    best_implementation = ""
-    selected = False
-    evaluator_count = 0
-    for index, candidate in enumerate(candidates):
-        if streaming_log and _streaming_cancelled(call_metadata):
-            log_streaming_timing("cancelled")
-        _raise_if_streaming_cancelled(call_metadata, f"candidate:{candidate}", streaming_log)
-        if streaming_log:
-            logger.info(
-                "[Streaming] implementation candidate=%s capability=%s",
-                candidate,
-                declared,
-            )
-        logger.info("[Execution Policy] capability=%s trying=%s", declared, candidate)
-        logger.info("[Execution Policy] capability=%s candidate=%s", declared, candidate)
-        started_at = time.perf_counter()
-        if declared == "ocr":
-            logger.info("[OCR] trying=%s", candidate)
-        try:
-            profile = implementations[candidate]
-            executor = IMPLEMENTATION_EXECUTORS.get(profile.kind)
-            if executor is None:
-                raise ExecutionPolicyError(
-                    f"No executor for implementation kind {profile.kind!r}"
-                )
-            candidate_output = executor(profile, call_messages, call_images, call_metadata)
-        except Exception as exc:
-            record_candidate_timing(candidate, (time.perf_counter() - started_at) * 1000)
-            if isinstance(exc, StreamingExecutionCancelled):
-                log_streaming_timing("cancelled")
-                raise
-            if declared == "ocr":
-                logger.info(
-                    "[OCR] implementation=%s latency_ms=%.1f",
-                    candidate,
-                    (time.perf_counter() - started_at) * 1000,
-                )
-            logger.warning(
-                "[Execution Policy] capability=%s implementation=%s failed=%s",
-                declared,
-                candidate,
-                exc,
-            )
-            continue
-        record_candidate_timing(candidate, (time.perf_counter() - started_at) * 1000)
-        if streaming_log and _streaming_cancelled(call_metadata):
-            log_streaming_timing("cancelled")
-        _raise_if_streaming_cancelled(
-            call_metadata, f"evaluator_after:{candidate}", streaming_log
-        )
-        response_text = _response_text(candidate_output.response)
-        raw_main_model_output = response_text
-        tool_name = call_metadata.get("tool_name", "")
-        task_type = call_metadata.get("task_type") or declared
-        card_result_valid = False
-        card_result_clean = False
-        if card_task_mode:
-            upstream_artifact = (
-                dict(candidate_output.artifact)
-                if isinstance(candidate_output.artifact, dict)
-                else {}
-            )
-            raw_card_response = upstream_artifact.get("raw_response", response_text)
-            raw_main_model_output = raw_card_response
-            logger.info(
-                "[Card Analysis] implementation=%s raw_response=%s",
-                candidate,
-                json.dumps(raw_card_response, ensure_ascii=False),
-            )
-            if "card_result_clean" in upstream_artifact:
-                card_details = {
-                    key: upstream_artifact[key]
-                    for key in (
-                        "raw_response", "extracted_cards", "deduped_cards",
-                        "discarded_card_tokens", "conflicting_suits",
-                        "compact_notation_detected", "mirrored_corner_filter_applied",
-                        "card_result_valid", "card_result_clean", "final_response",
-                    )
-                    if key in upstream_artifact
-                }
-            else:
-                card_details = moondream_provider.card_response_details(raw_card_response)
-            card_result_valid = card_details["card_result_valid"]
-            card_result_clean = card_details["card_result_clean"]
-            logger.info(
-                "[Card Analysis] compact_notation_detected=%s extracted_cards=%s "
-                "discarded_card_tokens=%s conflicting_suits=%s candidate_response=%s "
-                "card_result_valid=%s card_result_clean=%s",
-                str(card_details["compact_notation_detected"]).lower(),
-                json.dumps(card_details["extracted_cards"], ensure_ascii=False),
-                json.dumps(card_details["discarded_card_tokens"], ensure_ascii=False),
-                json.dumps(card_details["conflicting_suits"], ensure_ascii=False),
-                json.dumps(response_text, ensure_ascii=False),
-                str(card_result_valid).lower(),
-                str(card_result_clean).lower(),
-            )
-            artifact = upstream_artifact
-            artifact.update(card_details)
-            candidate_output.artifact = artifact
-        if declared == "ocr":
-            logger.info(
-                "[OCR] implementation=%s latency_ms=%.1f text_chars=%s",
-                candidate,
-                (time.perf_counter() - started_at) * 1000,
-                len(response_text),
-            )
-        if not response_text:
-            logger.warning(
-                "[Execution Policy] capability=%s implementation=%s failed=empty response",
-                declared,
-                candidate,
-            )
-            continue
-
-        best_output = candidate_output
-        best_implementation = candidate
-        logger.info(
-            "[Execution Policy] capability=%s implementation=%s response:\n%s",
-            declared,
-            candidate,
-            response_text,
-        )
-
-        evaluator_available = bool(
-            evaluator_name and len(candidates) > 1 and index < len(candidates) - 1
-        )
-        skip_evaluator_for_single_card, single_card_skip_reason = (
-            _single_card_evaluator_skip_reason(raw_main_model_output, tool_name, task_type)
-        )
-        evaluator_skipped = bool(evaluator_available and skip_evaluator_for_single_card)
-        if not evaluator_available:
-            single_card_skip_reason = "evaluator unavailable for this candidate"
-        logger.info(
-            "[Evaluator] tool_name=%s task_type=%s raw_main_model_output=%s "
-            "skipped=%s reason=%s",
-            json.dumps(str(tool_name), ensure_ascii=False),
-            json.dumps(str(task_type), ensure_ascii=False),
-            json.dumps(raw_main_model_output, ensure_ascii=False),
-            str(evaluator_skipped).lower(),
-            single_card_skip_reason,
-        )
-        if evaluator_skipped:
-            logger.info(
-                "[Evaluator] skipped: single visible card for visual_representation_understanding"
-            )
-        if evaluator_available and not evaluator_skipped:
-            evaluator_count += 1
-            evaluator_started = time.perf_counter()
-            task_goal = goal or call_metadata.get("goal") or call_metadata.get("task_text") or ""
-            debug_reason = os.environ.get("EVALUATOR_DEBUG_REASON", "false").lower() in {
-                "1", "true", "yes", "on",
-            }
-            logger.info("[Evaluator] task_goal=%s", json.dumps(str(task_goal), ensure_ascii=False))
-            logger.info(
-                "[Evaluator] candidate_response=%s",
-                json.dumps(response_text, ensure_ascii=False),
-            )
-            _raise_if_streaming_cancelled(
-                call_metadata, f"evaluator:{evaluator_name}", streaming_log
-            )
-            try:
-                evaluator_profile = implementations[evaluator_name]
-                evaluator = IMPLEMENTATION_EXECUTORS.get(evaluator_profile.kind)
-                if evaluator is None:
-                    raise ExecutionPolicyError(
-                        f"No executor for evaluator implementation kind {evaluator_profile.kind!r}"
-                    )
-                previous_text = _previous_stage_text(call_metadata, previous_artifact)
-                evaluator_metadata = {
-                    "temperature": 0,
-                    "max_tokens": 80 if debug_reason else 3,
-                    "capability": declared,
-                    "evaluator": True,
-                }
-                logger.info("[Evaluator] image_included=false")
-                evaluation_prompt = EVALUATION_PROMPT.format(
-                    capability=declared,
-                    goal=task_goal,
-                    previous_text=previous_text,
-                    response=response_text,
-                )
-                if debug_reason:
-                    evaluation_prompt += (
-                        "\nDebug output format:\nDECISION: YES or NO\n"
-                        "REASON: one short sentence"
-                    )
-                evaluation = evaluator(
-                    evaluator_profile,
-                    [{
-                        "role": "user",
-                        "content": evaluation_prompt,
-                    }],
-                    [],
-                    evaluator_metadata,
-                )
-                raw_evaluation = _response_text(evaluation.response).strip()
-                if debug_reason:
-                    decision_match = re.search(
-                        r"DECISION:\s*(YES|NO)\b", raw_evaluation, re.IGNORECASE
-                    )
-                    reason_match = re.search(
-                        r"REASON:\s*(.+)", raw_evaluation, re.IGNORECASE | re.DOTALL
-                    )
-                    raw_decision = decision_match.group(1).upper() if decision_match else ""
-                    debug_reason_text = reason_match.group(1).strip() if reason_match else "unavailable"
-                else:
-                    raw_decision = raw_evaluation.upper()
-                    debug_reason_text = ""
-                if raw_decision not in {"YES", "NO"}:
-                    raise ValueError("evaluator did not return YES or NO")
-                decision = raw_decision
-            except Exception as exc:
-                if evaluator_count <= 2:
-                    timing[f"evaluator{evaluator_count}_ms"] += (
-                        time.perf_counter() - evaluator_started
-                    ) * 1000
-                if isinstance(exc, StreamingExecutionCancelled):
-                    log_streaming_timing("cancelled")
-                    raise
-                logger.warning(
-                    "[Execution Policy] capability=%s evaluator=%s decision=FAILED error=%s",
-                    declared,
-                    evaluator_name,
-                    exc,
-                )
-                continue
-
-            if evaluator_count <= 2:
-                timing[f"evaluator{evaluator_count}_ms"] += (
-                    time.perf_counter() - evaluator_started
-                ) * 1000
-            if streaming_log and _streaming_cancelled(call_metadata):
-                log_streaming_timing("cancelled")
-            _raise_if_streaming_cancelled(
-                call_metadata, f"evaluator_result:{evaluator_name}", streaming_log
-            )
-
-            logger.info(
-                "[Execution Policy] capability=%s evaluator=%s decision=%s",
-                declared,
-                evaluator_name,
-                decision,
-            )
-            logger.info("[Evaluator] decision=%s", decision)
-            if debug_reason:
-                logger.info(
-                    "[Evaluator] reason=%s",
-                    json.dumps(debug_reason_text, ensure_ascii=False),
-                )
-            elif logger.isEnabledFor(logging.DEBUG):
-                reason_started = time.perf_counter()
-                try:
-                    _raise_if_streaming_cancelled(
-                        call_metadata, f"evaluator_reason:{evaluator_name}", streaming_log
-                    )
-                    reason_output = evaluator(
-                        evaluator_profile,
-                        [{
-                            "role": "user",
-                            "content": EVALUATION_REASON_PROMPT.format(
-                                capability=declared,
-                                goal=task_goal,
-                                previous_text=previous_text,
-                                response=response_text,
-                                decision=decision,
-                            ),
-                        }],
-                        [],
-                        {
-                            "temperature": 0,
-                            "max_tokens": 60,
-                            "capability": declared,
-                            "evaluator_reason": True,
-                        },
-                    )
-                    reason = " ".join(_response_text(reason_output.response).split())
-                    logger.debug("[Evaluator] reason=%s", json.dumps(reason, ensure_ascii=False))
-                    logger.debug(
-                        "[Evaluator] decision=%s reason=%s",
-                        decision, json.dumps(reason, ensure_ascii=False),
-                    )
-                except Exception as exc:
-                    if isinstance(exc, StreamingExecutionCancelled):
-                        log_streaming_timing("cancelled")
-                        raise
-                    logger.debug(
-                        "[Evaluator] reason=%s",
-                        json.dumps(f"reason unavailable: {exc}"),
-                    )
-                finally:
-                    if evaluator_count <= 2:
-                        timing[f"evaluator{evaluator_count}_ms"] += (
-                            time.perf_counter() - reason_started
-                        ) * 1000
-            if streaming_log:
-                logger.info(
-                    "[Streaming] evaluator=%s capability=%s decision=%s",
-                    evaluator_name,
-                    declared,
-                    decision,
-                )
-            if decision == "NO" and streaming_log and _streaming_acceptance_guard(
-                task_goal, response_text
-            ):
-                decision = "YES"
-                logger.info(
-                    "[Streaming] acceptance_guard=accepted capability=%s candidate=%s",
-                    declared, candidate,
-                )
-                logger.info("[Evaluator] decision=YES source=streaming_acceptance_guard")
-            if decision == "NO":
-                continue
-
-        output = candidate_output
-        implementation = candidate
-        selected = True
-        logger.info(
-            "[Execution Policy] capability=%s selected implementation=%s",
-            declared,
-            candidate,
-        )
-        break
-
-    if not selected:
-        if best_output is not None:
-            output = best_output
-            implementation = best_implementation
-            logger.info(
-                "[Execution Policy] capability=%s fallback=%s",
-                declared,
-                best_implementation,
-            )
-        else:
-            fallback_text = "The previous stage could not produce a reliable result."
-            output = ImplementationResult(
-                _simple_response(fallback_text),
-                {"text": fallback_text, "accepted": False, "error": "stage_failed"},
-            )
-            implementation = "fallback"
-            logger.warning("[Execution Policy] capability=%s fallback=none", declared)
-    final_text = _response_text(output.response)
-    artifact = output.artifact
-    if artifact is None:
-        artifact = {"text": final_text}
-    log_streaming_timing(implementation)
     return {
-        "response": final_text,
-        "artifact": artifact,
-        "implementation": implementation,
-        "capability": declared,
+        "response": answer,
+        "artifact": {"text": answer},
+        "implementation": "policy_cascade",
+        "capability": DEFAULT_FALLBACK_CAPABILITY,
     }
 
 
 __all__ = [
-    "BACKEND_DIR", "CAPABILITY_PROFILES_PATH", "EXECUTION_POLICY_PATH",
-    "LEGACY_CAPABILITY_ALIASES", "NAVIGATION_SYSTEM_PROMPT", "AUDIO_RESPONSE_PROMPT", "TOOL_EXECUTION_IMAGES",
+    "BACKEND_DIR", "EXECUTION_POLICY_PATH", "TOOL_EXECUTION_IMAGES",
     "EVALUATION_PROMPT", "EVALUATION_REASON_PROMPT", "STREAMING_RESPONSE_PROMPT",
     "ImplementationProfile", "ImplementationResult", "ResolvedExecutionPolicy",
     "ExecutionPolicyError", "StreamingExecutionCancelled",
     "IMPLEMENTATION_EXECUTORS",
-    "normalize_capability_name", "load_capability_descriptions", "load_capability_profiles",
-    "load_execution_policies", "load_implementation_profiles", "load_global_execution_config",
+    "load_implementation_profiles", "load_global_execution_config",
     "resolve_execution_policy", "run_cascade", "run_mode_cascade",
     "validate_execution_configuration",
-    "system_llm_call", "single_stage_llm_call", "copilot_llm_call",
+    "system_llm_call", "copilot_llm_call",
     "should_skip_evaluator_for_single_card",
 ]
