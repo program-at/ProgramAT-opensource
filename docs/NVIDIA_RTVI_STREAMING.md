@@ -1,15 +1,16 @@
-# GPU-free hosted NVIDIA video streaming
+# GPU-free hosted video streaming
 
 The production experiment does not run local RTVI, RTSP, MediaMTX, Docker, or a
 local GPU. It buffers recent ProgramAT camera JPEGs, writes chronological frames
 to a temporary directory, encodes a short H.264 MP4 with FFmpeg, and sends that
-clip to NVIDIA's hosted OpenAI-compatible endpoint. Take-photo execution is
-unchanged.
+clip to exactly one configured provider. Take-photo execution is unchanged.
 
 The verified configuration is:
 
 ```env
 STREAMING_EXECUTION_POLICY=hosted_video_only
+VIDEO_VLM_PROVIDER=gemini
+VIDEO_GEMINI_MODEL=gemini-3.1-flash-lite-preview
 NVIDIA_VIDEO_BASE_URL=https://integrate.api.nvidia.com/v1
 NVIDIA_VIDEO_API_KEY=<secret>
 NVIDIA_VIDEO_MODEL=nvidia/nemotron-nano-12b-v2-vl
@@ -27,6 +28,11 @@ HOSTED_VIDEO_DUPLICATE_COOLDOWN_SECONDS=5
 HOSTED_VIDEO_DEBUG_SAVE=false
 ```
 
+Set `VIDEO_VLM_PROVIDER=nvidia` to use `NVIDIA_VIDEO_MODEL`. There is no
+provider cascade: Gemini and NVIDIA share capture, buffering, MP4 encoding,
+latest-clip persistence, parsing, and WebSocket delivery, but only the selected
+provider is called.
+
 On 2026-07-20, `nvidia/nemotron-nano-12b-v2-vl` accepted a 29,215-byte H.264
 MP4 through `/v1/chat/completions` using this content item:
 
@@ -35,8 +41,8 @@ MP4 through `/v1/chat/completions` using this content item:
 ```
 
 The hosted service does not expose an assumed file-upload API in this
-integration. Consequently, base64 is explicit, size-bounded, and the only
-supported input mode. There is no image or Gemini fallback.
+NVIDIA integration. Consequently, NVIDIA base64 input is explicit and
+size-bounded. Gemini uses its Files API for the same generated MP4.
 
 Tools declare `TOOL_NAME`, `EXECUTION_MODE = "hosted_video_streaming"`,
 `TOOL_PROMPT`, and optional literal `VIDEO_CONFIG`/`OUTPUT_CONFIG`. The runtime
@@ -58,6 +64,19 @@ cd backend
 ./.venv/bin/python scripts/test_nvidia_hosted_video.py \
   hosted_video_debug/<clip-directory>/clip.mp4 --played-card
 ```
+
+Compare that same clip across NVIDIA models without changing production:
+
+```bash
+./.venv/bin/python scripts/compare_nvidia_video_models.py \
+  hosted_video_debug/<clip-directory>/clip.mp4 \
+  --expected-card "jack of diamonds"
+```
+
+This includes the production model, Qwen3-VL-30B-A3B-Instruct when the endpoint
+returns it, advertised video models, and IDs in
+`NVIDIA_VIDEO_COMPARISON_MODELS`. It prints raw output, parsed cards,
+validation/correctness, and latency for each model.
 
 For app testing, restart the backend, select `played_card_rtvi`, start streaming,
 keep the cards visible for at least five seconds, play one card, wait for hosted

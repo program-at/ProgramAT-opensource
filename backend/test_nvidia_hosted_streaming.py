@@ -107,7 +107,7 @@ class TestRollingFrameBuffer(unittest.TestCase):
             "after_cards": ["nine of hearts"],
             "played_card": "jack of diamonds",
             "confidence": 0.9,
-            "evidence": "Visible before and absent after",
+            "evidence": "The jack of diamonds is readable before and absent after.",
         }))
         self.assertEqual(
             validate_played_card_event(parsed, 0.8),
@@ -147,6 +147,25 @@ class TestRollingFrameBuffer(unittest.TestCase):
             }, 0.8)
             self.assertIsNone(accepted)
 
+    def test_rejects_joker_and_evidence_card_mismatch(self):
+        base = {
+            "event_detected": True,
+            "before_cards": ["jack of diamonds", "nine of hearts"],
+            "after_cards": ["nine of hearts"],
+            "played_card": "jack of diamonds",
+            "confidence": 0.9,
+            "evidence": "The jack of diamonds is absent from the final hand.",
+        }
+        invalid = dict(base, played_card="joker of diamonds")
+        invalid["before_cards"] = ["joker of diamonds", "nine of hearts"]
+        self.assertEqual(
+            validate_played_card_event(invalid)[1], "invalid_card_in_before"
+        )
+        mismatched = dict(base, evidence="The queen of clubs was removed.")
+        self.assertEqual(
+            validate_played_card_event(mismatched)[1], "evidence_card_mismatch"
+        )
+
     def test_played_card_semantic_state_requires_silent_stable_reset(self):
         session = {
             "semantic_state": "stable_no_event",
@@ -158,6 +177,7 @@ class TestRollingFrameBuffer(unittest.TestCase):
             "after_cards": ["nine of hearts"],
             "played_card": "jack of diamonds",
             "confidence": 0.9,
+            "evidence": "The jack of diamonds is readable before and absent after.",
         }
         accepted, previous, current, reason = (
             stream_server._apply_played_card_semantic_transition(session, event)
@@ -177,6 +197,7 @@ class TestRollingFrameBuffer(unittest.TestCase):
             "after_cards": ["nine of hearts"],
             "played_card": None,
             "confidence": 0.9,
+            "evidence": "The nine of hearts remains unchanged.",
         }
         self.assertEqual(
             stream_server._apply_played_card_semantic_transition(session, stable)[3],
@@ -185,6 +206,35 @@ class TestRollingFrameBuffer(unittest.TestCase):
         self.assertIsNotNone(
             stream_server._apply_played_card_semantic_transition(session, event)[0]
         )
+
+    def test_distinct_later_non_overlapping_event_does_not_need_stable_reset(self):
+        session = {
+            "semantic_state": "stable_no_event",
+            "output_config": {"confidence_threshold": 0.8},
+            "video_config": {"maximum_overlap_for_distinct_event": 0.45},
+        }
+        def event(card, remaining):
+            return {
+                "event_detected": True,
+                "before_cards": [card, remaining],
+                "after_cards": [remaining],
+                "played_card": card,
+                "confidence": 0.9,
+                "evidence": f"The {card} is readable before and absent after.",
+            }
+        self.assertIsNotNone(
+            stream_server._apply_played_card_semantic_transition(
+                session, event("jack of diamonds", "nine of hearts"), 0, 6
+            )[0]
+        )
+        overlapping = stream_server._apply_played_card_semantic_transition(
+            session, event("nine of hearts", "queen of clubs"), 3, 9
+        )
+        self.assertEqual(overlapping[3], "distinct_event_clip_overlaps_previous")
+        later = stream_server._apply_played_card_semantic_transition(
+            session, event("nine of hearts", "queen of clubs"), 6, 12
+        )
+        self.assertIsNotNone(later[0])
 
     @staticmethod
     def _frame(index):
@@ -263,12 +313,27 @@ class TestRollingFrameBuffer(unittest.TestCase):
             self.assertIn("yuv420p", command)
             self.assertIn("4", command)
 
+    def test_last_hosted_clip_save_preserves_exact_bytes(self):
+        with __import__("tempfile").TemporaryDirectory() as directory:
+            source = Path(directory) / "encoded.mp4"
+            destination = Path(directory) / "debug" / "last_hosted_clip.mp4"
+            metadata_path = destination.with_suffix(".json")
+            source.write_bytes(b"exact-mp4-bytes")
+            with patch.object(stream_server, "HOSTED_VIDEO_LAST_CLIP_PATH", destination), \
+                 patch.object(stream_server, "HOSTED_VIDEO_LAST_METADATA_PATH", metadata_path):
+                saved = stream_server._save_last_hosted_clip(source, {"frame_count": 12})
+            self.assertEqual(saved, destination)
+            self.assertEqual(destination.read_bytes(), source.read_bytes())
+            self.assertEqual(json.loads(metadata_path.read_text())["frame_count"], 12)
+
 
 class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def _session(buffer=None):
         return {
             "generation_token": "generation-a",
+            "provider": "nvidia",
+            "model_id": "vendor/video",
             "tool_name": "assistive-tool",
             "prompt": "Find the exit",
             "frame_buffer": buffer or RollingFrameBuffer(2, 20),
@@ -279,6 +344,8 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             "window_seconds": 2,
             "interval_seconds": 0.01,
             "overlap_seconds": 0,
+            "minimum_span_seconds": 0,
+            "minimum_unique_frames": 1,
             "output_config": {},
             "temporary_paths": set(),
             "last_emitted_events": {},
@@ -346,6 +413,9 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             stream_server.active_hosted_nvidia_sessions["client"] = self._session()
             return "Exit ahead"
 
+        async def replace_with_usage(request):
+            return await replace_session(request), {}
+
         async def to_thread_inline(function, *args, **kwargs):
             return function(*args, **kwargs)
 
@@ -366,14 +436,80 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             "probe_mp4",
             return_value={"streams": [{"width": 320, "height": 240}], "format": {"duration": "2"}},
         ), patch.object(
+            stream_server,
+            "_save_last_hosted_clip",
+            return_value=Path("/tmp/last_hosted_clip.mp4"),
+        ), patch.object(
+            stream_server,
+            "HOSTED_VIDEO_DEBUG_SAVE",
+            False,
+        ), patch.object(
             stream_server.hosted_nvidia_client,
-            "chat_completions",
-            side_effect=replace_session,
+            "chat_completions_with_metadata",
+            side_effect=replace_with_usage,
         ):
             await stream_server._run_hosted_nvidia_clip(
                 websocket, "client", session, 1, [frame]
             )
         websocket.send.assert_not_awaited()
+
+    async def test_gemini_emits_one_debug_result_for_every_completed_request(self):
+        responses = [
+            json.dumps({
+                "event_detected": True,
+                "before_cards": ["two of spades", "nine of hearts"],
+                "after_cards": ["nine of hearts"],
+                "played_card": "two of spades",
+                "confidence": 0.9,
+                "evidence": "The two of spades is readable before and absent after.",
+            }),
+            json.dumps({
+                "event_detected": False,
+                "before_cards": ["nine of hearts"],
+                "after_cards": ["nine of hearts"],
+                "played_card": None,
+                "confidence": 0.9,
+                "evidence": "The same readable hand remains.",
+            }),
+            "not-json",
+        ]
+        expected = [
+            "You just played the two of spades.",
+            "No card played.",
+            "I could not determine whether a card was played.",
+        ]
+        for sequence, (content, message) in enumerate(zip(responses, expected), 1):
+            session = self._session()
+            session.update({
+                "provider": "gemini",
+                "model": None,
+                "model_id": "gemini-3.1-flash-lite-preview",
+                "output_config": {"schema": "played_card_event", "confidence_threshold": 0.8},
+            })
+            stream_server.active_hosted_nvidia_sessions["client"] = session
+            websocket = MagicMock()
+            websocket.send = AsyncMock()
+
+            async def to_thread_inline(function, *args, **kwargs):
+                return function(*args, **kwargs)
+
+            with patch.object(stream_server.asyncio, "to_thread", side_effect=to_thread_inline), \
+                 patch.object(stream_server, "encode_frames_to_mp4", return_value=100), \
+                 patch.object(stream_server, "probe_mp4", return_value={
+                     "streams": [{"width": 320, "height": 240}], "format": {"duration": "2"}
+                 }), \
+                 patch.object(stream_server, "_save_last_hosted_clip", return_value=Path("/tmp/last.mp4")), \
+                 patch.object(stream_server, "HOSTED_VIDEO_DEBUG_SAVE", False), \
+                 patch.object(stream_server, "infer_mp4_with_gemini", new=AsyncMock(return_value=(content, {"video_tokens": 10}))), \
+                 patch.object(stream_server.hosted_nvidia_client, "chat_completions_with_metadata", new=AsyncMock()) as nvidia:
+                await stream_server._run_hosted_nvidia_clip(
+                    websocket, "client", session, sequence,
+                    [TimedFrame(float(sequence), "data:image/jpeg;base64,QQ==")],
+                )
+            payload = json.loads(websocket.send.await_args.args[0])
+            self.assertEqual(payload["result"], message)
+            self.assertEqual(payload["provider"], "gemini")
+            nvidia.assert_not_awaited()
 
     async def test_cleanup_cancels_tasks_and_clears_buffer(self):
         buffer = RollingFrameBuffer(2, 20)

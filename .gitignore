@@ -8,3 +8,7 @@ backend/user_logs/*
 
 # Copilot logs database (generated at runtime)
 backend/copilot_logs.db
+
+# Exact hosted-video debug artifacts and comparison reports
+backend/debug/
+backend/hosted_video_debug/

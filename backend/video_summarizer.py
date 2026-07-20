@@ -70,6 +70,38 @@ def _is_active(file_obj) -> bool:
     return str(state) in ('ACTIVE', 'FileState.ACTIVE')
 
 
+async def infer_mp4_with_gemini(path: Path, prompt: str, model: str):
+    """Upload one MP4, run one Gemini request, and return text plus usage metadata."""
+    client = _make_client()
+    if client is None:
+        raise RuntimeError("GEMINI_API_KEY is required for Gemini video inference")
+    loop = asyncio.get_running_loop()
+    uploaded = None
+    try:
+        uploaded = await asyncio.to_thread(client.files.upload, file=path)
+        deadline = loop.time() + POLL_TIMEOUT
+        while not _is_active(uploaded):
+            state = getattr(getattr(uploaded, 'state', None), 'name', str(getattr(uploaded, 'state', '')))
+            if state == 'FAILED':
+                raise RuntimeError("Gemini rejected the uploaded MP4 during processing")
+            if loop.time() >= deadline:
+                raise TimeoutError("Gemini MP4 processing timed out")
+            await asyncio.sleep(POLL_INTERVAL)
+            uploaded = await asyncio.to_thread(client.files.get, name=uploaded.name)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=model.removeprefix('gemini/'),
+            contents=[prompt, uploaded],
+        )
+        return (response.text or '').strip(), getattr(response, 'usage_metadata', None)
+    finally:
+        if uploaded is not None and getattr(uploaded, 'name', None):
+            try:
+                await asyncio.to_thread(client.files.delete, name=uploaded.name)
+            except Exception as exc:
+                logger.warning("Could not delete Gemini temporary file %s: %s", uploaded.name, exc)
+
+
 async def _summarize_via_gcs(path: Path, mime_type: str, loop) -> str:
     """
     Upload video to GCS and summarize via Vertex AI using a gs:// URI.

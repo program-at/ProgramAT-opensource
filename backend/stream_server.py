@@ -79,7 +79,7 @@ import copilot_db
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
 from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
-from video_summarizer import summarize_video
+from video_summarizer import infer_mp4_with_gemini, summarize_video
 from nvidia_hosted_client import (
     NvidiaHostedClient,
     NvidiaHostedError,
@@ -629,6 +629,10 @@ NVIDIA_VIDEO_BASE_URL = os.getenv('NVIDIA_VIDEO_BASE_URL', NVIDIA_HOSTED_API_BAS
 NVIDIA_VIDEO_API_KEY = os.getenv('NVIDIA_VIDEO_API_KEY', NVIDIA_HOSTED_API_KEY).strip()
 NVIDIA_VIDEO_MODEL = os.getenv('NVIDIA_VIDEO_MODEL', NVIDIA_HOSTED_MODEL).strip()
 NVIDIA_VIDEO_INPUT_MODE = os.getenv('NVIDIA_VIDEO_INPUT_MODE', 'base64').strip().lower()
+VIDEO_VLM_PROVIDER = os.getenv('VIDEO_VLM_PROVIDER', 'nvidia').strip().lower()
+VIDEO_GEMINI_MODEL = os.getenv(
+    'VIDEO_GEMINI_MODEL', 'gemini-3.1-flash-lite-preview'
+).strip().removeprefix('gemini/')
 HOSTED_VIDEO_WINDOW_SECONDS = float(os.getenv('HOSTED_VIDEO_WINDOW_SECONDS', '6'))
 HOSTED_VIDEO_INTERVAL_SECONDS = float(os.getenv('HOSTED_VIDEO_INTERVAL_SECONDS', '3'))
 HOSTED_VIDEO_OVERLAP_SECONDS = float(os.getenv('HOSTED_VIDEO_OVERLAP_SECONDS', '3'))
@@ -645,6 +649,10 @@ HOSTED_VIDEO_DEBUG_SAVE = _env_flag('HOSTED_VIDEO_DEBUG_SAVE', False)
 HOSTED_VIDEO_DEBUG_DIR = Path(os.getenv(
     'HOSTED_VIDEO_DEBUG_DIR', str(Path(__file__).resolve().parent / 'hosted_video_debug')
 ))
+HOSTED_VIDEO_LAST_CLIP_PATH = Path(__file__).resolve().parent / 'debug' / 'last_hosted_clip.mp4'
+HOSTED_VIDEO_LAST_METADATA_PATH = HOSTED_VIDEO_LAST_CLIP_PATH.with_suffix('.json')
+if VIDEO_VLM_PROVIDER not in {'gemini', 'nvidia'}:
+    raise ValueError("VIDEO_VLM_PROVIDER must be 'gemini' or 'nvidia'")
 if not 0 <= HOSTED_VIDEO_OVERLAP_SECONDS < HOSTED_VIDEO_WINDOW_SECONDS:
     raise ValueError('HOSTED_VIDEO_OVERLAP_SECONDS must be less than the window')
 
@@ -653,9 +661,9 @@ rtvi_client = NvidiaRtviClient(
     NVIDIA_RTVI_REQUEST_TIMEOUT_SECONDS,
 )
 logger.info(
-    "Streaming execution policy: hosted NVIDIA video only base_url=%s model=%s",
-    NVIDIA_VIDEO_BASE_URL,
-    NVIDIA_VIDEO_MODEL or 'not-configured',
+    "Streaming execution policy: hosted video provider=%s model=%s",
+    VIDEO_VLM_PROVIDER,
+    VIDEO_GEMINI_MODEL if VIDEO_VLM_PROVIDER == 'gemini' else (NVIDIA_VIDEO_MODEL or 'not-configured'),
 )
 hosted_nvidia_client = NvidiaHostedClient(
     NVIDIA_VIDEO_BASE_URL, NVIDIA_VIDEO_API_KEY, NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS,
@@ -737,7 +745,8 @@ def _filter_rtvi_event(
 
 
 def _apply_played_card_semantic_transition(
-    session: Dict[str, Any], parsed: Dict[str, Any]
+    session: Dict[str, Any], parsed: Dict[str, Any],
+    window_start: Optional[float] = None, window_end: Optional[float] = None,
 ) -> tuple[Optional[str], str, str, str]:
     """Advance the played-card detector; stable/no-event transitions are silent."""
     previous = str(session.get('semantic_state', 'stable_no_event'))
@@ -756,12 +765,25 @@ def _apply_played_card_semantic_transition(
     played = ' '.join(str(parsed.get('played_card', '')).casefold().split())
     current = f'played_card:{played}'
     if previous != 'stable_no_event':
-        reason = (
-            'duplicate_overlapping_event' if previous == current
-            else 'event_before_stable_reset'
+        prior_window = session.get('last_emitted_event_window')
+        overlap_ratio = 1.0
+        if prior_window and window_start is not None and window_end is not None:
+            prior_start, prior_end = prior_window
+            intersection = max(0.0, min(prior_end, window_end) - max(prior_start, window_start))
+            shorter = min(prior_end - prior_start, window_end - window_start)
+            overlap_ratio = intersection / shorter if shorter > 0 else 1.0
+        maximum_overlap = float(
+            session.get('video_config', {}).get('maximum_overlap_for_distinct_event', 0.45)
         )
-        return None, previous, current, reason
+        if previous == current or overlap_ratio > maximum_overlap:
+            reason = (
+                'duplicate_overlapping_event' if previous == current
+                else 'distinct_event_clip_overlaps_previous'
+            )
+            return None, previous, current, reason
     session['semantic_state'] = current
+    if window_start is not None and window_end is not None:
+        session['last_emitted_event_window'] = (window_start, window_end)
     return accepted, previous, current, 'new_played_card_transition'
 
 
@@ -1114,6 +1136,36 @@ def _save_hosted_video_debug_bundle(
     return destination
 
 
+def _metadata_json_value(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _metadata_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_metadata_json_value(item) for item in value]
+    if hasattr(value, 'model_dump'):
+        return _metadata_json_value(value.model_dump(exclude_none=True))
+    if hasattr(value, 'to_dict'):
+        return _metadata_json_value(value.to_dict())
+    return str(value)
+
+
+def _save_last_hosted_clip(video_path: Path, metadata: Dict[str, Any]) -> Path:
+    """Atomically retain the exact MP4 used by the next hosted request."""
+    destination = HOSTED_VIDEO_LAST_CLIP_PATH
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix('.mp4.tmp')
+    shutil.copyfile(video_path, temporary)
+    os.replace(temporary, destination)
+    metadata_temporary = HOSTED_VIDEO_LAST_METADATA_PATH.with_suffix('.json.tmp')
+    metadata_temporary.write_text(
+        json.dumps(_metadata_json_value(metadata), indent=2, ensure_ascii=False),
+        encoding='utf-8',
+    )
+    os.replace(metadata_temporary, HOSTED_VIDEO_LAST_METADATA_PATH)
+    return destination
+
+
 async def _run_hosted_nvidia_clip(
     websocket,
     client_id: str,
@@ -1133,10 +1185,12 @@ async def _run_hosted_nvidia_clip(
     encoding_fps = min(HOSTED_VIDEO_OUTPUT_FPS, duration_preserving_fps)
     encoding_fps = max(0.25, encoding_fps)
     try:
-        model = session['model']
-        if not model.supports_video:
-            raise NvidiaHostedError(f"Configured model {model.id!r} is not video-capable")
-        if NVIDIA_VIDEO_INPUT_MODE != 'base64':
+        provider = session['provider']
+        model_id = session['model_id']
+        model = session.get('model')
+        if provider == 'nvidia' and (model is None or not model.supports_video):
+            raise NvidiaHostedError(f"Configured model {model_id!r} is not video-capable")
+        if provider == 'nvidia' and NVIDIA_VIDEO_INPUT_MODE != 'base64':
             raise NvidiaHostedError(
                 f"NVIDIA_VIDEO_INPUT_MODE={NVIDIA_VIDEO_INPUT_MODE!r} is unsupported by the "
                 "verified integrate.api.nvidia.com integration; configure 'base64'"
@@ -1166,11 +1220,21 @@ async def _run_hosted_nvidia_clip(
                 'encoded_height': stream_metadata.get('height'),
                 'encoded_duration_seconds': format_metadata.get('duration'),
                 'encoded_bytes': clip_bytes,
+                'provider': session['provider'],
+                'model_id': session['model_id'],
                 'orientation': (
                     'portrait' if int(stream_metadata.get('height') or 0) > int(stream_metadata.get('width') or 0)
                     else 'landscape'
                 ),
             }
+            last_clip_path = await asyncio.to_thread(
+                _save_last_hosted_clip, video_path, debug_metadata
+            )
+            logger.info(
+                "[Hosted Video] exact last clip and metadata saved client=%s clip=%s "
+                "video_path=%s metadata_path=%s",
+                client_id, clip_sequence, last_clip_path, HOSTED_VIDEO_LAST_METADATA_PATH,
+            )
             if HOSTED_VIDEO_DEBUG_SAVE:
                 debug_path = await asyncio.to_thread(
                     _save_hosted_video_debug_bundle, session, clip_sequence,
@@ -1182,19 +1246,31 @@ async def _run_hosted_nvidia_clip(
                 )
             encoding_ended = time.perf_counter()
             upload_started = encoding_ended
-            video_data_uri = await asyncio.to_thread(
-                video_file_data_uri, video_path, HOSTED_VIDEO_MAX_CLIP_BYTES
-            )
-            upload_ended = time.perf_counter()
-            request = build_video_request(
-                model.id, session['prompt'], video_data_uri, HOSTED_VIDEO_MAX_TOKENS,
-            )
             inference_started = time.perf_counter()
-            content = await hosted_nvidia_client.chat_completions(request)
+            if provider == 'gemini':
+                upload_ended = upload_started
+                content, usage = await infer_mp4_with_gemini(
+                    video_path, session['prompt'], model_id
+                )
+            else:
+                video_data_uri = await asyncio.to_thread(
+                    video_file_data_uri, video_path, HOSTED_VIDEO_MAX_CLIP_BYTES
+                )
+                upload_ended = time.perf_counter()
+                request = build_video_request(
+                    model_id, session['prompt'], video_data_uri, HOSTED_VIDEO_MAX_TOKENS,
+                )
+                content, usage = await hosted_nvidia_client.chat_completions_with_metadata(
+                    request
+                )
             inference_ended = time.perf_counter()
             logger.info(
-                "[NVIDIA Hosted Video] raw response client=%s clip=%s content=%s",
-                client_id, clip_sequence, content,
+                "[Hosted Video] response client=%s clip=%s provider=%s model_id=%s "
+                "latency_ms=%.1f video_token_usage=%s raw_response=%s",
+                client_id, clip_sequence, provider, model_id,
+                (inference_ended - inference_started) * 1000,
+                json.dumps(_metadata_json_value(usage), ensure_ascii=False, sort_keys=True),
+                content,
             )
             session['temporary_paths'].discard(str(video_path))
         encoding_latency_ms = (encoding_ended - encoding_started) * 1000
@@ -1220,26 +1296,33 @@ async def _run_hosted_nvidia_clip(
             try:
                 parsed = parse_structured_video_result(content)
             except NvidiaHostedError as exc:
-                previous_state = str(session.get('semantic_state', 'stable_no_event'))
+                parsed = None
+                decision = 'invalid_json'
+                accepted = 'I could not determine whether a card was played.'
                 logger.warning(
-                    "[NVIDIA Hosted Video] parsed result client=%s clip=%s valid=false error=%s "
-                    "previous_semantic_state=%s current_semantic_state=uncertain emitted=false "
-                    "suppression_reason=invalid_json",
-                    client_id, clip_sequence, exc, previous_state,
+                    "[Hosted Video] parsed result client=%s clip=%s provider=%s model_id=%s "
+                    "valid=false error=%s final_classification=uncertain",
+                    client_id, clip_sequence, provider, model_id, exc,
                 )
-                return
-            accepted, previous_state, current_state, decision = (
-                _apply_played_card_semantic_transition(session, parsed)
-            )
-            logger.info(
-                "[NVIDIA Hosted Video] parsed result client=%s clip=%s parsed=%s "
-                "previous_semantic_state=%s current_semantic_state=%s emitted=%s "
-                "suppression_reason=%s",
-                client_id, clip_sequence,
-                json.dumps(parsed, ensure_ascii=False, sort_keys=True),
-                previous_state, current_state, accepted is not None,
-                'none' if accepted is not None else decision,
-            )
+            else:
+                played_message, decision = validate_played_card_event(
+                    parsed,
+                    float(session['output_config'].get('confidence_threshold', 0.8)),
+                )
+                if decision == 'accepted':
+                    accepted = played_message
+                elif decision == 'stable_no_event':
+                    accepted = 'No card played.'
+                else:
+                    accepted = 'I could not determine whether a card was played.'
+                logger.info(
+                    "[Hosted Video] parsed result client=%s clip=%s provider=%s model_id=%s "
+                    "parsed=%s validation=%s final_classification=%s",
+                    client_id, clip_sequence, provider, model_id,
+                    json.dumps(parsed, ensure_ascii=False, sort_keys=True), decision,
+                    ('played_card' if decision == 'accepted' else
+                     'no_event' if decision == 'stable_no_event' else 'uncertain'),
+                )
         else:
             parsed = content
             accepted, decision = _filter_rtvi_event(
@@ -1255,13 +1338,15 @@ async def _run_hosted_nvidia_clip(
         emitted_at = time.monotonic()
         end_to_end_ms = (emitted_at - window_end) * 1000
         logger.info(
-            "[NVIDIA Hosted Video] result client=%s generation=%s clip=%s format=base64_mp4 "
+            "[Hosted Video] result client=%s generation=%s clip=%s provider=%s model_id=%s format=base64_mp4 "
             "frame_count=%s window_start=%.6f window_end=%.6f clip_bytes=%s "
             "source_fps=%.3f encoded_resolution=%sx%s encoded_duration=%s "
             "encoding_ms=%.1f upload_ms=%.1f inference_ms=%.1f total_from_clip_end_ms=%.1f",
             client_id,
             session['generation_token'],
             clip_sequence,
+            provider,
+            model_id,
             len(frames),
             window_start, window_end, clip_bytes, source_fps,
             stream_metadata.get('width'), stream_metadata.get('height'),
@@ -1283,13 +1368,15 @@ async def _run_hosted_nvidia_clip(
             'clip_sequence': clip_sequence,
             'frame_count': len(frames),
             'input_format': 'base64_mp4',
+            'provider': provider,
+            'model_id': model_id,
             'clip_window_start': window_start,
             'clip_window_end': window_end,
             'timestamp': datetime.now().isoformat(),
         }
         logger.info(
-            "[NVIDIA Hosted Video] final emitted message client=%s clip=%s payload=%s",
-            client_id, clip_sequence,
+            "[Hosted Video] final emitted message client=%s clip=%s provider=%s model_id=%s message=%s payload=%s",
+            client_id, clip_sequence, provider, model_id, accepted,
             json.dumps(response_payload, ensure_ascii=False, sort_keys=True),
         )
         await websocket.send(json.dumps(response_payload))
@@ -1314,33 +1401,47 @@ async def _hosted_nvidia_scheduler(
     session: Dict[str, Any],
 ) -> None:
     try:
-        model = await hosted_nvidia_client.select_model(NVIDIA_VIDEO_MODEL)
+        provider = session['provider']
+        if provider == 'nvidia':
+            model = await hosted_nvidia_client.select_model(NVIDIA_VIDEO_MODEL)
+            if not model.supports_video:
+                raise NvidiaHostedError(
+                    f"Configured NVIDIA_VIDEO_MODEL {model.id!r} does not support MP4 video"
+                )
+            session['model'] = model
+            session['model_id'] = model.id
+        else:
+            session['model'] = None
+            session['model_id'] = VIDEO_GEMINI_MODEL
         if active_hosted_nvidia_sessions.get(client_id) is not session:
             return
-        session['model'] = model
-        if not model.supports_video:
-            raise NvidiaHostedError(
-                f"Configured NVIDIA_VIDEO_MODEL {model.id!r} does not support MP4 video"
-            )
         session['input_format'] = 'base64_mp4'
         logger.info(
-            "[NVIDIA Hosted] session ready client=%s generation=%s model=%s format=%s",
+            "[Hosted Video] session ready client=%s generation=%s provider=%s model_id=%s format=%s",
             client_id,
             session['generation_token'],
-            model.id,
+            provider,
+            session['model_id'],
             session['input_format'],
         )
+        next_due = time.monotonic() + session['interval_seconds']
         while active_hosted_nvidia_sessions.get(client_id) is session:
-            await asyncio.sleep(session['interval_seconds'])
+            delay = next_due - time.monotonic()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            next_due = time.monotonic() + session['interval_seconds']
             request_task = session.get('request_task')
             if request_task is not None and not request_task.done():
                 session['skipped_intervals'] += 1
                 logger.info(
-                    "[NVIDIA Hosted] interval skipped client=%s reason=request_in_flight skipped=%s",
+                    "[Hosted Video] interval coalesced client=%s reason=request_in_flight "
+                    "action=process_newest_immediately_after_completion skipped=%s",
                     client_id,
                     session['skipped_intervals'],
                 )
-                continue
+                await asyncio.gather(request_task, return_exceptions=True)
+                if active_hosted_nvidia_sessions.get(client_id) is not session:
+                    return
             now = time.monotonic()
             available = [
                 frame for frame in session['frame_buffer'].snapshot(now)
@@ -1352,6 +1453,19 @@ async def _hosted_nvidia_scheduler(
                     "[NVIDIA Hosted] interval skipped client=%s reason=no_frames skipped=%s",
                     client_id,
                     session['skipped_intervals'],
+                )
+                continue
+            available_span = max(0.0, available[-1].timestamp - available[0].timestamp)
+            minimum_span = float(session.get('minimum_span_seconds', 5))
+            minimum_frames = int(session.get('minimum_unique_frames', 12))
+            if len(available) < minimum_frames or available_span < minimum_span:
+                session['skipped_intervals'] += 1
+                logger.info(
+                    "[NVIDIA Hosted] interval skipped client=%s reason=window_not_ready "
+                    "unique_frames=%s minimum_unique_frames=%s span_seconds=%.3f "
+                    "minimum_span_seconds=%.3f skipped=%s",
+                    client_id, len(available), minimum_frames, available_span,
+                    minimum_span, session['skipped_intervals'],
                 )
                 continue
             target_frames = max(2, round(session['window_seconds'] * HOSTED_VIDEO_OUTPUT_FPS))
@@ -1377,6 +1491,7 @@ async def _hosted_nvidia_scheduler(
                     websocket, client_id, session, clip_sequence, frames
                 )
             )
+            next_due = time.monotonic() + session['interval_seconds']
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1389,11 +1504,13 @@ async def _start_hosted_nvidia_session(
     client_id: str,
     data: Dict[str, Any],
 ) -> None:
-    if not NVIDIA_VIDEO_API_KEY:
-        raise ValueError('NVIDIA_VIDEO_API_KEY is required for hosted_video_streaming')
-    if not NVIDIA_VIDEO_MODEL:
-        raise ValueError('NVIDIA_VIDEO_MODEL is required for hosted_video_streaming')
-    if NVIDIA_VIDEO_INPUT_MODE != 'base64':
+    if VIDEO_VLM_PROVIDER == 'gemini' and not GEMINI_API_KEY:
+        raise ValueError('GEMINI_API_KEY is required when VIDEO_VLM_PROVIDER=gemini')
+    if VIDEO_VLM_PROVIDER == 'nvidia' and not NVIDIA_VIDEO_API_KEY:
+        raise ValueError('NVIDIA_VIDEO_API_KEY is required when VIDEO_VLM_PROVIDER=nvidia')
+    if VIDEO_VLM_PROVIDER == 'nvidia' and not NVIDIA_VIDEO_MODEL:
+        raise ValueError('NVIDIA_VIDEO_MODEL is required when VIDEO_VLM_PROVIDER=nvidia')
+    if VIDEO_VLM_PROVIDER == 'nvidia' and NVIDIA_VIDEO_INPUT_MODE != 'base64':
         raise ValueError(
             "The verified NVIDIA endpoint requires NVIDIA_VIDEO_INPUT_MODE=base64"
         )
@@ -1410,7 +1527,12 @@ async def _start_hosted_nvidia_session(
     window_seconds = float(video_config.get('window_seconds', HOSTED_VIDEO_WINDOW_SECONDS))
     interval_seconds = float(video_config.get('interval_seconds', HOSTED_VIDEO_INTERVAL_SECONDS))
     overlap_seconds = float(video_config.get('overlap_seconds', HOSTED_VIDEO_OVERLAP_SECONDS))
-    if window_seconds <= 0 or interval_seconds <= 0 or not 0 <= overlap_seconds < window_seconds:
+    minimum_span_seconds = float(video_config.get('minimum_span_seconds', 5))
+    minimum_unique_frames = int(video_config.get('minimum_unique_frames', 12))
+    if (window_seconds <= 0 or interval_seconds <= 0
+            or not 0 <= overlap_seconds < window_seconds
+            or not 0 < minimum_span_seconds <= window_seconds
+            or minimum_unique_frames < 2):
         raise ValueError('Invalid hosted-video window, interval, or overlap configuration')
     max_buffer_frames = max(
         20,
@@ -1418,6 +1540,8 @@ async def _start_hosted_nvidia_session(
     )
     session = {
         'generation_token': secrets.token_hex(16),
+        'provider': VIDEO_VLM_PROVIDER,
+        'model_id': VIDEO_GEMINI_MODEL if VIDEO_VLM_PROVIDER == 'gemini' else NVIDIA_VIDEO_MODEL,
         'tool_name': tool_name,
         'prompt': tool_prompt,
         'video_config': video_config,
@@ -1425,6 +1549,8 @@ async def _start_hosted_nvidia_session(
         'window_seconds': window_seconds,
         'interval_seconds': interval_seconds,
         'overlap_seconds': overlap_seconds,
+        'minimum_span_seconds': minimum_span_seconds,
+        'minimum_unique_frames': minimum_unique_frames,
         'frame_buffer': RollingFrameBuffer(
             window_seconds + overlap_seconds + 2,
             max_buffer_frames,
@@ -1440,6 +1566,7 @@ async def _start_hosted_nvidia_session(
         'temporary_paths': set(),
         'last_emitted_events': {},
         'semantic_state': 'stable_no_event',
+        'last_emitted_event_window': None,
         'received_frame_count': 0,
         'first_frame_at': None,
         'last_frame_at': None,
@@ -1449,18 +1576,21 @@ async def _start_hosted_nvidia_session(
         _hosted_nvidia_scheduler(websocket, client_id, session)
     )
     logger.info(
-        "[NVIDIA Hosted Video] session started client=%s generation=%s "
+        "[Hosted Video] session started client=%s generation=%s provider=%s model_id=%s "
         "execution_mode=hosted_video_streaming local_rtvi=false rtsp=false mediamtx=false "
-        "gpu_required=false cascade=false clip=false gemini=false "
+        "gpu_required=false cascade=false clip=false "
         "window_seconds=%s interval_seconds=%s overlap_seconds=%s",
         client_id,
         session['generation_token'],
+        session['provider'], session['model_id'],
         window_seconds, interval_seconds, overlap_seconds,
     )
     await websocket.send(json.dumps({
         'type': 'streaming_started',
         'tool_name': session['tool_name'],
         'mode': 'hosted_video_streaming',
+        'provider': session['provider'],
+        'model_id': session['model_id'],
         'timestamp': datetime.now().isoformat(),
     }))
 

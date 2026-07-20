@@ -415,23 +415,54 @@ def validate_played_card_event(
     parsed: dict[str, Any], confidence_threshold: float = 0.8
 ) -> tuple[str | None, str]:
     """Deterministically enforce before/after evidence without another model."""
+    required_fields = {
+        "event_detected", "before_cards", "after_cards", "played_card",
+        "confidence", "evidence",
+    }
+    if set(parsed) != required_fields:
+        return None, "invalid_schema_fields"
     before = parsed.get("before_cards")
     after = parsed.get("after_cards")
     played = parsed.get("played_card")
     confidence = parsed.get("confidence")
+    evidence = parsed.get("evidence")
+    if not isinstance(parsed.get("event_detected"), bool):
+        return None, "invalid_event_detected"
     if not isinstance(before, list) or not all(isinstance(item, str) for item in before):
         return None, "invalid_before_cards"
     if not isinstance(after, list) or not all(isinstance(item, str) for item in after):
         return None, "invalid_after_cards"
+    if not isinstance(evidence, str) or not evidence.strip():
+        return None, "invalid_evidence"
+    if isinstance(confidence, bool):
+        return None, "invalid_confidence"
     try:
         numeric_confidence = float(confidence)
     except (TypeError, ValueError):
         return None, "invalid_confidence"
+    if not 0.0 <= numeric_confidence <= 1.0:
+        return None, "invalid_confidence"
     if numeric_confidence < confidence_threshold:
         return None, "confidence_below_threshold"
     normalize = lambda value: " ".join(value.casefold().split())
-    before_keys = {normalize(item) for item in before if normalize(item)}
-    after_keys = {normalize(item) for item in after if normalize(item)}
+    ranks = (
+        "ace", "two", "three", "four", "five", "six", "seven",
+        "eight", "nine", "ten", "jack", "queen", "king",
+    )
+    suits = ("clubs", "diamonds", "hearts", "spades")
+    valid_cards = {f"{rank} of {suit}" for rank in ranks for suit in suits}
+    before_names = [normalize(item) for item in before]
+    after_names = [normalize(item) for item in after]
+    if any(name not in valid_cards for name in before_names):
+        return None, "invalid_card_in_before"
+    if any(name not in valid_cards for name in after_names):
+        return None, "invalid_card_in_after"
+    if len(before_names) != len(set(before_names)):
+        return None, "duplicate_card_in_before"
+    if len(after_names) != len(set(after_names)):
+        return None, "duplicate_card_in_after"
+    before_keys = set(before_names)
+    after_keys = set(after_names)
     if parsed.get("event_detected") is not True:
         if played is not None:
             return None, "no_event_played_card_must_be_null"
@@ -441,11 +472,17 @@ def validate_played_card_event(
     if not isinstance(played, str) or not played.strip():
         return None, "invalid_played_card"
     played_key = normalize(played)
+    if played_key not in valid_cards:
+        return None, "invalid_played_card_name"
     if played_key not in before_keys:
         return None, "played_card_not_in_before"
     if played_key in after_keys:
         return None, "played_card_still_in_after"
-    return f"You just played the {played.strip()}.", "accepted"
+    evidence_key = normalize(evidence)
+    named_in_evidence = {card for card in valid_cards if card in evidence_key}
+    if named_in_evidence != {played_key}:
+        return None, "evidence_card_mismatch"
+    return f"You just played the {played_key}.", "accepted"
 
 
 class NvidiaHostedClient:
@@ -494,6 +531,12 @@ class NvidiaHostedClient:
         return selected
 
     async def chat_completions(self, request: dict[str, Any]) -> str:
+        content, _usage = await self.chat_completions_with_metadata(request)
+        return content
+
+    async def chat_completions_with_metadata(
+        self, request: dict[str, Any]
+    ) -> tuple[str, Any]:
         session = await self._http()
         try:
             async with session.post(f"{self.base_url}/chat/completions", json=request) as response:
@@ -502,7 +545,7 @@ class NvidiaHostedClient:
             raise
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise NvidiaHostedError(f"NVIDIA hosted chat completion failed: {exc}") from exc
-        return extract_chat_content(payload)
+        return extract_chat_content(payload), payload.get("usage") if isinstance(payload, dict) else None
 
     @staticmethod
     async def _json_response(response: aiohttp.ClientResponse, operation: str) -> Any:
