@@ -1,9 +1,9 @@
 # GPU-free hosted video streaming
 
 The production experiment does not run local RTVI, RTSP, MediaMTX, Docker, or a
-local GPU. It buffers recent ProgramAT camera JPEGs, writes chronological frames
-to a temporary directory, encodes a short H.264 MP4 with FFmpeg, and sends that
-clip to exactly one configured provider. Take-photo execution is unchanged.
+local GPU. It buffers recent ProgramAT camera JPEGs and sends input to exactly
+one configured provider. Gemini receives four ordered 720x1280 JPEGs; NVIDIA
+receives a short H.264 MP4 encoded with FFmpeg. Take-photo execution is unchanged.
 
 The verified configuration is:
 
@@ -29,9 +29,11 @@ HOSTED_VIDEO_DEBUG_SAVE=false
 ```
 
 Set `VIDEO_VLM_PROVIDER=nvidia` to use `NVIDIA_VIDEO_MODEL`. There is no
-provider cascade: Gemini and NVIDIA share capture, buffering, MP4 encoding,
-latest-clip persistence, parsing, and WebSocket delivery, but only the selected
-provider is called.
+provider cascade: both providers share capture, buffering, parsing, and
+WebSocket delivery, but only the selected provider is called. Gemini selects
+the first, two uniformly spaced middle, and last real frame, then saves the
+exact request as `backend/debug/last_hosted_images/frame-00.jpg` through
+`frame-03.jpg` plus `metadata.json`. It does not invoke FFmpeg or create an MP4.
 
 On 2026-07-20, `nvidia/nemotron-nano-12b-v2-vl` accepted a 29,215-byte H.264
 MP4 through `/v1/chat/completions` using this content item:
@@ -42,7 +44,7 @@ MP4 through `/v1/chat/completions` using this content item:
 
 The hosted service does not expose an assumed file-upload API in this
 NVIDIA integration. Consequently, NVIDIA base64 input is explicit and
-size-bounded. Gemini uses its Files API for the same generated MP4.
+size-bounded. Gemini sends the four ordered JPEG parts directly.
 
 Tools declare `TOOL_NAME`, `EXECUTION_MODE = "hosted_video_streaming"`,
 `TOOL_PROMPT`, and optional literal `VIDEO_CONFIG`/`OUTPUT_CONFIG`. The runtime
@@ -80,10 +82,10 @@ validation/correctness, and latency for each model.
 
 For app testing, restart the backend, select `played_card_rtvi`, start streaming,
 keep the cards visible for at least five seconds, play one card, wait for hosted
-inference, then stop streaming. Expected logs show session start, a five-second
-window, FFmpeg encoding, base64 preparation, inference latency, accepted or
-suppressed output, and idempotent cleanup.
+inference, then stop streaming. With Gemini, expected logs show the four source
+indices and timestamps, JPEG preprocessing and byte size, image-token usage,
+inference latency, parsed output, final message, and idempotent cleanup.
 
-The FFmpeg command uses `-framerate 4 -c:v libx264 -preset veryfast -pix_fmt
+For NVIDIA only, the FFmpeg command uses `-framerate 4 -c:v libx264 -preset veryfast -pix_fmt
 yuv420p -movflags +faststart` with width bounded to 1280. Latency is approximately
 the five-second collection interval plus CPU encoding and hosted inference.

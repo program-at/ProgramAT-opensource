@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 from aiohttp import web, WSMsgType
 from google.cloud import secretmanager
 from github import Github
@@ -79,7 +79,7 @@ import copilot_db
 from gemini_summarizer import summarize_entries_sync
 from gemini_live import GeminiLiveManager
 from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
-from video_summarizer import infer_mp4_with_gemini, summarize_video
+from video_summarizer import infer_images_with_gemini, summarize_video
 from nvidia_hosted_client import (
     NvidiaHostedClient,
     NvidiaHostedError,
@@ -651,6 +651,7 @@ HOSTED_VIDEO_DEBUG_DIR = Path(os.getenv(
 ))
 HOSTED_VIDEO_LAST_CLIP_PATH = Path(__file__).resolve().parent / 'debug' / 'last_hosted_clip.mp4'
 HOSTED_VIDEO_LAST_METADATA_PATH = HOSTED_VIDEO_LAST_CLIP_PATH.with_suffix('.json')
+HOSTED_GEMINI_LAST_IMAGES_DIR = Path(__file__).resolve().parent / 'debug' / 'last_hosted_images'
 if VIDEO_VLM_PROVIDER not in {'gemini', 'nvidia'}:
     raise ValueError("VIDEO_VLM_PROVIDER must be 'gemini' or 'nvidia'")
 if not 0 <= HOSTED_VIDEO_OVERLAP_SECONDS < HOSTED_VIDEO_WINDOW_SECONDS:
@@ -1166,13 +1167,182 @@ def _save_last_hosted_clip(video_path: Path, metadata: Dict[str, Any]) -> Path:
     return destination
 
 
+def _prepare_gemini_ordered_jpegs(frames: List[TimedFrame]) -> List[bytes]:
+    if len(frames) != 4:
+        raise ValueError(f"Gemini hosted streaming requires exactly four frames, got {len(frames)}")
+    prepared = []
+    for frame in frames:
+        encoded = frame.image_data_uri.split(',', 1)[1] if frame.image_data_uri.startswith('data:') else frame.image_data_uri
+        source = Image.open(io.BytesIO(base64.b64decode(encoded, validate=True)))
+        image = ImageOps.exif_transpose(source).convert('RGB')
+        image = ImageOps.fit(image, (720, 1280), method=Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, 'JPEG', quality=HOSTED_VIDEO_JPEG_QUALITY, optimize=True)
+        prepared.append(output.getvalue())
+    return prepared
+
+
+def _gemini_ordered_frame_indices(frame_count: int) -> List[int]:
+    """Select first, two uniform interior, and last real source frames."""
+    if frame_count < 4:
+        raise NvidiaHostedError("Gemini ordered-image input requires at least four frames")
+    last_index = frame_count - 1
+    return [0, round(last_index / 3), round(2 * last_index / 3), last_index]
+
+
+def _save_last_gemini_images(images: List[bytes], metadata: Dict[str, Any]) -> Path:
+    destination = HOSTED_GEMINI_LAST_IMAGES_DIR
+    destination.mkdir(parents=True, exist_ok=True)
+    for index, image in enumerate(images):
+        temporary = destination / f'frame-{index:02d}.jpg.tmp'
+        temporary.write_bytes(image)
+        os.replace(temporary, destination / f'frame-{index:02d}.jpg')
+    metadata_temporary = destination / 'metadata.json.tmp'
+    metadata_temporary.write_text(
+        json.dumps(_metadata_json_value(metadata), indent=2, ensure_ascii=False),
+        encoding='utf-8',
+    )
+    os.replace(metadata_temporary, destination / 'metadata.json')
+    return destination
+
+
+async def _run_hosted_gemini_images(
+    websocket, client_id: str, session: Dict[str, Any], clip_sequence: int,
+    frames: List[TimedFrame], source_indices: List[int],
+) -> None:
+    request_started = time.perf_counter()
+    window_start, window_end = frames[0].timestamp, frames[-1].timestamp
+    model_id = session['model_id']
+    try:
+        preprocessing_started = time.perf_counter()
+        images = await asyncio.to_thread(_prepare_gemini_ordered_jpegs, frames)
+        preprocessing_ms = (time.perf_counter() - preprocessing_started) * 1000
+        input_bytes = sum(len(image) for image in images)
+        frame_metadata = []
+        for index, (frame, image_bytes) in enumerate(zip(frames, images)):
+            encoded = frame.image_data_uri.split(',', 1)[1] if frame.image_data_uri.startswith('data:') else frame.image_data_uri
+            with Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as source_image:
+                source_dimensions = list(source_image.size)
+            with Image.open(io.BytesIO(image_bytes)) as sent_image:
+                sent_dimensions = list(sent_image.size)
+            frame_metadata.append({
+                'position': index,
+                'source_index': source_indices[index],
+                'timestamp_monotonic': frame.timestamp,
+                'source_dimensions': source_dimensions,
+                'sent_dimensions': sent_dimensions,
+                'bytes': len(image_bytes),
+                'file': f'frame-{index:02d}.jpg',
+            })
+        metadata = {
+            'clip_sequence': clip_sequence,
+            'provider': 'gemini',
+            'model_id': model_id,
+            'request_time': datetime.now().isoformat(),
+            'window_start_monotonic': window_start,
+            'window_end_monotonic': window_end,
+            'frame_count': 4,
+            'input_bytes': input_bytes,
+            'preprocessing_ms': preprocessing_ms,
+            'frames': frame_metadata,
+        }
+        debug_path = await asyncio.to_thread(_save_last_gemini_images, images, metadata)
+        logger.info(
+            "[Hosted Gemini Images] selected client=%s clip=%s source_indices=%s "
+            "timestamps=%s preprocessing_ms=%.1f input_bytes=%s debug_path=%s",
+            client_id, clip_sequence, source_indices,
+            [round(frame.timestamp, 6) for frame in frames], preprocessing_ms,
+            input_bytes, debug_path,
+        )
+        inference_started = time.perf_counter()
+        content, usage = await infer_images_with_gemini(images, session['prompt'], model_id)
+        inference_ms = (time.perf_counter() - inference_started) * 1000
+        usage_value = _metadata_json_value(usage)
+        image_tokens = sum(
+            int(detail.get('token_count', 0))
+            for detail in (usage_value or {}).get('prompt_tokens_details', [])
+            if str(detail.get('modality', '')).rsplit('.', 1)[-1].upper() == 'IMAGE'
+        ) if isinstance(usage_value, dict) else 0
+        logger.info(
+            "[Hosted Gemini Images] response client=%s clip=%s model_id=%s "
+            "gemini_latency_ms=%.1f image_token_usage=%s usage=%s raw_response=%s",
+            client_id, clip_sequence, model_id, inference_ms, image_tokens,
+            json.dumps(usage_value, ensure_ascii=False, sort_keys=True), content,
+        )
+        if active_hosted_nvidia_sessions.get(client_id) is not session:
+            logger.info("[Hosted Gemini Images] stale result dropped client=%s clip=%s", client_id, clip_sequence)
+            return
+        try:
+            parsed = parse_structured_video_result(content)
+        except NvidiaHostedError as exc:
+            parsed = None
+            decision = 'invalid_json'
+            accepted = 'I could not determine whether a card was played.'
+            logger.warning(
+                "[Hosted Gemini Images] parsed client=%s clip=%s parsed=null "
+                "valid=false validation=%s error=%s",
+                client_id, clip_sequence, decision, exc,
+            )
+        else:
+            played_message, decision = validate_played_card_event(
+                parsed,
+                float(session['output_config'].get('confidence_threshold', 0.8)),
+                allow_remaining_cards_in_evidence=True,
+            )
+            if decision == 'accepted':
+                accepted = played_message
+            elif decision == 'stable_no_event':
+                accepted = 'No card played.'
+            else:
+                accepted = 'I could not determine whether a card was played.'
+            logger.info(
+                "[Hosted Gemini Images] parsed client=%s clip=%s parsed=%s validation=%s",
+                client_id, clip_sequence,
+                json.dumps(parsed, ensure_ascii=False, sort_keys=True), decision,
+            )
+        session['latest_forwarded_clip'] = clip_sequence
+        payload = {
+            'type': 'tool_stream_result', 'tool_name': session['tool_name'],
+            'result': accepted,
+            'audio': {'type': 'speech', 'text': accepted, 'rate': 1.0, 'interrupt': False},
+            'mode': 'hosted_video_streaming', 'execution_id': clip_sequence,
+            'clip_sequence': clip_sequence, 'frame_count': 4,
+            'input_format': 'ordered_jpegs', 'provider': 'gemini',
+            'model_id': model_id, 'clip_window_start': window_start,
+            'clip_window_end': window_end, 'timestamp': datetime.now().isoformat(),
+        }
+        logger.info(
+            "[Hosted Gemini Images] final emitted client=%s clip=%s message=%s payload=%s",
+            client_id, clip_sequence, accepted,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+        await websocket.send(json.dumps(payload))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(
+            "[Hosted Gemini Images] request failed client=%s clip=%s latency_ms=%.1f error=%s",
+            client_id, clip_sequence, (time.perf_counter() - request_started) * 1000,
+            _hosted_safe_error(exc),
+        )
+        await _send_hosted_nvidia_error(websocket, client_id, session, exc)
+        await _cleanup_hosted_nvidia_session(client_id, reason='request_error')
+
+
 async def _run_hosted_nvidia_clip(
     websocket,
     client_id: str,
     session: Dict[str, Any],
     clip_sequence: int,
     frames: List[TimedFrame],
+    source_indices: Optional[List[int]] = None,
 ) -> None:
+    if session.get('provider') == 'gemini':
+        await _run_hosted_gemini_images(
+            websocket, client_id, session, clip_sequence, frames,
+            source_indices or list(range(len(frames))),
+        )
+        return
     request_started = time.perf_counter()
     encoding_started = request_started
     window_start = frames[0].timestamp
@@ -1188,9 +1358,11 @@ async def _run_hosted_nvidia_clip(
         provider = session['provider']
         model_id = session['model_id']
         model = session.get('model')
-        if provider == 'nvidia' and (model is None or not model.supports_video):
+        if provider != 'nvidia':
+            raise NvidiaHostedError(f"Unsupported MP4 provider {provider!r}")
+        if model is None or not model.supports_video:
             raise NvidiaHostedError(f"Configured model {model_id!r} is not video-capable")
-        if provider == 'nvidia' and NVIDIA_VIDEO_INPUT_MODE != 'base64':
+        if NVIDIA_VIDEO_INPUT_MODE != 'base64':
             raise NvidiaHostedError(
                 f"NVIDIA_VIDEO_INPUT_MODE={NVIDIA_VIDEO_INPUT_MODE!r} is unsupported by the "
                 "verified integrate.api.nvidia.com integration; configure 'base64'"
@@ -1246,23 +1418,17 @@ async def _run_hosted_nvidia_clip(
                 )
             encoding_ended = time.perf_counter()
             upload_started = encoding_ended
+            video_data_uri = await asyncio.to_thread(
+                video_file_data_uri, video_path, HOSTED_VIDEO_MAX_CLIP_BYTES
+            )
+            upload_ended = time.perf_counter()
+            request = build_video_request(
+                model_id, session['prompt'], video_data_uri, HOSTED_VIDEO_MAX_TOKENS,
+            )
             inference_started = time.perf_counter()
-            if provider == 'gemini':
-                upload_ended = upload_started
-                content, usage = await infer_mp4_with_gemini(
-                    video_path, session['prompt'], model_id
-                )
-            else:
-                video_data_uri = await asyncio.to_thread(
-                    video_file_data_uri, video_path, HOSTED_VIDEO_MAX_CLIP_BYTES
-                )
-                upload_ended = time.perf_counter()
-                request = build_video_request(
-                    model_id, session['prompt'], video_data_uri, HOSTED_VIDEO_MAX_TOKENS,
-                )
-                content, usage = await hosted_nvidia_client.chat_completions_with_metadata(
-                    request
-                )
+            content, usage = await hosted_nvidia_client.chat_completions_with_metadata(
+                request
+            )
             inference_ended = time.perf_counter()
             logger.info(
                 "[Hosted Video] response client=%s clip=%s provider=%s model_id=%s "
@@ -1415,7 +1581,7 @@ async def _hosted_nvidia_scheduler(
             session['model_id'] = VIDEO_GEMINI_MODEL
         if active_hosted_nvidia_sessions.get(client_id) is not session:
             return
-        session['input_format'] = 'base64_mp4'
+        session['input_format'] = 'ordered_jpegs' if provider == 'gemini' else 'base64_mp4'
         logger.info(
             "[Hosted Video] session ready client=%s generation=%s provider=%s model_id=%s format=%s",
             client_id,
@@ -1468,14 +1634,19 @@ async def _hosted_nvidia_scheduler(
                     minimum_span, session['skipped_intervals'],
                 )
                 continue
-            target_frames = max(2, round(session['window_seconds'] * HOSTED_VIDEO_OUTPUT_FPS))
-            frames = uniformly_sample_frames(available, target_frames)
+            if provider == 'gemini':
+                source_indices = _gemini_ordered_frame_indices(len(available))
+                frames = [available[index] for index in source_indices]
+            else:
+                target_frames = max(2, round(session['window_seconds'] * HOSTED_VIDEO_OUTPUT_FPS))
+                frames = uniformly_sample_frames(available, target_frames)
+                source_indices = [available.index(frame) for frame in frames]
             session['clip_sequence'] += 1
             clip_sequence = session['clip_sequence']
             logger.info(
                 "[NVIDIA Hosted] request started client=%s generation=%s clip=%s "
                 "unique_available_frames=%s selected_frames=%s oldest_ts=%.6f newest_ts=%.6f "
-                "source_span_seconds=%.3f source_fps=%.3f",
+                "source_span_seconds=%.3f source_fps=%.3f source_indices=%s timestamps=%s",
                 client_id,
                 session['generation_token'],
                 clip_sequence,
@@ -1483,12 +1654,13 @@ async def _hosted_nvidia_scheduler(
                 frames[0].timestamp,
                 frames[-1].timestamp,
                 max(0.0, frames[-1].timestamp - frames[0].timestamp),
-                ((len(frames) - 1) / (frames[-1].timestamp - frames[0].timestamp))
-                if len(frames) > 1 and frames[-1].timestamp > frames[0].timestamp else 0.0,
+                ((len(available) - 1) / (available[-1].timestamp - available[0].timestamp))
+                if len(available) > 1 and available[-1].timestamp > available[0].timestamp else 0.0,
+                source_indices, [round(frame.timestamp, 6) for frame in frames],
             )
             session['request_task'] = asyncio.create_task(
                 _run_hosted_nvidia_clip(
-                    websocket, client_id, session, clip_sequence, frames
+                    websocket, client_id, session, clip_sequence, frames, source_indices
                 )
             )
             next_due = time.monotonic() + session['interval_seconds']

@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -412,7 +413,8 @@ def parse_structured_video_result(raw_content: str) -> dict[str, Any]:
 
 
 def validate_played_card_event(
-    parsed: dict[str, Any], confidence_threshold: float = 0.8
+    parsed: dict[str, Any], confidence_threshold: float = 0.8,
+    allow_remaining_cards_in_evidence: bool = False,
 ) -> tuple[str | None, str]:
     """Deterministically enforce before/after evidence without another model."""
     required_fields = {
@@ -480,7 +482,20 @@ def validate_played_card_event(
         return None, "played_card_still_in_after"
     evidence_key = normalize(evidence)
     named_in_evidence = {card for card in valid_cards if card in evidence_key}
-    if named_in_evidence != {played_key}:
+    if played_key not in named_in_evidence:
+        return None, "evidence_card_mismatch"
+    if allow_remaining_cards_in_evidence:
+        removal_words = r"(?:played|removed|disappeared|absent|taken|left the hand)"
+        for card in named_in_evidence - {played_key}:
+            card_pattern = re.escape(card)
+            if (re.search(
+                    rf"{card_pattern}\s+(?:(?:was|is|has been)\s+)?{removal_words}",
+                    evidence_key,
+                ) or re.search(
+                    rf"{removal_words}\s+(?:the\s+)?{card_pattern}", evidence_key,
+                )):
+                return None, "evidence_identifies_different_removed_card"
+    elif named_in_evidence != {played_key}:
         return None, "evidence_card_mismatch"
     return f"You just played the {played_key}.", "accepted"
 

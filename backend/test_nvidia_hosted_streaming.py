@@ -166,6 +166,47 @@ class TestRollingFrameBuffer(unittest.TestCase):
             validate_played_card_event(mismatched)[1], "evidence_card_mismatch"
         )
 
+    def test_gemini_evidence_allows_remaining_but_not_different_removed_card(self):
+        event = {
+            "event_detected": True,
+            "before_cards": ["two of spades", "nine of hearts"],
+            "after_cards": ["nine of hearts"],
+            "played_card": "two of spades",
+            "confidence": 0.9,
+            "evidence": "The two of spades was removed; the nine of hearts remains.",
+        }
+        self.assertEqual(
+            validate_played_card_event(
+                event, allow_remaining_cards_in_evidence=True
+            )[1],
+            "accepted",
+        )
+        event["evidence"] = "The two of spades vanished, and the nine of hearts was removed."
+        self.assertEqual(
+            validate_played_card_event(
+                event, allow_remaining_cards_in_evidence=True
+            )[1],
+            "evidence_identifies_different_removed_card",
+        )
+
+    def test_gemini_selects_four_uniform_ordered_source_indices(self):
+        self.assertEqual(
+            stream_server._gemini_ordered_frame_indices(12), [0, 4, 7, 11]
+        )
+
+    def test_gemini_preprocessing_returns_four_720_by_1280_jpegs(self):
+        source = io.BytesIO()
+        Image.new("RGB", (80, 60), "red").save(source, format="JPEG")
+        data_uri = "data:image/jpeg;base64," + base64.b64encode(source.getvalue()).decode()
+        images = stream_server._prepare_gemini_ordered_jpegs([
+            TimedFrame(float(index), data_uri) for index in range(4)
+        ])
+        self.assertEqual(len(images), 4)
+        for encoded in images:
+            with Image.open(io.BytesIO(encoded)) as image:
+                self.assertEqual(image.size, (720, 1280))
+                self.assertEqual(image.format, "JPEG")
+
     def test_played_card_semantic_state_requires_silent_stable_reset(self):
         session = {
             "semantic_state": "stable_no_event",
@@ -478,6 +519,12 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             "No card played.",
             "I could not determine whether a card was played.",
         ]
+        sent_jpeg = io.BytesIO()
+        Image.new("RGB", (720, 1280), "red").save(sent_jpeg, format="JPEG")
+        sent_images = [sent_jpeg.getvalue()] * 4
+        source_uri = "data:image/jpeg;base64," + base64.b64encode(
+            sent_jpeg.getvalue()
+        ).decode()
         for sequence, (content, message) in enumerate(zip(responses, expected), 1):
             session = self._session()
             session.update({
@@ -490,25 +537,21 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             websocket = MagicMock()
             websocket.send = AsyncMock()
 
-            async def to_thread_inline(function, *args, **kwargs):
-                return function(*args, **kwargs)
-
-            with patch.object(stream_server.asyncio, "to_thread", side_effect=to_thread_inline), \
-                 patch.object(stream_server, "encode_frames_to_mp4", return_value=100), \
-                 patch.object(stream_server, "probe_mp4", return_value={
-                     "streams": [{"width": 320, "height": 240}], "format": {"duration": "2"}
-                 }), \
-                 patch.object(stream_server, "_save_last_hosted_clip", return_value=Path("/tmp/last.mp4")), \
-                 patch.object(stream_server, "HOSTED_VIDEO_DEBUG_SAVE", False), \
-                 patch.object(stream_server, "infer_mp4_with_gemini", new=AsyncMock(return_value=(content, {"video_tokens": 10}))), \
+            with patch.object(stream_server, "_prepare_gemini_ordered_jpegs", return_value=sent_images), \
+                 patch.object(stream_server, "_save_last_gemini_images", return_value=Path("/tmp/last_hosted_images")), \
+                 patch.object(stream_server, "encode_frames_to_mp4") as encode_mp4, \
+                 patch.object(stream_server, "infer_images_with_gemini", new=AsyncMock(return_value=(content, {"prompt_tokens_details": [{"modality": "IMAGE", "token_count": 10}]}))), \
                  patch.object(stream_server.hosted_nvidia_client, "chat_completions_with_metadata", new=AsyncMock()) as nvidia:
                 await stream_server._run_hosted_nvidia_clip(
                     websocket, "client", session, sequence,
-                    [TimedFrame(float(sequence), "data:image/jpeg;base64,QQ==")],
+                    [TimedFrame(float(sequence + offset), source_uri) for offset in range(4)],
+                    [0, 4, 7, 11],
                 )
             payload = json.loads(websocket.send.await_args.args[0])
             self.assertEqual(payload["result"], message)
             self.assertEqual(payload["provider"], "gemini")
+            self.assertEqual(payload["input_format"], "ordered_jpegs")
+            encode_mp4.assert_not_called()
             nvidia.assert_not_awaited()
 
     async def test_cleanup_cancels_tasks_and_clears_buffer(self):

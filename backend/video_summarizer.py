@@ -23,6 +23,21 @@ PROMPT = (
 )
 POLL_INTERVAL = 2.0   # seconds between file-state checks
 POLL_TIMEOUT  = 120.0  # max seconds to wait for file to become ACTIVE
+_video_inference_client = None
+
+PLAYED_CARD_RESPONSE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["event_detected", "before_cards", "after_cards", "played_card", "confidence", "evidence"],
+    "properties": {
+        "event_detected": {"type": "boolean"},
+        "before_cards": {"type": "array", "items": {"type": "string"}},
+        "after_cards": {"type": "array", "items": {"type": "string"}},
+        "played_card": {"type": ["string", "null"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "evidence": {"type": "string"},
+    },
+}
 
 # Mime types recognised as video
 _VIDEO_MIME = {
@@ -48,6 +63,41 @@ def _make_client():
     except ImportError:
         logger.warning("google-genai not installed — video summarization disabled")
         return None
+
+
+def _make_video_inference_client():
+    """Reuse one Google GenAI client for hosted streaming requests."""
+    global _video_inference_client
+    if _video_inference_client is None:
+        _video_inference_client = _make_client()
+    return _video_inference_client
+
+
+def _played_card_generation_config():
+    from google.genai import types
+    return types.GenerateContentConfig(
+        temperature=0,
+        response_mime_type="application/json",
+        response_json_schema=PLAYED_CARD_RESPONSE_SCHEMA,
+        tools=[],
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
+    )
+
+
+async def infer_images_with_gemini(images: list[bytes], prompt: str, model: str):
+    """Send ordered JPEG bytes directly to Gemini and return text plus usage."""
+    from google.genai import types
+    client = _make_video_inference_client()
+    if client is None:
+        raise RuntimeError("GEMINI_API_KEY is required for Gemini image inference")
+    parts = [types.Part.from_bytes(data=image, mime_type="image/jpeg") for image in images]
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=model.removeprefix('gemini/'),
+        contents=[prompt, *parts],
+        config=_played_card_generation_config(),
+    )
+    return (response.text or '').strip(), getattr(response, 'usage_metadata', None)
 
 
 def _make_vertex_client():
