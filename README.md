@@ -12,9 +12,9 @@ This is a React Native app that facilitates AT creation, iteration, and testing 
 
 ## Getting Started
 
-For the isolated NVIDIA hosted-multiframe and RTVI streaming experiments, see
-[docs/NVIDIA_RTVI_STREAMING.md](docs/NVIDIA_RTVI_STREAMING.md). It is disabled by
-default and does not alter the normal streaming path unless explicitly enabled.
+For the GPU-free hosted NVIDIA short-video streaming path, see
+[docs/NVIDIA_RTVI_STREAMING.md](docs/NVIDIA_RTVI_STREAMING.md). It requires
+FFmpeg and a hosted NVIDIA API key, but no local GPU, RTVI, RTSP, or Docker.
 
 ### Prerequisites
 

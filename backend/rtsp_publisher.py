@@ -6,6 +6,7 @@ import asyncio
 import base64
 import logging
 import re
+import shutil
 from dataclasses import dataclass
 
 
@@ -85,6 +86,12 @@ class RtspPublisher:
     async def start(self) -> None:
         if self.process is not None:
             return
+        resolved_ffmpeg = shutil.which(self.config.ffmpeg_binary)
+        if resolved_ffmpeg is None:
+            raise RuntimeError(
+                f"FFmpeg executable {self.config.ffmpeg_binary!r} was not found. "
+                "Install FFmpeg or set PROGRAMAT_FFMPEG_BINARY to its absolute path."
+            )
         logger.info(
             "[NVIDIA RTVI] starting RTSP publisher session=%s url=%s fps=%s",
             self.session_id,
@@ -92,8 +99,10 @@ class RtspPublisher:
             self.config.fps,
         )
         try:
+            command = self.command()
+            command[0] = resolved_ffmpeg
             self.process = await asyncio.create_subprocess_exec(
-                *self.command(),
+                *command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
@@ -121,6 +130,13 @@ class RtspPublisher:
 
     async def wait_for_first_frame(self, timeout: float = 10.0) -> None:
         await asyncio.wait_for(self._first_frame_written.wait(), timeout=timeout)
+        # Give FFmpeg time to complete the RTSP publish handshake, then verify
+        # that the process did not immediately fail (for example, unreachable
+        # MediaMTX or a rejected path).
+        await asyncio.sleep(min(0.25, timeout / 4))
+        if self.process is None or self.process.returncode is not None:
+            code = None if self.process is None else self.process.returncode
+            raise RuntimeError(f"RTSP publisher was not readable (FFmpeg exit={code})")
 
     async def stop(self) -> None:
         tasks = [task for task in (self._writer_task, self._stderr_task) if task]

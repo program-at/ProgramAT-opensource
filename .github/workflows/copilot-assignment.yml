@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite this Python tool inside `tools/`. For take-photo mode, author one concise task-specific fused `TOOL_PROMPT` using Task, Expected output, Constraints / examples, and the repository instructions. Import `call_take_photo_baseline_vlm` from `litellm_utils`, call it exactly once with `image`, `TOOL_PROMPT`, and `TOOL_NAME`, and return its answer directly. Do not create runtime stages or make planner, router, evaluator, specialist, or other model calls.";
+            const extraLine = "\n\nWrite this Python tool inside `tools/`. Use the explicit Mode from the issue. For take_photo, author one concise `TOOL_PROMPT` and call `call_take_photo_vlm` exactly once. For hosted_video_streaming, generate only `TOOL_NAME`, `EXECUTION_MODE`, `TOOL_PROMPT`, and optional literal `VIDEO_CONFIG`/`OUTPUT_CONFIG`; the shared runtime owns buffering, MP4 encoding, hosted inference, and sessions. Do not create custom video processing, runtime stages, or extra model calls.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,

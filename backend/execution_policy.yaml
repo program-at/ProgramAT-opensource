@@ -13,10 +13,10 @@ streaming:
 mode_execution:
   take-photo:
     cascade: default_reasoning
-    planner_mode: P2_FUSED_PROMPT
+    planner_mode: FUSED_PROMPT
   streaming:
     cascade: default_reasoning
-    planner_mode: P2_FUSED_PROMPT
+    planner_mode: FUSED_PROMPT
 
 implementations:
   moondream_cloud:

@@ -6,13 +6,18 @@ import base64
 import io
 import json
 import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Sequence
 
 import aiohttp
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 logger = logging.getLogger(__name__)
@@ -227,7 +232,14 @@ def build_video_request(
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": build_multiframe_prompt(tool_prompt)},
+                {
+                    "type": "text",
+                    "text": (
+                        "This is a chronological clip representing the most recent "
+                        "configured video window. Answer according to the tool prompt below.\n\n"
+                        + tool_prompt
+                    ),
+                },
                 {"type": "video_url", "video_url": {"url": video_data_uri}},
             ],
         }],
@@ -239,7 +251,8 @@ def build_video_request(
 def _decode_image_data_uri(data_uri: str) -> Image.Image:
     encoded = data_uri.split(",", 1)[1] if data_uri.startswith("data:") else data_uri
     try:
-        return Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))).convert("RGB")
+        image = Image.open(io.BytesIO(base64.b64decode(encoded, validate=True)))
+        return ImageOps.exif_transpose(image).convert("RGB")
     except Exception as exc:
         raise NvidiaHostedError(f"Could not decode a sampled JPEG frame: {exc}") from exc
 
@@ -290,6 +303,83 @@ def encode_frames_as_mp4(
     return "data:video/mp4;base64," + base64.b64encode(output.getvalue()).decode("ascii")
 
 
+def encode_frames_to_mp4(
+    frames: Sequence[TimedFrame],
+    output_path: str | Path,
+    fps: float = 4,
+    max_width: int = 1280,
+    jpeg_quality: int = 80,
+    ffmpeg_binary: str = "ffmpeg",
+) -> int:
+    """Encode chronological JPEG frames to a finalized H.264 MP4 with FFmpeg."""
+    if not frames:
+        raise NvidiaHostedError("At least one frame is required to encode a video clip")
+    executable = shutil.which(ffmpeg_binary)
+    if executable is None:
+        raise NvidiaHostedError(
+            f"FFmpeg executable {ffmpeg_binary!r} was not found; install it or set "
+            "PROGRAMAT_FFMPEG_BINARY"
+        )
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="programat-hosted-video-frames-") as frame_dir:
+        directory = Path(frame_dir)
+        for index, frame in enumerate(sorted(frames, key=lambda item: item.timestamp)):
+            try:
+                image = _decode_image_data_uri(frame.image_data_uri)
+                if image.width > max_width:
+                    image.thumbnail((max_width, max_width * 10), Image.Resampling.LANCZOS)
+                image.save(
+                    directory / f"frame-{index:06d}.jpg", "JPEG",
+                    quality=jpeg_quality, optimize=True,
+                )
+            except Exception as exc:
+                raise NvidiaHostedError(f"Could not decode input frame {index}: {exc}") from exc
+        scale = f"scale='min({max_width},iw)':-2:force_original_aspect_ratio=decrease"
+        command = [
+            executable, "-hide_banner", "-loglevel", "error", "-framerate", str(fps),
+            "-i", str(directory / "frame-%06d.jpg"), "-an", "-c:v", "libx264",
+            "-preset", "veryfast", "-pix_fmt", "yuv420p", "-vf", scale,
+            "-movflags", "+faststart", "-y", str(output),
+        ]
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            raise NvidiaHostedError(f"FFmpeg MP4 encoding failed: {exc.stderr[-1000:]}") from exc
+    size = output.stat().st_size
+    if size <= 0:
+        raise NvidiaHostedError("FFmpeg produced an empty MP4")
+    return size
+
+
+def video_file_data_uri(video_path: str | Path, max_bytes: int) -> str:
+    data = Path(video_path).read_bytes()
+    if len(data) > max_bytes:
+        raise NvidiaHostedError(
+            f"MP4 clip is {len(data)} bytes, exceeding base64 limit {max_bytes}"
+        )
+    return "data:video/mp4;base64," + base64.b64encode(data).decode("ascii")
+
+
+def probe_mp4(video_path: str | Path, ffmpeg_binary: str = "ffmpeg") -> dict[str, Any]:
+    ffprobe = shutil.which("ffprobe")
+    if ffprobe is None:
+        candidate = Path(shutil.which(ffmpeg_binary) or "").with_name("ffprobe")
+        ffprobe = str(candidate) if candidate.is_file() else None
+    if ffprobe is None:
+        raise NvidiaHostedError("ffprobe was not found beside FFmpeg or on PATH")
+    command = [
+        ffprobe, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,avg_frame_rate,nb_frames:format=duration,size",
+        "-of", "json", str(video_path),
+    ]
+    try:
+        completed = subprocess.run(command, check=True, capture_output=True, text=True)
+        return json.loads(completed.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        raise NvidiaHostedError(f"Could not inspect encoded MP4: {exc}") from exc
+
+
 def extract_chat_content(payload: Any) -> str:
     try:
         content = payload["choices"][0]["message"]["content"]
@@ -300,6 +390,62 @@ def extract_chat_content(payload: Any) -> str:
     if not isinstance(content, str) or not content.strip():
         raise NvidiaHostedError("NVIDIA response content was empty or not text")
     return content.strip()
+
+
+def parse_structured_video_result(raw_content: str) -> dict[str, Any]:
+    """Parse the exact JSON object returned by a structured streaming tool."""
+    text = str(raw_content or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise NvidiaHostedError(f"Hosted video response was not valid JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise NvidiaHostedError("Hosted video response must be one JSON object")
+    return value
+
+
+def validate_played_card_event(
+    parsed: dict[str, Any], confidence_threshold: float = 0.8
+) -> tuple[str | None, str]:
+    """Deterministically enforce before/after evidence without another model."""
+    before = parsed.get("before_cards")
+    after = parsed.get("after_cards")
+    played = parsed.get("played_card")
+    confidence = parsed.get("confidence")
+    if not isinstance(before, list) or not all(isinstance(item, str) for item in before):
+        return None, "invalid_before_cards"
+    if not isinstance(after, list) or not all(isinstance(item, str) for item in after):
+        return None, "invalid_after_cards"
+    try:
+        numeric_confidence = float(confidence)
+    except (TypeError, ValueError):
+        return None, "invalid_confidence"
+    if numeric_confidence < confidence_threshold:
+        return None, "confidence_below_threshold"
+    normalize = lambda value: " ".join(value.casefold().split())
+    before_keys = {normalize(item) for item in before if normalize(item)}
+    after_keys = {normalize(item) for item in after if normalize(item)}
+    if parsed.get("event_detected") is not True:
+        if played is not None:
+            return None, "no_event_played_card_must_be_null"
+        if before_keys and before_keys == after_keys:
+            return None, "stable_no_event"
+        return None, "event_not_detected"
+    if not isinstance(played, str) or not played.strip():
+        return None, "invalid_played_card"
+    played_key = normalize(played)
+    if played_key not in before_keys:
+        return None, "played_card_not_in_before"
+    if played_key in after_keys:
+        return None, "played_card_still_in_after"
+    return f"You just played the {played.strip()}.", "accepted"
 
 
 class NvidiaHostedClient:

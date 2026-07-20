@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -93,6 +94,14 @@ class NvidiaRtviClient:
         self.base_url = base_url.rstrip("/")
         self.request_timeout_seconds = request_timeout_seconds
         self._session: aiohttp.ClientSession | None = None
+        self._model_id: str | None = None
+        self._model_lock = asyncio.Lock()
+
+    def _url(self, path: str) -> str:
+        """Join native RTVI paths when base_url is either host or host/v1."""
+        if self.base_url.endswith("/v1") and path.startswith("/v1/"):
+            return f"{self.base_url}{path[3:]}"
+        return f"{self.base_url}{path}"
 
     async def _http(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -106,23 +115,29 @@ class NvidiaRtviClient:
             await self._session.close()
 
     async def discover_model(self) -> str:
-        session = await self._http()
-        try:
-            async with session.get(f"{self.base_url}/v1/models") as response:
-                payload = await self._json_response(response, "model discovery")
-        except (aiohttp.ClientError, TimeoutError) as exc:
-            raise RtviError(f"RTVI model discovery failed: {exc}") from exc
-        models = parse_model_ids(payload)
-        if not models:
-            raise RtviError("RTVI /v1/models returned no usable model IDs")
-        logger.info("[NVIDIA RTVI] discovered model=%s", models[0])
-        return models[0]
+        if self._model_id:
+            return self._model_id
+        async with self._model_lock:
+            if self._model_id:
+                return self._model_id
+            session = await self._http()
+            try:
+                async with session.get(self._url("/v1/models")) as response:
+                    payload = await self._json_response(response, "model discovery")
+            except (aiohttp.ClientError, TimeoutError) as exc:
+                raise RtviError(f"RTVI model discovery failed: {exc}") from exc
+            models = parse_model_ids(payload)
+            if not models:
+                raise RtviError("RTVI /v1/models returned no usable model IDs")
+            self._model_id = models[0]
+            logger.info("[NVIDIA RTVI] resolved model=%s", self._model_id)
+            return self._model_id
 
     async def register_stream(self, rtsp_url: str, description: str) -> str:
         session = await self._http()
         body = {"streams": [{"liveStreamUrl": rtsp_url, "description": description}]}
         try:
-            async with session.post(f"{self.base_url}/v1/streams/add", json=body) as response:
+            async with session.post(self._url("/v1/streams/add"), json=body) as response:
                 payload = await self._json_response(response, "stream registration")
         except (aiohttp.ClientError, TimeoutError) as exc:
             raise RtviError(f"RTVI stream registration failed: {exc}") from exc
@@ -144,6 +159,7 @@ class NvidiaRtviClient:
             "stream": True,
             "chunk_duration": chunk_duration,
             "chunk_overlap_duration": chunk_overlap_duration,
+            "enable_audio": False,
         }
         stream_timeout = aiohttp.ClientTimeout(
             total=None,
@@ -153,7 +169,7 @@ class NvidiaRtviClient:
         )
         try:
             async with session.post(
-                f"{self.base_url}/v1/generate_captions",
+                self._url("/v1/generate_captions"),
                 json=body,
                 headers={"Accept": "text/event-stream"},
                 timeout=stream_timeout,
@@ -197,7 +213,7 @@ class NvidiaRtviClient:
         )
         for endpoint in endpoints:
             try:
-                async with session.delete(f"{self.base_url}{endpoint}") as response:
+                async with session.delete(self._url(endpoint)) as response:
                     if response.status >= 400:
                         detail = (await response.text())[:500]
                         logger.warning(

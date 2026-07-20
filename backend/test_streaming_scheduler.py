@@ -193,8 +193,8 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         output = "\n".join(logs.output)
         self.assertIn("[Streaming] skipped frame (already running)", output)
         self.assertIn("[Streaming] execution finished", output)
-        self.assertIn("streaming_executor=policy_cascade", output)
-        self.assertIn("nvidia_hosted_active=false", output)
+        self.assertIn("streaming_executor=hosted_video_streaming", output)
+        self.assertIn("nvidia_hosted_active=true", output)
 
     async def test_c3_streaming_result_is_dropped_when_session_is_superseded(self):
         tool_config = {
@@ -225,7 +225,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             return "Completed old-frame C3 result"
 
         with patch.object(
-            stream_server, "_run_take_photo_baseline", side_effect=finish_after_restart
+            stream_server, "_run_take_photo_vlm", side_effect=finish_after_restart
         ) as cascade, patch.object(
             stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline
         ), self.assertLogs(stream_server.logger, level="INFO") as logs:
@@ -260,7 +260,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(
             stream_server,
-            "_run_take_photo_baseline",
+            "_run_take_photo_vlm",
             return_value="Final accepted cascade answer",
         ) as cascade, patch.object(
             stream_server.asyncio, "to_thread", side_effect=self._to_thread_inline

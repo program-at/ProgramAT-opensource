@@ -3,7 +3,7 @@
 ProgramAT tools are Python files in `tools/`. The backend executes them with a
 camera image and speaks the returned value.
 
-Each tool must expose `main(image, input_data)` with exactly two parameters.
+Each take-photo tool must expose `main(image, input_data)` with exactly two parameters.
 `image` is an OpenCV BGR array and `input_data` is a dictionary. Return a concise,
 audio-friendly string (or the established `audio`/`text` dictionary shape). Do
 not print results, connect to the backend, or use WebSockets.
@@ -13,7 +13,7 @@ not print results, connect to the backend, or use WebSockets.
 Define exactly one `TOOL_PROMPT` and use this shape:
 
 ```python
-from litellm_utils import call_take_photo_baseline_vlm
+from litellm_utils import call_take_photo_vlm
 
 TOOL_NAME = "tool_name"
 TOOL_PROMPT = "One task-specific instruction."
@@ -22,7 +22,7 @@ TOOL_PROMPT = "One task-specific instruction."
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    return call_take_photo_baseline_vlm(
+    return call_take_photo_vlm(
         image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
     )
 ```
@@ -79,9 +79,22 @@ experiment's model execution.
 
 ## Streaming tools
 
-Preserve the repository's existing streaming patterns and cadence. Keep output
-to about 15 spoken words and return an empty string when nothing useful changed.
-Do not alter NVIDIA hosted streaming or RTVI code while implementing a tool.
+All streaming tools use hosted NVIDIA video through the shared runtime. Keep generated
+tools declarative and put event/scene behavior entirely in `TOOL_PROMPT`.
+
+### Hosted-video streaming tools
+
+Use `EXECUTION_MODE = "hosted_video_streaming"` for requests involving continuous
+actions or recent visual changes. Generate only `TOOL_NAME`, that execution
+mode, and a task-specific `TOOL_PROMPT`. The shared
+runtime supplies the rolling buffer, MP4 encoding, hosted request, event filtering,
+deduplication, and output. Never implement RTSP/FFmpeg, frame buffering, async
+loops, provider calls, card parsing, before/after state, or take-photo imports.
+
+Supported explicit modes are `take_photo` and `hosted_video_streaming`.
+Never infer execution mode from the filename. Do not generate a `main` function for a hosted-video
+streaming tool. Never add FFmpeg, frame buffers, HTTP/provider calls, async loops,
+or inference logic to generated tools.
 
 ## General conventions
 

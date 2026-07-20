@@ -13,7 +13,7 @@ import model_router
 import stream_server
 
 
-class TestP2C3Cleanup(unittest.TestCase):
+class TestCascadeCleanup(unittest.TestCase):
     @staticmethod
     def _completion(text):
         return type("Response", (), {
@@ -32,9 +32,9 @@ class TestP2C3Cleanup(unittest.TestCase):
         )
         code = f'TOOL_NAME = "seat_finder"\nTOOL_PROMPT = {prompt!r}\n'
         with patch.object(
-            stream_server, "call_take_photo_baseline_vlm", return_value="Go left."
+            stream_server, "call_take_photo_vlm", return_value="Go left."
         ) as shared:
-            answer = stream_server._run_take_photo_baseline(
+            answer = stream_server._run_take_photo_vlm(
                 "seat_finder", code, b"image"
             )
 
@@ -52,7 +52,7 @@ class TestP2C3Cleanup(unittest.TestCase):
             self.assertEqual(policy.candidates, ("gemini_flash_lite", "gpt5"))
             self.assertEqual(policy.evaluator, "gpt4o-mini")
             self.assertEqual(policy.condition, "C3_PASS_FAILED_ATTEMPTS")
-            self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
+            self.assertEqual(policy.planner_mode, "FUSED_PROMPT")
 
     def test_rejected_gemini_answer_is_passed_to_gpt5_with_original_inputs(self):
         policy = model_router.resolve_execution_policy("take-photo")
@@ -104,10 +104,10 @@ class TestP2C3Cleanup(unittest.TestCase):
         with patch.object(
             model_router, "run_mode_cascade", side_effect=("photo", "stream")
         ) as shared:
-            photo = litellm_utils.call_take_photo_baseline_vlm(
+            photo = litellm_utils.call_take_photo_vlm(
                 b"photo", "Photo prompt", mode="take-photo"
             )
-            stream = litellm_utils.call_take_photo_baseline_vlm(
+            stream = litellm_utils.call_take_photo_vlm(
                 b"frame", "Stream prompt", mode="streaming"
             )
         self.assertEqual((photo, stream), ("photo", "stream"))

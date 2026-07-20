@@ -199,7 +199,7 @@ def call_openai_responses_model(
     return _extract_responses_text(response)
 
 
-def call_take_photo_baseline_vlm(
+def call_take_photo_vlm(
     image: Any,
     prompt: str,
     tool_name: Optional[str] = None,
@@ -207,7 +207,7 @@ def call_take_photo_baseline_vlm(
     mode: str = "take-photo",
     request_id: Optional[str] = None,
 ) -> str:
-    """Delegate the P2 fused prompt to the mode's YAML-configured cascade."""
+    """Delegate the fused prompt to the mode's YAML-configured cascade."""
     # Imported lazily because model_router uses the individual provider wrappers
     # in this module when constructing its implementation executor registry.
     from model_router import run_mode_cascade

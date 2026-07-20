@@ -63,6 +63,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
   const errorCountRef = useRef<number>(0);
   const lastErrorTime = useRef<number>(0);
   const frameSkipCounterRef = useRef<number>(0);
+  const captureInFlightRef = useRef<boolean>(false);
   // Mirror of cameraSource so interval/handle closures read the live value.
   const cameraSourceRef = useRef<CameraSource>(CameraSource.Phone);
 
@@ -208,8 +209,11 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     
     // The hosted multiframe experiment needs enough source frames to populate
     // its short rolling window. Other modes retain the existing cadence.
+    const hostedVideo = ['hosted_multiframe', 'hosted_video'].includes(
+      WebSocketService.getNvidiaStreamingMode(),
+    );
     const captureIntervalMs =
-      WebSocketService.getNvidiaStreamingMode() === 'hosted_multiframe'
+      hostedVideo
         ? WebSocketService.getStreamingFrameIntervalMs() || Config.FRAME_CAPTURE_INTERVAL_MS
         : Config.FRAME_CAPTURE_INTERVAL_MS;
 
@@ -244,7 +248,9 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
     frameSkipCounterRef.current += 1;
 
     const hostedMultiframe =
-      !inReviewMode && WebSocketService.getNvidiaStreamingMode() === 'hosted_multiframe';
+      !inReviewMode && ['hosted_multiframe', 'hosted_video'].includes(
+        WebSocketService.getNvidiaStreamingMode(),
+      );
 
     // Preserve the existing every-third-frame behavior outside the isolated
     // hosted experiment. hosted_multiframe sends each capture into its buffer.
@@ -252,6 +258,13 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
       console.log(`[CameraView] Skipping frame ${frameSkipCounterRef.current} (only sending every 3rd frame)`);
       return;
     }
+
+    // setInterval does not await an async capture. Never overlap takePhoto/read
+    // operations or count concurrent callbacks as additional visual evidence.
+    if (captureInFlightRef.current) {
+      return;
+    }
+    captureInFlightRef.current = true;
 
     try {
       // Acquire the frame from the active source, then send it through the
@@ -270,9 +283,16 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         width = frame.width;
         height = frame.height;
       } else {
-        const photo = await cameraRef.current!.takePhoto({
-          enableShutterSound: false,
-        });
+        // Hosted video needs temporal coverage, not a 10 MP still every tick.
+        // A preview snapshot avoids the expensive full-resolution photo
+        // capture and produces a much smaller JPEG for the WebSocket.
+        const photo = hostedMultiframe
+          ? await cameraRef.current!.takeSnapshot({
+              quality: Config.HOSTED_VIDEO_SNAPSHOT_QUALITY,
+            })
+          : await cameraRef.current!.takePhoto({
+              enableShutterSound: false,
+            });
 
         // Read the file and convert to base64 using react-native-fs
         const base64Image = await RNFS.readFile(photo.path, 'base64');
@@ -321,6 +341,8 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
         stopFrameStreaming();
         setError('Streaming stopped due to repeated errors. Please try again.');
       }
+    } finally {
+      captureInFlightRef.current = false;
     }
   };
 
@@ -522,6 +544,7 @@ const CameraView = forwardRef<CameraViewHandle, CameraViewProps>(({ onFrameCaptu
               isActive={isCameraActive}
               photo={true}
               video={true}
+              photoQualityBalance="speed"
               accessible={true}
               accessibilityLabel="Camera preview"
               accessibilityHint="Live camera feed displaying what the camera sees"

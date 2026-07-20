@@ -510,6 +510,18 @@ class WebSocketService {
     }
 
     try {
+      // React Native exposes bufferedAmount at runtime, but its WebSocket type
+      // definition does not currently declare it.
+      const bufferedAmount = Number((this.ws as any)?.bufferedAmount || 0);
+      if (
+        this.nvidiaStreamingMode === 'hosted_video' &&
+        bufferedAmount > Config.HOSTED_VIDEO_MAX_BUFFERED_BYTES
+      ) {
+        console.warn(
+          `[WebSocketService] Dropping hosted frame due to backpressure: ${bufferedAmount} bytes buffered`,
+        );
+        return false;
+      }
       const frame: StreamFrame = {
         frameNumber: this.frameNumber++,
         timestamp: Date.now(),

@@ -32,6 +32,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 TOOL_NAME = "door_detection"
+EXECUTION_MODE = "hosted_video_streaming"
 TOOL_PROMPT = (
     "Locate the nearest visible door or doorway and give concise clock-face guidance toward it. "
     "If no door or doorway is visible, say so."

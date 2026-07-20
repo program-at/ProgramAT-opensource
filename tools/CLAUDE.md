@@ -11,7 +11,7 @@ audio-friendly text; do not print.
 For a take-photo tool, use this shape:
 
 ```python
-from litellm_utils import call_take_photo_baseline_vlm
+from litellm_utils import call_take_photo_vlm
 
 TOOL_NAME = "tool_name"
 TOOL_PROMPT = "One concise task-specific fused prompt."
@@ -20,7 +20,7 @@ TOOL_PROMPT = "One concise task-specific fused prompt."
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    return call_take_photo_baseline_vlm(
+    return call_take_photo_vlm(
         image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
     )
 ```
@@ -32,3 +32,8 @@ Author one concise fused prompt following the detailed guidance in
 
 For streaming tools, preserve existing streaming behavior and keep responses to
 about 15 spoken words. Do not change NVIDIA hosted streaming or RTVI code.
+
+For `hosted_video_streaming`, declare `TOOL_NAME`, `EXECUTION_MODE`,
+`TOOL_PROMPT`, and optional literal `VIDEO_CONFIG`/`OUTPUT_CONFIG` only. The shared runtime owns the continuous video
+session and output filtering. Do not import take-photo helpers or implement
+buffering, FFmpeg, model calls, asynchronous loops, or before/after state.

@@ -51,6 +51,8 @@ export const Config = {
   
   // Frame streaming configuration
   FRAME_CAPTURE_INTERVAL_MS: 500, // 2 FPS (1000ms / 2)
+  HOSTED_VIDEO_SNAPSHOT_QUALITY: 70, // Preview JPEG; avoids multi-megabyte 10 MP stills
+  HOSTED_VIDEO_MAX_BUFFERED_BYTES: 2 * 1024 * 1024,
   FRAME_QUALITY_PRIORITIZATION: 'speed' as const, // 'speed' or 'quality'
   
   // Image quality settings (0.0 - 1.0)
@@ -79,4 +81,3 @@ export const Config = {
 };
 
 export default Config;
-

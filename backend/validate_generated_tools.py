@@ -134,10 +134,10 @@ def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> L
     return failures
 
 
-def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
+def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
     """Enforce the unified single-call take-photo generation contract."""
     if not re.search(
-        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take-photo\s*$",
+        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take[_-]photo\s*$",
         issue_text,
         re.IGNORECASE | re.MULTILINE,
     ):
@@ -147,19 +147,19 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     except SyntaxError:
         return []
 
-    baseline_calls = [
+    vlm_calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and (
             isinstance(node.func, ast.Name)
-            and node.func.id == "call_take_photo_baseline_vlm"
+            and node.func.id == "call_take_photo_vlm"
         )
     ]
     failures = []
-    if len(baseline_calls) != 1:
+    if len(vlm_calls) != 1:
         failures.append(
-            f"{rel_path}: take-photo tools require exactly one call_take_photo_baseline_vlm() call; "
-            f"found {len(baseline_calls)}."
+            f"{rel_path}: take-photo tools require exactly one call_take_photo_vlm() call; "
+            f"found {len(vlm_calls)}."
         )
     constants = _extract_string_constants(tree)
     tool_prompt = constants.get("TOOL_PROMPT")
@@ -168,7 +168,7 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     if "TOOL_NAME" not in constants:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_NAME constant.")
     prompt_uses = []
-    for call in baseline_calls:
+    for call in vlm_calls:
         prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
         prompt_uses.append(
             prompt_keyword is not None
@@ -178,7 +178,7 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
     if prompt_uses != [True]:
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_PROMPT directly as the helper prompt.")
     tool_name_uses = []
-    for call in baseline_calls:
+    for call in vlm_calls:
         keyword = next((kw for kw in call.keywords if kw.arg == "tool_name"), None)
         tool_name_uses.append(
             keyword is not None
@@ -189,6 +189,80 @@ def validate_take_photo_baseline(tool_text: str, issue_text: str, rel_path: Path
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_NAME directly as tool_name.")
     if extract_copilot_llm_task_categories(tool_text):
         failures.append(f"{rel_path}: take-photo tools must not call copilot_llm_call().")
+    return failures
+
+
+def validate_rtvi_streaming_tool(
+    tool_text: str, issue_text: str, rel_path: Path
+) -> List[str]:
+    """Require hosted-video tools to remain declarative and runtime-owned."""
+    if not re.search(
+        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*rtvi_streaming\s*$",
+        issue_text.replace("hosted_video_streaming", "rtvi_streaming"),
+        re.IGNORECASE | re.MULTILINE,
+    ):
+        return []
+    try:
+        tree = ast.parse(tool_text)
+    except SyntaxError:
+        return []
+    constants = _extract_string_constants(tree)
+    failures = []
+    if constants.get('EXECUTION_MODE') != 'hosted_video_streaming':
+        failures.append(
+            f"{rel_path}: hosted-video tools require "
+            "EXECUTION_MODE = 'hosted_video_streaming'."
+        )
+    if not isinstance(constants.get('TOOL_NAME'), str):
+        failures.append(f"{rel_path}: RTVI tools require one string TOOL_NAME.")
+    if not isinstance(constants.get('TOOL_PROMPT'), str) or not constants.get('TOOL_PROMPT', '').strip():
+        failures.append(f"{rel_path}: RTVI tools require one non-empty string TOOL_PROMPT.")
+    forbidden = {
+        'call_take_photo_vlm', 'copilot_llm_call', 'RtspPublisher',
+        'NvidiaRtviClient', 'asyncio', 're', 'requests', 'aiohttp', 'ffmpeg',
+    }
+    used = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    found = sorted(forbidden & used)
+    imported = {
+        alias.name.split('.')[0]
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    found = sorted(set(found) | (forbidden & imported))
+    if found:
+        failures.append(
+            f"{rel_path}: RTVI runtime owns streaming; forbidden tool symbols: "
+            + ', '.join(found)
+        )
+    module_state = [
+        target.id
+        for node in tree.body if isinstance(node, ast.Assign)
+        for target in node.targets if isinstance(target, ast.Name)
+        and target.id not in {
+            'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
+        }
+    ]
+    if module_state:
+        failures.append(f"{rel_path}: RTVI tools must not keep module state: {module_state}")
+    allowed_names = {
+        'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
+    }
+    non_declarative = []
+    for node in tree.body:
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            continue
+        if isinstance(node, ast.Assign) and all(
+            isinstance(target, ast.Name) and target.id in allowed_names
+            for target in node.targets
+        ):
+            continue
+        non_declarative.append(type(node).__name__)
+    if non_declarative:
+        failures.append(
+            f"{rel_path}: RTVI tools may contain only declarative constants: "
+            + ', '.join(non_declarative)
+        )
     return failures
 
 
@@ -235,7 +309,8 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
 
         failures.extend(validate_no_stringified_copilot_results(text, rel_path))
         if issue_text:
-            failures.extend(validate_take_photo_baseline(text, issue_text, rel_path))
+            failures.extend(validate_take_photo_tool(text, issue_text, rel_path))
+            failures.extend(validate_rtvi_streaming_tool(text, issue_text, rel_path))
 
     return failures
 

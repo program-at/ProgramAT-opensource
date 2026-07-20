@@ -51,14 +51,14 @@ def load_stream_server_function(name: str):
 class TestIssueTemplateGuidance(unittest.TestCase):
     """Test Copilot-facing issue template guidance."""
 
-    def test_visual_at_template_uses_take_photo_baseline(self):
+    def test_visual_at_template_uses_take_photo_vlm(self):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
         for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
             self.assertIn(f"## {heading}", template)
             self.assertIn(f"## {heading}\n\n<!--", template)
-        self.assertIn("call_take_photo_baseline_vlm", template)
+        self.assertIn("call_take_photo_vlm", template)
         self.assertIn("TOOL_PROMPT", template)
         self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
         self.assertNotIn("Task Stages", template)
@@ -90,6 +90,11 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("are optional when they improve reliability", template)
         self.assertIn("Never turn", template)
         self.assertIn("multiple model calls", template)
+        self.assertIn("hosted_video_streaming", template)
+        self.assertIn("TOOL_PROMPT", template)
+        self.assertIn("runtime owns FFmpeg clip encoding", template)
+        self.assertIn("Hosted-video streaming tools", instructions)
+        self.assertIn("Never infer execution mode from the filename", instructions)
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

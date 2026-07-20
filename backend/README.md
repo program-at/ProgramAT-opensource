@@ -46,7 +46,7 @@ The server uses environment variables for configuration:
 
 - `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; the active P2+C3 flow uses `GEMINI_API_KEY` and `OPENAI_API_KEY`.
+- Provider credentials: the default system model uses `GROQ_API_KEY`; the active policy cascade flow uses `GEMINI_API_KEY` and `OPENAI_API_KEY`.
   - System calls use the fixed system model.
   - Gemini 3.1 Flash Lite runs first, GPT-4o-mini evaluates its answer, and GPT-5 runs only when Gemini fails or is rejected.
 
@@ -62,17 +62,17 @@ fallback behavior; those backend details are not generated prompt stages.
 
 Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
 
-Generated tools call `call_take_photo_baseline_vlm(...)`. Both take-photo and
+Generated tools call `call_take_photo_vlm(...)`. Both take-photo and
 streaming resolve the same concrete implementations from `execution_policy.yaml`:
 
 ```yaml
 mode_execution:
   take-photo:
     cascade: default_reasoning
-    planner_mode: P2_FUSED_PROMPT
+    planner_mode: FUSED_PROMPT
   streaming:
     cascade: default_reasoning
-    planner_mode: P2_FUSED_PROMPT
+    planner_mode: FUSED_PROMPT
 
 cascade_profiles:
   default_reasoning:

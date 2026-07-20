@@ -11,10 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import litellm_utils
 import model_router
 import stream_server
-from validate_generated_tools import validate_take_photo_baseline
+from validate_generated_tools import validate_take_photo_tool
 
 
-class TestTakePhotoBaseline(unittest.TestCase):
+class TestTakePhotoVlm(unittest.TestCase):
     @staticmethod
     def _completion(text):
         return type("Response", (), {
@@ -186,16 +186,16 @@ class TestTakePhotoBaseline(unittest.TestCase):
             self.assertEqual(policy.evaluator, "gpt4o-mini")
             self.assertEqual(policy.result_passing, "failed_attempts")
             self.assertEqual(policy.condition, "C3_PASS_FAILED_ATTEMPTS")
-            self.assertEqual(policy.planner_mode, "P2_FUSED_PROMPT")
+            self.assertEqual(policy.planner_mode, "FUSED_PROMPT")
 
     def test_take_photo_and_streaming_use_same_shared_policy_executor(self):
         with patch.object(
             model_router, "run_mode_cascade", side_effect=("photo", "stream")
         ) as shared:
-            photo = litellm_utils.call_take_photo_baseline_vlm(
+            photo = litellm_utils.call_take_photo_vlm(
                 b"photo", "Photo prompt", mode="take-photo", request_id="p1"
             )
-            stream = litellm_utils.call_take_photo_baseline_vlm(
+            stream = litellm_utils.call_take_photo_vlm(
                 b"frame", "Streaming prompt", mode="streaming", request_id="s1"
             )
 
@@ -414,16 +414,16 @@ class TestTakePhotoBaseline(unittest.TestCase):
         self.assertEqual(content[1]["type"], "input_image")
         self.assertTrue(content[1]["image_url"].startswith("data:image/jpeg;base64,"))
 
-    def test_take_photo_validator_accepts_exactly_one_baseline_call(self):
+    def test_take_photo_validator_accepts_exactly_one_vlm_call(self):
         issue = "## Mode\n\ntake-photo\n"
         tool = '''
-from litellm_utils import call_take_photo_baseline_vlm
+from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "read_label"
 TOOL_PROMPT = "Read the label."
 def main(image, input_data):
-    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
+    return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
-        self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/read_label.py")), [])
+        self.assertEqual(validate_take_photo_tool(tool, issue, Path("tools/read_label.py")), [])
 
     def test_take_photo_validator_rejects_router_and_multiple_calls(self):
         issue = "## Mode\n\ntake-photo\n"
@@ -432,10 +432,10 @@ TOOL_PROMPT = "Read the label."
 TOOL_NAME = "read_label"
 def main(image, input_data):
     copilot_llm_call(capability="ocr", images=[image])
-    call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT)
-    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
+    call_take_photo_vlm(image=image, prompt=TOOL_PROMPT)
+    return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
-        failures = validate_take_photo_baseline(tool, issue, Path("tools/read_label.py"))
+        failures = validate_take_photo_tool(tool, issue, Path("tools/read_label.py"))
         self.assertTrue(any("exactly one" in failure for failure in failures))
         self.assertTrue(any("must not call copilot_llm_call" in failure for failure in failures))
 
@@ -446,24 +446,24 @@ def main(image, input_data):
         )
         issue = "## Mode\n\ntake-photo\n"
         tool = f'''
-from litellm_utils import call_take_photo_baseline_vlm
+from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "find_seat"
 TOOL_PROMPT = {prompt!r}
 def main(image, input_data):
-    return call_take_photo_baseline_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
+    return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
 '''
-        self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/find_seat.py")), [])
+        self.assertEqual(validate_take_photo_tool(tool, issue, Path("tools/find_seat.py")), [])
         self.assertNotIn("1.", prompt)
         self.assertNotIn("First", prompt)
 
         authored_call = tool.replace("prompt=TOOL_PROMPT", 'prompt="Describe the image."')
-        failures = validate_take_photo_baseline(authored_call, issue, Path("tools/find_seat.py"))
+        failures = validate_take_photo_tool(authored_call, issue, Path("tools/find_seat.py"))
         self.assertTrue(any("pass TOOL_PROMPT directly" in failure for failure in failures))
 
     def test_complex_copilot_prompt_fuses_ordered_subtasks_into_one_call(self):
         issue = "## Mode\n\ntake-photo\n"
         tool = '''
-from litellm_utils import call_take_photo_baseline_vlm
+from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "find_uber"
 TOOL_PROMPT = (
     "Follow this sequence using the same image: 1. Identify the likely rideshare vehicle "
@@ -473,17 +473,17 @@ TOOL_PROMPT = (
     "the vehicle. Return only the final user-facing answer."
 )
 def main(image, input_data):
-    return call_take_photo_baseline_vlm(
+    return call_take_photo_vlm(
         image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
     )
 '''
-        self.assertEqual(validate_take_photo_baseline(tool, issue, Path("tools/find_uber.py")), [])
+        self.assertEqual(validate_take_photo_tool(tool, issue, Path("tools/find_uber.py")), [])
         tree = ast.parse(tool)
         helper_calls = [
             node for node in ast.walk(tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
-            and node.func.id == "call_take_photo_baseline_vlm"
+            and node.func.id == "call_take_photo_vlm"
         ]
         self.assertEqual(len(helper_calls), 1)
         prompt = next(
@@ -500,13 +500,13 @@ def main(image, input_data):
         tree = ast.parse(source_path.read_text(encoding="utf-8"))
         function = next(
             node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "_run_take_photo_baseline"
+            if isinstance(node, ast.FunctionDef) and node.name == "_run_take_photo_vlm"
         )
         calls = [
             node.func.id for node in ast.walk(function)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         ]
-        self.assertEqual(calls.count("call_take_photo_baseline_vlm"), 1)
+        self.assertEqual(calls.count("call_take_photo_vlm"), 1)
         self.assertEqual(calls.count("_take_photo_tool_prompt"), 1)
         self.assertNotIn("system_llm_call", calls)
         self.assertNotIn("copilot_llm_call", calls)
@@ -515,9 +515,9 @@ def main(image, input_data):
     def test_runtime_sends_copilot_prompt_to_gemini_exactly_once(self):
         code = 'TOOL_NAME = "gesture"\nTOOL_PROMPT = "Return only the visible gesture."\n'
         with patch.object(
-            stream_server, "call_take_photo_baseline_vlm", return_value="Waving"
+            stream_server, "call_take_photo_vlm", return_value="Waving"
         ) as gemini, patch.object(stream_server, "tool_copilot_llm_call") as router:
-            result = stream_server._run_take_photo_baseline("gesture", code, b"image")
+            result = stream_server._run_take_photo_vlm("gesture", code, b"image")
 
         self.assertEqual(result, "Waving")
         gemini.assert_called_once_with(
@@ -533,10 +533,10 @@ def main(image, input_data):
             'TOOL_PROMPT = "Identify important mail and briefly label each important item."\n'
         )
         with patch.object(
-            stream_server, "call_take_photo_baseline_vlm", return_value="answer"
+            stream_server, "call_take_photo_vlm", return_value="answer"
         ) as helper:
-            stream_server._run_take_photo_baseline("mail", original, b"image")
-            stream_server._run_take_photo_baseline("mail", updated, b"image")
+            stream_server._run_take_photo_vlm("mail", original, b"image")
+            stream_server._run_take_photo_vlm("mail", updated, b"image")
 
         self.assertEqual(
             [call.kwargs["prompt"] for call in helper.call_args_list],
@@ -548,7 +548,7 @@ def main(image, input_data):
 
     def test_runtime_rejects_tools_without_a_prompt(self):
         with self.assertRaisesRegex(ValueError, "no string TOOL_PROMPT"):
-            stream_server._run_take_photo_baseline("legacy", "def main(): pass", b"image")
+            stream_server._run_take_photo_vlm("legacy", "def main(): pass", b"image")
 
     def test_runtime_bypass_is_connected_to_take_photo_and_streaming(self):
         source = (Path(__file__).resolve().parent / "stream_server.py").read_text(encoding="utf-8")
@@ -556,7 +556,7 @@ def main(image, input_data):
         references = [
             node for node in ast.walk(tree)
             if isinstance(node, ast.Name)
-            and node.id == "_run_take_photo_baseline"
+            and node.id == "_run_take_photo_vlm"
             and isinstance(node.ctx, ast.Load)
         ]
         self.assertEqual(len(references), 2)

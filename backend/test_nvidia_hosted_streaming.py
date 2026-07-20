@@ -21,10 +21,13 @@ from nvidia_hosted_client import (
     TimedFrame,
     build_multi_image_request,
     build_video_request,
+    encode_frames_to_mp4,
     encode_frames_as_mp4,
     parse_hosted_models,
+    parse_structured_video_result,
     select_hosted_model,
     uniformly_sample_frames,
+    validate_played_card_event,
 )
 
 import stream_server
@@ -97,6 +100,92 @@ class TestHostedModelDiscovery(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRollingFrameBuffer(unittest.TestCase):
+    def test_played_card_json_requires_before_after_and_confidence(self):
+        parsed = parse_structured_video_result(json.dumps({
+            "event_detected": True,
+            "before_cards": ["jack of diamonds", "nine of hearts"],
+            "after_cards": ["nine of hearts"],
+            "played_card": "jack of diamonds",
+            "confidence": 0.9,
+            "evidence": "Visible before and absent after",
+        }))
+        self.assertEqual(
+            validate_played_card_event(parsed, 0.8),
+            ("You just played the jack of diamonds.", "accepted"),
+        )
+        parsed["after_cards"].append("jack of diamonds")
+        self.assertEqual(
+            validate_played_card_event(parsed, 0.8)[1],
+            "played_card_still_in_after",
+        )
+
+    def test_unchanged_readable_hand_emits_no_card_played(self):
+        parsed = {
+            "event_detected": False,
+            "before_cards": ["Jack of Diamonds", "nine of hearts"],
+            "after_cards": ["nine of hearts", "jack of diamonds"],
+            "played_card": None,
+            "confidence": 0.9,
+            "evidence": "The same readable cards remain in the hand.",
+        }
+        self.assertEqual(
+            validate_played_card_event(parsed, 0.8),
+            (None, "stable_no_event"),
+        )
+
+    def test_uncertain_or_empty_hand_does_not_emit_no_change(self):
+        for before, after, confidence in (([], [], 0.9),
+                                          (["nine of hearts"], [], 0.9),
+                                          (["nine of hearts"], ["nine of hearts"], 0.5)):
+            accepted, _decision = validate_played_card_event({
+                "event_detected": False,
+                "before_cards": before,
+                "after_cards": after,
+                "played_card": None,
+                "confidence": confidence,
+                "evidence": "Uncertain",
+            }, 0.8)
+            self.assertIsNone(accepted)
+
+    def test_played_card_semantic_state_requires_silent_stable_reset(self):
+        session = {
+            "semantic_state": "stable_no_event",
+            "output_config": {"confidence_threshold": 0.8},
+        }
+        event = {
+            "event_detected": True,
+            "before_cards": ["jack of diamonds", "nine of hearts"],
+            "after_cards": ["nine of hearts"],
+            "played_card": "jack of diamonds",
+            "confidence": 0.9,
+        }
+        accepted, previous, current, reason = (
+            stream_server._apply_played_card_semantic_transition(session, event)
+        )
+        self.assertEqual(accepted, "You just played the jack of diamonds.")
+        self.assertEqual((previous, current, reason), (
+            "stable_no_event", "played_card:jack of diamonds",
+            "new_played_card_transition",
+        ))
+        self.assertIsNone(
+            stream_server._apply_played_card_semantic_transition(session, event)[0]
+        )
+
+        stable = {
+            "event_detected": False,
+            "before_cards": ["nine of hearts"],
+            "after_cards": ["nine of hearts"],
+            "played_card": None,
+            "confidence": 0.9,
+        }
+        self.assertEqual(
+            stream_server._apply_played_card_semantic_transition(session, stable)[3],
+            "stable_reset",
+        )
+        self.assertIsNotNone(
+            stream_server._apply_played_card_semantic_transition(session, event)[0]
+        )
+
     @staticmethod
     def _frame(index):
         return f"data:image/jpeg;base64,{base64.b64encode(str(index).encode()).decode()}"
@@ -131,11 +220,13 @@ class TestRollingFrameBuffer(unittest.TestCase):
         self.assertFalse(request["stream"])
 
     def test_native_video_request_uses_documented_video_url_shape(self):
+        prompt = "Find moving obstacles\nUNCHANGED_PROMPT_END"
         request = build_video_request(
-            "video/model", "Find moving obstacles", "data:video/mp4;base64,AAAA", 80
+            "video/model", prompt, "data:video/mp4;base64,AAAA", 80
         )
         content = request["messages"][0]["content"]
         self.assertEqual(content[0]["type"], "text")
+        self.assertTrue(content[0]["text"].endswith(prompt))
         self.assertEqual(content[1], {
             "type": "video_url",
             "video_url": {"url": "data:video/mp4;base64,AAAA"},
@@ -154,6 +245,24 @@ class TestRollingFrameBuffer(unittest.TestCase):
         self.assertTrue(video_uri.startswith("data:video/mp4;base64,"))
         self.assertGreater(len(video_uri), 100)
 
+    def test_ffmpeg_mp4_command_is_h264_yuv420p_and_chronological(self):
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (64, 48), "blue").save(image_bytes, "JPEG")
+        uri = "data:image/jpeg;base64," + base64.b64encode(image_bytes.getvalue()).decode()
+        frames = [TimedFrame(2, uri), TimedFrame(1, uri)]
+        with __import__("tempfile").TemporaryDirectory() as directory, \
+             patch("nvidia_hosted_client.shutil.which", return_value="/usr/bin/ffmpeg"), \
+             patch("nvidia_hosted_client.subprocess.run") as run:
+            output = Path(directory) / "clip.mp4"
+            def finalize(command, **_kwargs):
+                output.write_bytes(b"mp4")
+            run.side_effect = finalize
+            self.assertEqual(encode_frames_to_mp4(frames, output, 4, 1280), 3)
+            command = run.call_args.args[0]
+            self.assertIn("libx264", command)
+            self.assertIn("yuv420p", command)
+            self.assertIn("4", command)
+
 
 class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
     @staticmethod
@@ -165,8 +274,14 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             "frame_buffer": buffer or RollingFrameBuffer(2, 20),
             "scheduler_task": None,
             "request_task": None,
-            "model": HostedModel("vendor/vision", True, False, {}),
-            "input_format": "ordered_image_url",
+            "model": HostedModel("vendor/video", True, True, {}),
+            "input_format": "base64_mp4",
+            "window_seconds": 2,
+            "interval_seconds": 0.01,
+            "overlap_seconds": 0,
+            "output_config": {},
+            "temporary_paths": set(),
+            "last_emitted_events": {},
             "clip_sequence": 0,
             "latest_forwarded_clip": 0,
             "skipped_intervals": 0,
@@ -192,15 +307,11 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             request_started.set()
             await release.wait()
 
-        model = HostedModel("vendor/vision", True, False, {})
+        model = HostedModel("vendor/video", True, True, {})
         with patch.object(
             stream_server.hosted_nvidia_client,
             "select_model",
             new=AsyncMock(return_value=model),
-        ), patch.object(
-            stream_server,
-            "NVIDIA_HOSTED_REQUEST_INTERVAL_SECONDS",
-            0.01,
         ), patch.object(
             stream_server,
             "_run_hosted_nvidia_clip",
@@ -228,6 +339,10 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
         websocket.send = AsyncMock()
 
         async def replace_session(_request):
+            self.assertEqual(
+                _request["max_tokens"], stream_server.HOSTED_VIDEO_MAX_TOKENS
+            )
+            self.assertGreaterEqual(_request["max_tokens"], 256)
             stream_server.active_hosted_nvidia_sessions["client"] = self._session()
             return "Exit ahead"
 
@@ -235,13 +350,21 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             return function(*args, **kwargs)
 
         with patch.object(
-            stream_server,
-            "normalize_image_data_uri",
-            return_value=frame.image_data_uri,
-        ), patch.object(
             stream_server.asyncio,
             "to_thread",
             side_effect=to_thread_inline,
+        ), patch.object(
+            stream_server,
+            "encode_frames_to_mp4",
+            return_value=100,
+        ), patch.object(
+            stream_server,
+            "video_file_data_uri",
+            return_value="data:video/mp4;base64,AAAA",
+        ), patch.object(
+            stream_server,
+            "probe_mp4",
+            return_value={"streams": [{"width": 320, "height": 240}], "format": {"duration": "2"}},
         ), patch.object(
             stream_server.hosted_nvidia_client,
             "chat_completions",

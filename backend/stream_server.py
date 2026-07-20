@@ -13,6 +13,7 @@ python stream_server.py
 import asyncio
 import ast
 import websockets
+from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 import json
 import base64
 import io
@@ -70,7 +71,7 @@ from model_router import (
     system_llm_call,
 )
 from litellm_utils import (
-    call_take_photo_baseline_vlm,
+    call_take_photo_vlm,
     extract_text,
 )
 from module_manager import get_module_manager
@@ -81,18 +82,26 @@ from webrtc_handler import webrtc_offer_handler, cleanup_webrtc_peers
 from video_summarizer import summarize_video
 from nvidia_hosted_client import (
     NvidiaHostedClient,
+    NvidiaHostedError,
     RollingFrameBuffer,
     TimedFrame,
     build_multi_image_request,
     build_video_request,
+    encode_frames_to_mp4,
     encode_frames_as_mp4,
     normalize_image_data_uri,
+    parse_structured_video_result,
+    probe_mp4,
     uniformly_sample_frames,
+    video_file_data_uri,
+    validate_played_card_event,
 )
 from nvidia_rtvi_client import NvidiaRtviClient
 from rtsp_publisher import RtspPublisher, RtspPublisherConfig, safe_rtsp_path
+
 import re
 import tempfile
+import shutil
 import secrets
 import traceback
 from difflib import SequenceMatcher
@@ -568,34 +577,31 @@ def _env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
-_configured_nvidia_streaming_mode = os.getenv('NVIDIA_STREAMING_MODE', '').strip().lower()
-if not _configured_nvidia_streaming_mode and _env_flag('NVIDIA_RTVI_STREAMING_ENABLED'):
-    # Backwards compatibility for the previously implemented RTVI flag.
-    _configured_nvidia_streaming_mode = 'rtvi'
-NVIDIA_STREAMING_MODES = {'disabled', 'original', 'rtvi', 'hosted_multiframe'}
-if _configured_nvidia_streaming_mode and _configured_nvidia_streaming_mode not in NVIDIA_STREAMING_MODES:
-    raise ValueError(
-        f"NVIDIA_STREAMING_MODE must be one of {sorted(NVIDIA_STREAMING_MODES)}, "
-        f"got {_configured_nvidia_streaming_mode!r}"
-    )
-# Experiment 2 always uses the same policy cascade as take-photo. Keep the
-# NVIDIA implementations available for future experiments, but do not let an
-# environment variable select a different active streaming executor.
-STREAMING_EXECUTOR = 'policy_cascade'
-NVIDIA_HOSTED_ACTIVE = False
-NVIDIA_STREAMING_MODE = 'disabled'
+STREAMING_EXECUTION_POLICY = os.getenv('STREAMING_EXECUTION_POLICY', 'hosted_video_only').strip()
+if STREAMING_EXECUTION_POLICY != 'hosted_video_only':
+    raise ValueError("STREAMING_EXECUTION_POLICY must be 'hosted_video_only'")
+STREAMING_EXECUTOR = 'hosted_video_streaming'
+NVIDIA_HOSTED_ACTIVE = True
+NVIDIA_STREAMING_MODE = 'hosted_video'
 NVIDIA_RTVI_STREAMING_ENABLED = False
-NVIDIA_RTVI_BASE_URL = os.getenv('NVIDIA_RTVI_BASE_URL', 'http://localhost:8000').rstrip('/')
-NVIDIA_RTVI_MODEL = os.getenv('NVIDIA_RTVI_MODEL', '').strip()
+NVIDIA_RTVI_BASE_URL = os.getenv('RTVI_BASE_URL', 'http://localhost:8000/v1').rstrip('/')
+NVIDIA_RTVI_MODEL = os.getenv('RTVI_MODEL_ID', '').strip()
 NVIDIA_RTVI_CHUNK_DURATION_SECONDS = float(
-    os.getenv('NVIDIA_RTVI_CHUNK_DURATION_SECONDS', '2')
+    os.getenv('RTVI_CHUNK_DURATION_SECONDS', '5')
 )
 NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS = float(
-    os.getenv('NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS', '0')
+    os.getenv('RTVI_CHUNK_OVERLAP_SECONDS', '1')
 )
 NVIDIA_RTVI_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv('NVIDIA_RTVI_REQUEST_TIMEOUT_SECONDS', '30')
+    os.getenv('RTVI_REQUEST_TIMEOUT_SECONDS', '30')
 )
+RTVI_STARTUP_TIMEOUT_SECONDS = float(os.getenv('RTVI_STARTUP_TIMEOUT_SECONDS', '30'))
+RTVI_RECONNECT_MAX_ATTEMPTS = int(os.getenv('RTVI_RECONNECT_MAX_ATTEMPTS', '3'))
+RTVI_DUPLICATE_COOLDOWN_SECONDS = float(os.getenv('RTVI_DUPLICATE_COOLDOWN_SECONDS', '5'))
+RTVI_PROMPT_MAX_CHARS = int(os.getenv('RTVI_PROMPT_MAX_CHARS', '8000'))
+RTVI_REQUIRE_NEMOTRON = _env_flag('RTVI_REQUIRE_NEMOTRON', False)
+if not 0 <= NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS < NVIDIA_RTVI_CHUNK_DURATION_SECONDS:
+    raise ValueError('RTVI chunk overlap must be non-negative and less than chunk duration')
 PROGRAMAT_RTSP_PUBLIC_BASE_URL = os.getenv(
     'PROGRAMAT_RTSP_PUBLIC_BASE_URL', 'rtsp://localhost:8554/programat'
 ).rstrip('/')
@@ -616,24 +622,147 @@ NVIDIA_HOSTED_REQUEST_INTERVAL_SECONDS = float(
 )
 NVIDIA_HOSTED_MAX_IN_FLIGHT = int(os.getenv('NVIDIA_HOSTED_MAX_IN_FLIGHT', '1'))
 NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS = float(
-    os.getenv('NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS', '60')
+    os.getenv('HOSTED_VIDEO_REQUEST_TIMEOUT_SECONDS', os.getenv('NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS', '60'))
 )
 NVIDIA_HOSTED_MAX_TOKENS = int(os.getenv('NVIDIA_HOSTED_MAX_TOKENS', '80'))
+NVIDIA_VIDEO_BASE_URL = os.getenv('NVIDIA_VIDEO_BASE_URL', NVIDIA_HOSTED_API_BASE_URL).rstrip('/')
+NVIDIA_VIDEO_API_KEY = os.getenv('NVIDIA_VIDEO_API_KEY', NVIDIA_HOSTED_API_KEY).strip()
+NVIDIA_VIDEO_MODEL = os.getenv('NVIDIA_VIDEO_MODEL', NVIDIA_HOSTED_MODEL).strip()
+NVIDIA_VIDEO_INPUT_MODE = os.getenv('NVIDIA_VIDEO_INPUT_MODE', 'base64').strip().lower()
+HOSTED_VIDEO_WINDOW_SECONDS = float(os.getenv('HOSTED_VIDEO_WINDOW_SECONDS', '6'))
+HOSTED_VIDEO_INTERVAL_SECONDS = float(os.getenv('HOSTED_VIDEO_INTERVAL_SECONDS', '3'))
+HOSTED_VIDEO_OVERLAP_SECONDS = float(os.getenv('HOSTED_VIDEO_OVERLAP_SECONDS', '3'))
+HOSTED_VIDEO_OUTPUT_FPS = float(os.getenv('HOSTED_VIDEO_OUTPUT_FPS', '4'))
+HOSTED_VIDEO_MAX_WIDTH = int(os.getenv('HOSTED_VIDEO_MAX_WIDTH', '1280'))
+HOSTED_VIDEO_JPEG_QUALITY = int(os.getenv('HOSTED_VIDEO_JPEG_QUALITY', '80'))
+HOSTED_VIDEO_MAX_TOKENS = int(os.getenv('HOSTED_VIDEO_MAX_TOKENS', '256'))
+HOSTED_VIDEO_CAPTURE_INTERVAL_MS = max(
+    250, int(os.getenv('HOSTED_VIDEO_CAPTURE_INTERVAL_MS', '333'))
+)
+HOSTED_VIDEO_MAX_CLIP_BYTES = int(os.getenv('HOSTED_VIDEO_MAX_CLIP_BYTES', '8388608') or '8388608')
+HOSTED_VIDEO_DUPLICATE_COOLDOWN_SECONDS = float(os.getenv('HOSTED_VIDEO_DUPLICATE_COOLDOWN_SECONDS', '5'))
+HOSTED_VIDEO_DEBUG_SAVE = _env_flag('HOSTED_VIDEO_DEBUG_SAVE', False)
+HOSTED_VIDEO_DEBUG_DIR = Path(os.getenv(
+    'HOSTED_VIDEO_DEBUG_DIR', str(Path(__file__).resolve().parent / 'hosted_video_debug')
+))
+if not 0 <= HOSTED_VIDEO_OVERLAP_SECONDS < HOSTED_VIDEO_WINDOW_SECONDS:
+    raise ValueError('HOSTED_VIDEO_OVERLAP_SECONDS must be less than the window')
 
 rtvi_client = NvidiaRtviClient(
     NVIDIA_RTVI_BASE_URL,
     NVIDIA_RTVI_REQUEST_TIMEOUT_SECONDS,
 )
+logger.info(
+    "Streaming execution policy: hosted NVIDIA video only base_url=%s model=%s",
+    NVIDIA_VIDEO_BASE_URL,
+    NVIDIA_VIDEO_MODEL or 'not-configured',
+)
 hosted_nvidia_client = NvidiaHostedClient(
-    NVIDIA_HOSTED_API_BASE_URL,
-    NVIDIA_HOSTED_API_KEY,
-    NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS,
+    NVIDIA_VIDEO_BASE_URL, NVIDIA_VIDEO_API_KEY, NVIDIA_HOSTED_REQUEST_TIMEOUT_SECONDS,
 )
 
 # Experimental sessions are separate from active_streaming_tools so enabling RTVI
 # cannot accidentally enter the CLIP/router/cascade path.
 active_rtvi_sessions: dict[str, Dict[str, Any]] = {}
 active_hosted_nvidia_sessions: dict[str, Dict[str, Any]] = {}
+
+
+def _literal_tool_metadata(tool_code: str, name: str) -> Any:
+    """Read a declarative module constant without executing generated code."""
+    try:
+        tree = ast.parse(tool_code or '')
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(isinstance(target, ast.Name) and target.id == name for target in targets):
+            continue
+        try:
+            return ast.literal_eval(node.value)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _tool_execution_mode(tool_code: str) -> str:
+    value = _literal_tool_metadata(tool_code, 'EXECUTION_MODE')
+    return str(value or '').strip().lower().replace('-', '_')
+
+
+def _validated_rtvi_tool(tool_code: str) -> tuple[str, str]:
+    name = _literal_tool_metadata(tool_code, 'TOOL_NAME')
+    mode = _literal_tool_metadata(tool_code, 'EXECUTION_MODE')
+    prompt = _literal_tool_metadata(tool_code, 'TOOL_PROMPT')
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError('Streaming tool requires a non-empty string TOOL_NAME')
+    if mode != 'hosted_video_streaming':
+        raise ValueError("Streaming tool requires EXECUTION_MODE = 'hosted_video_streaming'")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError('Streaming tool requires a non-empty string TOOL_PROMPT')
+    if len(prompt) > RTVI_PROMPT_MAX_CHARS:
+        raise ValueError(f'Streaming TOOL_PROMPT exceeds {RTVI_PROMPT_MAX_CHARS} characters')
+    return name.strip(), prompt
+
+
+def _filter_rtvi_event(
+    session: Dict[str, Any], content: str, start_time: Any, end_time: Any, event_time: float
+) -> tuple[Optional[str], str]:
+    """Apply only generic sentinel and overlap-aware exact deduplication."""
+    normalized = ' '.join(str(content or '').split())
+    if not normalized:
+        return None, 'empty'
+    output_config = session.get('output_config') or {}
+    sentinel = str(output_config.get('no_event_sentinel', 'NO_EVENT'))
+    if normalized == sentinel:
+        return None, 'no_event'
+    key = normalized.casefold()
+    previous = session.setdefault('last_emitted_events', {}).get(key)
+    try:
+        current_start, current_end = float(start_time), float(end_time)
+    except (TypeError, ValueError):
+        current_start = current_end = None
+    if previous:
+        previous_start, previous_end, emitted_at = previous
+        overlaps = (
+            current_start is not None and previous_start is not None
+            and current_start <= previous_end and previous_start <= current_end
+        )
+        cooldown = float(output_config.get('cooldown_seconds', HOSTED_VIDEO_DUPLICATE_COOLDOWN_SECONDS))
+        if output_config.get('deduplicate', True) and (overlaps or event_time - emitted_at < cooldown):
+            return None, 'duplicate'
+    session['last_emitted_events'][key] = (current_start, current_end, event_time)
+    return normalized, 'accepted'
+
+
+def _apply_played_card_semantic_transition(
+    session: Dict[str, Any], parsed: Dict[str, Any]
+) -> tuple[Optional[str], str, str, str]:
+    """Advance the played-card detector; stable/no-event transitions are silent."""
+    previous = str(session.get('semantic_state', 'stable_no_event'))
+    accepted, validation = validate_played_card_event(
+        parsed,
+        float(session.get('output_config', {}).get('confidence_threshold', 0.8)),
+    )
+    if validation == 'stable_no_event':
+        session['semantic_state'] = 'stable_no_event'
+        reason = 'stable_reset' if previous.startswith('played_card:') else 'repeated_no_event'
+        return None, previous, 'stable_no_event', reason
+    if accepted is None:
+        # Uncertain/unreadable evidence cannot reset or advance the detector.
+        return None, previous, 'uncertain', validation
+
+    played = ' '.join(str(parsed.get('played_card', '')).casefold().split())
+    current = f'played_card:{played}'
+    if previous != 'stable_no_event':
+        reason = (
+            'duplicate_overlapping_event' if previous == current
+            else 'event_before_stable_reset'
+        )
+        return None, previous, current, reason
+    session['semantic_state'] = current
+    return accepted, previous, current, 'new_played_card_transition'
 
 
 def _hosted_safe_error(error: Exception) -> str:
@@ -687,15 +816,20 @@ async def _send_rtvi_error(websocket, client_id: str, session: Dict[str, Any], e
 async def _run_rtvi_caption_session(websocket, client_id: str, session: Dict[str, Any]) -> None:
     try:
         await session['publisher'].wait_for_first_frame(
-            timeout=NVIDIA_RTVI_REQUEST_TIMEOUT_SECONDS
+            timeout=RTVI_STARTUP_TIMEOUT_SECONDS
         )
         if active_rtvi_sessions.get(client_id) is not session:
             return
         model = NVIDIA_RTVI_MODEL or await rtvi_client.discover_model()
+        if 'nemotron' not in model.casefold():
+            message = f"Resolved RTVI model {model!r} is not identifiable as Nemotron"
+            if RTVI_REQUIRE_NEMOTRON:
+                raise RuntimeError(message)
+            logger.warning('[NVIDIA RTVI] %s', message)
         session['model'] = model
         stream_id = await rtvi_client.register_stream(
             session['rtsp_url'],
-            f"ProgramAT streaming session {session['session_id']}",
+            f"ProgramAT tool={session['tool_name']} client={client_id}",
         )
         session['rtvi_stream_id'] = stream_id
         logger.info(
@@ -706,53 +840,52 @@ async def _run_rtvi_caption_session(websocket, client_id: str, session: Dict[str
             model,
         )
         logger.info(
+            "[NVIDIA RTVI] connection established client=%s tool=%s session=%s stream_id=%s",
+            client_id, session['tool_name'], session['session_id'], stream_id,
+        )
+        logger.info(
             "[NVIDIA RTVI] caption request started client=%s stream_id=%s chunk_duration=%s overlap=%s",
             client_id,
             stream_id,
             NVIDIA_RTVI_CHUNK_DURATION_SECONDS,
             NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS,
         )
-        async for caption in rtvi_client.stream_captions(
-            stream_id=stream_id,
-            prompt=session['prompt'],
-            model=model,
-            chunk_duration=NVIDIA_RTVI_CHUNK_DURATION_SECONDS,
-            chunk_overlap_duration=NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS,
-        ):
-            event_received_at = time.perf_counter()
-            if active_rtvi_sessions.get(client_id) is not session:
-                return
-            if caption.chunk_id is not None:
-                if caption.chunk_id in session['forwarded_chunk_ids']:
-                    logger.debug(
-                        "[NVIDIA RTVI] duplicate chunk ignored client=%s chunk_id=%s",
-                        client_id,
-                        caption.chunk_id,
+        for attempt in range(RTVI_RECONNECT_MAX_ATTEMPTS + 1):
+            try:
+                async for caption in rtvi_client.stream_captions(
+                    stream_id=stream_id, prompt=session['prompt'], model=model,
+                    chunk_duration=NVIDIA_RTVI_CHUNK_DURATION_SECONDS,
+                    chunk_overlap_duration=NVIDIA_RTVI_CHUNK_OVERLAP_SECONDS,
+                ):
+                    event_received_at = time.perf_counter()
+                    if session.get('stopping') or active_rtvi_sessions.get(client_id) is not session:
+                        return
+                    logger.info(
+                        "[NVIDIA RTVI] chunk completed client=%s chunk_id=%s start=%s end=%s",
+                        client_id, caption.chunk_id, caption.start_time, caption.end_time,
                     )
-                    continue
-                session['forwarded_chunk_ids'].add(caption.chunk_id)
-            session['output_sequence'] += 1
-            if session['first_result_at'] is None:
-                session['first_result_at'] = event_received_at
-                logger.info(
-                    "[NVIDIA RTVI] first result client=%s elapsed_ms=%.1f",
-                    client_id,
-                    (event_received_at - session['started_at']) * 1000,
-                )
-            logger.info(
-                "[NVIDIA RTVI] result client=%s chunk_id=%s start=%s end=%s",
-                client_id,
-                caption.chunk_id,
-                caption.start_time,
-                caption.end_time,
-            )
-            response_data = {
+                    logger.debug("[NVIDIA RTVI] raw content client=%s content=%r", client_id, caption.content)
+                    if caption.chunk_id is not None and caption.chunk_id in session['forwarded_chunk_ids']:
+                        logger.info("[NVIDIA RTVI] result suppressed client=%s reason=duplicate_chunk", client_id)
+                        continue
+                    if caption.chunk_id is not None:
+                        session['forwarded_chunk_ids'].add(caption.chunk_id)
+                    accepted_content, decision = _filter_rtvi_event(
+                        session, caption.content, caption.start_time, caption.end_time, time.monotonic()
+                    )
+                    if accepted_content is None:
+                        logger.info("[NVIDIA RTVI] result suppressed client=%s reason=%s", client_id, decision)
+                        continue
+                    session['output_sequence'] += 1
+                    if session['first_result_at'] is None:
+                        session['first_result_at'] = event_received_at
+                    response_data = {
                 'type': 'tool_stream_result',
                 'tool_name': session['tool_name'],
-                'result': caption.content,
+                'result': accepted_content,
                 'audio': {
                     'type': 'speech',
-                    'text': caption.content,
+                    'text': accepted_content,
                     'rate': 1.0,
                     'interrupt': False,
                 },
@@ -762,14 +895,16 @@ async def _run_rtvi_caption_session(websocket, client_id: str, session: Dict[str
                 'rtvi_start_time': caption.start_time,
                 'rtvi_end_time': caption.end_time,
                 'timestamp': datetime.now().isoformat(),
-            }
-            await websocket.send(json.dumps(response_data))
-            logger.info(
-                "[NVIDIA RTVI] result forwarded client=%s chunk_id=%s forward_latency_ms=%.1f",
-                client_id,
-                caption.chunk_id,
-                (time.perf_counter() - event_received_at) * 1000,
-            )
+                    }
+                    await websocket.send(json.dumps(response_data))
+                    logger.info("[NVIDIA RTVI] result emitted client=%s chunk_id=%s", client_id, caption.chunk_id)
+                break
+            except Exception:
+                if attempt >= RTVI_RECONNECT_MAX_ATTEMPTS or session.get('stopping'):
+                    raise
+                delay = min(2 ** attempt, 8)
+                logger.warning("[NVIDIA RTVI] SSE retry client=%s attempt=%s delay=%ss", client_id, attempt + 1, delay)
+                await asyncio.sleep(delay)
         logger.info("[NVIDIA RTVI] caption SSE completed client=%s stream_id=%s", client_id, stream_id)
         await _cleanup_rtvi_session(client_id, reason='caption_stream_completed')
     except asyncio.CancelledError:
@@ -781,6 +916,11 @@ async def _run_rtvi_caption_session(websocket, client_id: str, session: Dict[str
 
 async def _start_rtvi_session(websocket, client_id: str, data: Dict[str, Any]) -> None:
     await _cleanup_rtvi_session(client_id, reason='replaced')
+    tool_code = resolve_tool_code_for_execution(
+        tool_name=data.get('tool_name', ''), tool_path=data.get('tool_path', ''),
+        client_tool_code=data.get('tool_code', ''),
+    )
+    tool_name, tool_prompt = _validated_rtvi_tool(tool_code)
     session_id = f"{safe_rtsp_path(client_id)}-{secrets.token_hex(8)}"
     publisher = RtspPublisher(
         session_id,
@@ -795,8 +935,8 @@ async def _start_rtvi_session(websocket, client_id: str, data: Dict[str, Any]) -
     await publisher.start()
     session = {
         'session_id': session_id,
-        'tool_name': data.get('tool_name', 'unknown'),
-        'prompt': _rtvi_prompt(data),
+        'tool_name': tool_name,
+        'prompt': tool_prompt,
         'rtsp_url': publisher.rtsp_url,
         'publisher': publisher,
         'rtvi_stream_id': None,
@@ -804,6 +944,8 @@ async def _start_rtvi_session(websocket, client_id: str, data: Dict[str, Any]) -
         'started_at': time.perf_counter(),
         'first_result_at': None,
         'forwarded_chunk_ids': set(),
+        'last_emitted_events': {},
+        'stopping': False,
         'output_sequence': 0,
     }
     active_rtvi_sessions[client_id] = session
@@ -814,8 +956,10 @@ async def _start_rtvi_session(websocket, client_id: str, data: Dict[str, Any]) -
             )
         )
     logger.info(
-        "[NVIDIA RTVI] session started client=%s session=%s rtsp_url=%s",
+        "[NVIDIA RTVI] tool session started client=%s tool=%s session=%s rtsp_url=%s "
+        "execution_mode=rtvi_streaming cascade=false evaluator=false clip=false gemini=false hosted_multiframe=false",
         client_id,
+        session['tool_name'],
         session_id,
         publisher.rtsp_url,
     )
@@ -864,6 +1008,7 @@ async def _cleanup_rtvi_session(client_id: str, reason: str) -> None:
     session = active_rtvi_sessions.pop(client_id, None)
     if session is None:
         return
+    session['stopping'] = True
     logger.info(
         "[NVIDIA RTVI] session cleanup started client=%s session=%s reason=%s",
         client_id,
@@ -887,6 +1032,21 @@ async def _cleanup_rtvi_session(client_id: str, reason: str) -> None:
     )
 
 
+async def _cleanup_policy_streaming_registration(client_id: str) -> None:
+    task = active_streaming_tasks.pop(client_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+    config = active_streaming_tools.pop(client_id, None)
+    if config is None:
+        return
+    for key in ('cascade_task', 'debounce_task'):
+        pending = config.get(key)
+        if pending is not None and not pending.done():
+            pending.cancel()
+    if config.get('gemini_live') and gemini_live_manager:
+        await gemini_live_manager.stop_session(client_id)
+
+
 async def _send_hosted_nvidia_error(
     websocket,
     client_id: str,
@@ -896,7 +1056,7 @@ async def _send_hosted_nvidia_error(
     if active_hosted_nvidia_sessions.get(client_id) is not session:
         return
     safe_error = _hosted_safe_error(error)
-    message = f"NVIDIA hosted multiframe streaming error: {safe_error}"
+    message = f"NVIDIA hosted video streaming error: {safe_error}"
     logger.error(
         "[NVIDIA Hosted] session error client=%s generation=%s error=%s",
         client_id,
@@ -910,7 +1070,7 @@ async def _send_hosted_nvidia_error(
             'result': message,
             'status': 'error',
             'error': safe_error,
-            'mode': 'hosted_multiframe',
+            'mode': 'hosted_video_streaming',
             'execution_id': session.get('clip_sequence', 0) + 1,
             'timestamp': datetime.now().isoformat(),
         }))
@@ -922,6 +1082,38 @@ async def _send_hosted_nvidia_error(
         )
 
 
+def _save_hosted_video_debug_bundle(
+    session: Dict[str, Any], clip_sequence: int, frames: List[TimedFrame],
+    video_path: Path, metadata: Dict[str, Any],
+) -> Path:
+    """Persist the exact uploaded MP4, exact source JPEGs, and clip metadata."""
+    destination = HOSTED_VIDEO_DEBUG_DIR / (
+        f"{safe_rtsp_path(session['tool_name'])}-{session['generation_token'][:8]}-"
+        f"clip-{clip_sequence:04d}"
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(video_path, destination / 'clip.mp4')
+    frame_metadata = []
+    for index, frame in enumerate(frames):
+        encoded = frame.image_data_uri.split(',', 1)[1] if frame.image_data_uri.startswith('data:') else frame.image_data_uri
+        image_bytes = base64.b64decode(encoded, validate=True)
+        frame_path = destination / f'frame-{index:04d}.jpg'
+        frame_path.write_bytes(image_bytes)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            width, height = image.size
+        frame_metadata.append({
+            'index': index, 'timestamp_monotonic': frame.timestamp,
+            'width': width, 'height': height, 'bytes': len(image_bytes),
+            'file': frame_path.name,
+        })
+    payload = dict(metadata)
+    payload['source_frames'] = frame_metadata
+    (destination / 'metadata.json').write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding='utf-8'
+    )
+    return destination
+
+
 async def _run_hosted_nvidia_clip(
     websocket,
     client_id: str,
@@ -931,41 +1123,83 @@ async def _run_hosted_nvidia_clip(
 ) -> None:
     request_started = time.perf_counter()
     encoding_started = request_started
+    window_start = frames[0].timestamp
+    window_end = frames[-1].timestamp
+    source_span = max(0.0, window_end - window_start)
+    source_fps = (len(frames) - 1) / source_span if len(frames) > 1 and source_span > 0 else 0.0
+    # FFmpeg assigns each of N images a 1/fps duration. Use N/span to preserve
+    # wall-clock clip duration without synthesizing duplicate evidence frames.
+    duration_preserving_fps = len(frames) / source_span if source_span > 0 else HOSTED_VIDEO_OUTPUT_FPS
+    encoding_fps = min(HOSTED_VIDEO_OUTPUT_FPS, duration_preserving_fps)
+    encoding_fps = max(0.25, encoding_fps)
     try:
         model = session['model']
-        if model.supports_video:
-            if len(frames) > 1 and frames[-1].timestamp > frames[0].timestamp:
-                fps = (len(frames) - 1) / (frames[-1].timestamp - frames[0].timestamp)
-            else:
-                fps = max(1.0, len(frames) / NVIDIA_HOSTED_WINDOW_SECONDS)
-            video_data_uri = await asyncio.to_thread(encode_frames_as_mp4, frames, fps)
+        if not model.supports_video:
+            raise NvidiaHostedError(f"Configured model {model.id!r} is not video-capable")
+        if NVIDIA_VIDEO_INPUT_MODE != 'base64':
+            raise NvidiaHostedError(
+                f"NVIDIA_VIDEO_INPUT_MODE={NVIDIA_VIDEO_INPUT_MODE!r} is unsupported by the "
+                "verified integrate.api.nvidia.com integration; configure 'base64'"
+            )
+        with tempfile.TemporaryDirectory(prefix='programat-hosted-video-') as temp_dir:
+            video_path = Path(temp_dir) / f'clip-{clip_sequence}.mp4'
+            session.setdefault('temporary_paths', set()).add(str(video_path))
+            clip_bytes = await asyncio.to_thread(
+                encode_frames_to_mp4, frames, video_path, encoding_fps,
+                HOSTED_VIDEO_MAX_WIDTH, HOSTED_VIDEO_JPEG_QUALITY,
+                PROGRAMAT_FFMPEG_BINARY,
+            )
+            encoded_metadata = await asyncio.to_thread(
+                probe_mp4, video_path, PROGRAMAT_FFMPEG_BINARY
+            )
+            stream_metadata = (encoded_metadata.get('streams') or [{}])[0]
+            format_metadata = encoded_metadata.get('format') or {}
+            debug_metadata = {
+                'clip_sequence': clip_sequence,
+                'window_start_monotonic': window_start,
+                'window_end_monotonic': window_end,
+                'source_duration_seconds': source_span,
+                'source_frame_count': len(frames),
+                'source_fps': source_fps,
+                'encoding_fps': encoding_fps,
+                'encoded_width': stream_metadata.get('width'),
+                'encoded_height': stream_metadata.get('height'),
+                'encoded_duration_seconds': format_metadata.get('duration'),
+                'encoded_bytes': clip_bytes,
+                'orientation': (
+                    'portrait' if int(stream_metadata.get('height') or 0) > int(stream_metadata.get('width') or 0)
+                    else 'landscape'
+                ),
+            }
+            if HOSTED_VIDEO_DEBUG_SAVE:
+                debug_path = await asyncio.to_thread(
+                    _save_hosted_video_debug_bundle, session, clip_sequence,
+                    frames, video_path, debug_metadata,
+                )
+                logger.info(
+                    "[NVIDIA Hosted Video] debug saved client=%s clip=%s path=%s",
+                    client_id, clip_sequence, debug_path,
+                )
+            encoding_ended = time.perf_counter()
+            upload_started = encoding_ended
+            video_data_uri = await asyncio.to_thread(
+                video_file_data_uri, video_path, HOSTED_VIDEO_MAX_CLIP_BYTES
+            )
+            upload_ended = time.perf_counter()
             request = build_video_request(
-                model.id,
-                session['prompt'],
-                video_data_uri,
-                NVIDIA_HOSTED_MAX_TOKENS,
+                model.id, session['prompt'], video_data_uri, HOSTED_VIDEO_MAX_TOKENS,
             )
-            input_format = 'native_video_mp4'
-        else:
-            normalized_uris = await asyncio.gather(*(
-                asyncio.to_thread(normalize_image_data_uri, frame.image_data_uri)
-                for frame in frames
-            ))
-            encoded_frames = [
-                TimedFrame(frame.timestamp, data_uri)
-                for frame, data_uri in zip(frames, normalized_uris)
-            ]
-            request = build_multi_image_request(
-                model.id,
-                session['prompt'],
-                encoded_frames,
-                NVIDIA_HOSTED_MAX_TOKENS,
+            inference_started = time.perf_counter()
+            content = await hosted_nvidia_client.chat_completions(request)
+            inference_ended = time.perf_counter()
+            logger.info(
+                "[NVIDIA Hosted Video] raw response client=%s clip=%s content=%s",
+                client_id, clip_sequence, content,
             )
-            input_format = 'ordered_image_url'
-        encoding_latency_ms = (time.perf_counter() - encoding_started) * 1000
-        api_started = time.perf_counter()
-        content = await hosted_nvidia_client.chat_completions(request)
-        api_latency_ms = (time.perf_counter() - api_started) * 1000
+            session['temporary_paths'].discard(str(video_path))
+        encoding_latency_ms = (encoding_ended - encoding_started) * 1000
+        upload_latency_ms = (upload_ended - upload_started) * 1000
+        api_latency_ms = (inference_ended - inference_started) * 1000
         current = active_hosted_nvidia_sessions.get(client_id)
         if current is not session:
             logger.info(
@@ -982,40 +1216,83 @@ async def _run_hosted_nvidia_clip(
                 session['latest_forwarded_clip'],
             )
             return
+        if session.get('output_config', {}).get('schema') == 'played_card_event':
+            try:
+                parsed = parse_structured_video_result(content)
+            except NvidiaHostedError as exc:
+                previous_state = str(session.get('semantic_state', 'stable_no_event'))
+                logger.warning(
+                    "[NVIDIA Hosted Video] parsed result client=%s clip=%s valid=false error=%s "
+                    "previous_semantic_state=%s current_semantic_state=uncertain emitted=false "
+                    "suppression_reason=invalid_json",
+                    client_id, clip_sequence, exc, previous_state,
+                )
+                return
+            accepted, previous_state, current_state, decision = (
+                _apply_played_card_semantic_transition(session, parsed)
+            )
+            logger.info(
+                "[NVIDIA Hosted Video] parsed result client=%s clip=%s parsed=%s "
+                "previous_semantic_state=%s current_semantic_state=%s emitted=%s "
+                "suppression_reason=%s",
+                client_id, clip_sequence,
+                json.dumps(parsed, ensure_ascii=False, sort_keys=True),
+                previous_state, current_state, accepted is not None,
+                'none' if accepted is not None else decision,
+            )
+        else:
+            parsed = content
+            accepted, decision = _filter_rtvi_event(
+                session, content, window_start, window_end, time.monotonic()
+            )
+        if accepted is None:
+            logger.info(
+                "[NVIDIA Hosted Video] result suppressed client=%s clip=%s reason=%s",
+                client_id, clip_sequence, decision,
+            )
+            return
         session['latest_forwarded_clip'] = clip_sequence
-        end_to_end_ms = (time.time() - frames[0].timestamp) * 1000
+        emitted_at = time.monotonic()
+        end_to_end_ms = (emitted_at - window_end) * 1000
         logger.info(
-            "[NVIDIA Hosted] result client=%s generation=%s clip=%s format=%s "
-            "frame_count=%s oldest_ts=%.6f newest_ts=%.6f encoding_ms=%.1f "
-            "api_ms=%.1f end_to_end_ms=%.1f",
+            "[NVIDIA Hosted Video] result client=%s generation=%s clip=%s format=base64_mp4 "
+            "frame_count=%s window_start=%.6f window_end=%.6f clip_bytes=%s "
+            "source_fps=%.3f encoded_resolution=%sx%s encoded_duration=%s "
+            "encoding_ms=%.1f upload_ms=%.1f inference_ms=%.1f total_from_clip_end_ms=%.1f",
             client_id,
             session['generation_token'],
             clip_sequence,
-            input_format,
             len(frames),
-            frames[0].timestamp,
-            frames[-1].timestamp,
-            encoding_latency_ms,
-            api_latency_ms,
-            end_to_end_ms,
+            window_start, window_end, clip_bytes, source_fps,
+            stream_metadata.get('width'), stream_metadata.get('height'),
+            format_metadata.get('duration'), encoding_latency_ms,
+            upload_latency_ms, api_latency_ms, end_to_end_ms,
         )
-        await websocket.send(json.dumps({
+        response_payload = {
             'type': 'tool_stream_result',
             'tool_name': session['tool_name'],
-            'result': content,
+            'result': accepted,
             'audio': {
                 'type': 'speech',
-                'text': content,
+                'text': accepted,
                 'rate': 1.0,
                 'interrupt': False,
             },
-            'mode': 'hosted_multiframe',
+            'mode': 'hosted_video_streaming',
             'execution_id': clip_sequence,
             'clip_sequence': clip_sequence,
             'frame_count': len(frames),
-            'input_format': input_format,
+            'input_format': 'base64_mp4',
+            'clip_window_start': window_start,
+            'clip_window_end': window_end,
             'timestamp': datetime.now().isoformat(),
-        }))
+        }
+        logger.info(
+            "[NVIDIA Hosted Video] final emitted message client=%s clip=%s payload=%s",
+            client_id, clip_sequence,
+            json.dumps(response_payload, ensure_ascii=False, sort_keys=True),
+        )
+        await websocket.send(json.dumps(response_payload))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1037,13 +1314,15 @@ async def _hosted_nvidia_scheduler(
     session: Dict[str, Any],
 ) -> None:
     try:
-        model = await hosted_nvidia_client.select_model(NVIDIA_HOSTED_MODEL)
+        model = await hosted_nvidia_client.select_model(NVIDIA_VIDEO_MODEL)
         if active_hosted_nvidia_sessions.get(client_id) is not session:
             return
         session['model'] = model
-        session['input_format'] = (
-            'native_video_mp4' if model.supports_video else 'ordered_image_url'
-        )
+        if not model.supports_video:
+            raise NvidiaHostedError(
+                f"Configured NVIDIA_VIDEO_MODEL {model.id!r} does not support MP4 video"
+            )
+        session['input_format'] = 'base64_mp4'
         logger.info(
             "[NVIDIA Hosted] session ready client=%s generation=%s model=%s format=%s",
             client_id,
@@ -1052,7 +1331,7 @@ async def _hosted_nvidia_scheduler(
             session['input_format'],
         )
         while active_hosted_nvidia_sessions.get(client_id) is session:
-            await asyncio.sleep(NVIDIA_HOSTED_REQUEST_INTERVAL_SECONDS)
+            await asyncio.sleep(session['interval_seconds'])
             request_task = session.get('request_task')
             if request_task is not None and not request_task.done():
                 session['skipped_intervals'] += 1
@@ -1062,7 +1341,11 @@ async def _hosted_nvidia_scheduler(
                     session['skipped_intervals'],
                 )
                 continue
-            available = session['frame_buffer'].snapshot(time.time())
+            now = time.monotonic()
+            available = [
+                frame for frame in session['frame_buffer'].snapshot(now)
+                if frame.timestamp >= now - session['window_seconds']
+            ]
             if not available:
                 session['skipped_intervals'] += 1
                 logger.info(
@@ -1071,18 +1354,23 @@ async def _hosted_nvidia_scheduler(
                     session['skipped_intervals'],
                 )
                 continue
-            frames = uniformly_sample_frames(available, NVIDIA_HOSTED_SAMPLE_FRAMES)
+            target_frames = max(2, round(session['window_seconds'] * HOSTED_VIDEO_OUTPUT_FPS))
+            frames = uniformly_sample_frames(available, target_frames)
             session['clip_sequence'] += 1
             clip_sequence = session['clip_sequence']
             logger.info(
                 "[NVIDIA Hosted] request started client=%s generation=%s clip=%s "
-                "frame_count=%s oldest_ts=%.6f newest_ts=%.6f",
+                "unique_available_frames=%s selected_frames=%s oldest_ts=%.6f newest_ts=%.6f "
+                "source_span_seconds=%.3f source_fps=%.3f",
                 client_id,
                 session['generation_token'],
                 clip_sequence,
-                len(frames),
+                len(available), len(frames),
                 frames[0].timestamp,
                 frames[-1].timestamp,
+                max(0.0, frames[-1].timestamp - frames[0].timestamp),
+                ((len(frames) - 1) / (frames[-1].timestamp - frames[0].timestamp))
+                if len(frames) > 1 and frames[-1].timestamp > frames[0].timestamp else 0.0,
             )
             session['request_task'] = asyncio.create_task(
                 _run_hosted_nvidia_clip(
@@ -1101,21 +1389,44 @@ async def _start_hosted_nvidia_session(
     client_id: str,
     data: Dict[str, Any],
 ) -> None:
-    if NVIDIA_HOSTED_MAX_IN_FLIGHT != 1:
-        raise ValueError('NVIDIA_HOSTED_MAX_IN_FLIGHT must be 1 for hosted_multiframe')
-    if not NVIDIA_HOSTED_API_KEY:
-        raise ValueError('NVIDIA_HOSTED_API_KEY is required for hosted_multiframe')
+    if not NVIDIA_VIDEO_API_KEY:
+        raise ValueError('NVIDIA_VIDEO_API_KEY is required for hosted_video_streaming')
+    if not NVIDIA_VIDEO_MODEL:
+        raise ValueError('NVIDIA_VIDEO_MODEL is required for hosted_video_streaming')
+    if NVIDIA_VIDEO_INPUT_MODE != 'base64':
+        raise ValueError(
+            "The verified NVIDIA endpoint requires NVIDIA_VIDEO_INPUT_MODE=base64"
+        )
     await _cleanup_hosted_nvidia_session(client_id, reason='replaced')
+    tool_code = resolve_tool_code_for_execution(
+        tool_name=data.get('tool_name', ''), tool_path=data.get('tool_path', ''),
+        client_tool_code=data.get('tool_code', ''),
+    )
+    tool_name, tool_prompt = _validated_rtvi_tool(tool_code)
+    video_config = _literal_tool_metadata(tool_code, 'VIDEO_CONFIG') or {}
+    output_config = _literal_tool_metadata(tool_code, 'OUTPUT_CONFIG') or {}
+    if not isinstance(video_config, dict) or not isinstance(output_config, dict):
+        raise ValueError('VIDEO_CONFIG and OUTPUT_CONFIG must be literal dictionaries')
+    window_seconds = float(video_config.get('window_seconds', HOSTED_VIDEO_WINDOW_SECONDS))
+    interval_seconds = float(video_config.get('interval_seconds', HOSTED_VIDEO_INTERVAL_SECONDS))
+    overlap_seconds = float(video_config.get('overlap_seconds', HOSTED_VIDEO_OVERLAP_SECONDS))
+    if window_seconds <= 0 or interval_seconds <= 0 or not 0 <= overlap_seconds < window_seconds:
+        raise ValueError('Invalid hosted-video window, interval, or overlap configuration')
     max_buffer_frames = max(
-        NVIDIA_HOSTED_SAMPLE_FRAMES * 4,
-        int(NVIDIA_HOSTED_WINDOW_SECONDS * 30),
+        20,
+        int((window_seconds + overlap_seconds + 2) * 30),
     )
     session = {
         'generation_token': secrets.token_hex(16),
-        'tool_name': data.get('tool_name', 'unknown'),
-        'prompt': _rtvi_prompt(data),
+        'tool_name': tool_name,
+        'prompt': tool_prompt,
+        'video_config': video_config,
+        'output_config': output_config,
+        'window_seconds': window_seconds,
+        'interval_seconds': interval_seconds,
+        'overlap_seconds': overlap_seconds,
         'frame_buffer': RollingFrameBuffer(
-            NVIDIA_HOSTED_WINDOW_SECONDS,
+            window_seconds + overlap_seconds + 2,
             max_buffer_frames,
         ),
         'scheduler_task': None,
@@ -1125,24 +1436,31 @@ async def _start_hosted_nvidia_session(
         'clip_sequence': 0,
         'latest_forwarded_clip': 0,
         'skipped_intervals': 0,
+        'stopping': False,
+        'temporary_paths': set(),
+        'last_emitted_events': {},
+        'semantic_state': 'stable_no_event',
+        'received_frame_count': 0,
+        'first_frame_at': None,
+        'last_frame_at': None,
     }
     active_hosted_nvidia_sessions[client_id] = session
     session['scheduler_task'] = asyncio.create_task(
         _hosted_nvidia_scheduler(websocket, client_id, session)
     )
     logger.info(
-        "[NVIDIA Hosted] session started client=%s generation=%s mode=hosted_multiframe "
-        "window_seconds=%s sample_frames=%s interval_seconds=%s",
+        "[NVIDIA Hosted Video] session started client=%s generation=%s "
+        "execution_mode=hosted_video_streaming local_rtvi=false rtsp=false mediamtx=false "
+        "gpu_required=false cascade=false clip=false gemini=false "
+        "window_seconds=%s interval_seconds=%s overlap_seconds=%s",
         client_id,
         session['generation_token'],
-        NVIDIA_HOSTED_WINDOW_SECONDS,
-        NVIDIA_HOSTED_SAMPLE_FRAMES,
-        NVIDIA_HOSTED_REQUEST_INTERVAL_SECONDS,
+        window_seconds, interval_seconds, overlap_seconds,
     )
     await websocket.send(json.dumps({
         'type': 'streaming_started',
         'tool_name': session['tool_name'],
-        'mode': 'hosted_multiframe',
+        'mode': 'hosted_video_streaming',
         'timestamp': datetime.now().isoformat(),
     }))
 
@@ -1150,18 +1468,31 @@ async def _start_hosted_nvidia_session(
 async def _offer_hosted_nvidia_frame(
     client_id: str,
     image_base64: str,
-    timestamp: float,
+    _source_timestamp: float,
 ) -> None:
     session = active_hosted_nvidia_sessions.get(client_id)
     if session is None:
         return
-    session['frame_buffer'].add(image_base64, timestamp)
+    now = time.monotonic()
+    session['frame_buffer'].add(image_base64, now)
+    session['received_frame_count'] += 1
+    session['first_frame_at'] = session['first_frame_at'] or now
+    session['last_frame_at'] = now
+    if session['received_frame_count'] % 10 == 0:
+        elapsed = now - session['first_frame_at']
+        incoming_fps = (session['received_frame_count'] - 1) / elapsed if elapsed > 0 else 0.0
+        logger.info(
+            "[NVIDIA Hosted Video] incoming transport client=%s frames=%s elapsed_seconds=%.3f "
+            "true_incoming_fps=%.3f",
+            client_id, session['received_frame_count'], elapsed, incoming_fps,
+        )
 
 
 async def _cleanup_hosted_nvidia_session(client_id: str, reason: str) -> None:
     session = active_hosted_nvidia_sessions.pop(client_id, None)
     if session is None:
         return
+    session['stopping'] = True
     logger.info(
         "[NVIDIA Hosted] cleanup started client=%s generation=%s reason=%s",
         client_id,
@@ -1178,6 +1509,7 @@ async def _cleanup_hosted_nvidia_session(client_id: str, reason: str) -> None:
     if tasks_to_wait:
         await asyncio.gather(*tasks_to_wait, return_exceptions=True)
     session['frame_buffer'].clear()
+    session.get('temporary_paths', set()).clear()
     logger.info(
         "[NVIDIA Hosted] cleanup finished client=%s generation=%s reason=%s skipped_intervals=%s",
         client_id,
@@ -1492,22 +1824,22 @@ def _take_photo_tool_prompt(tool_name: str, tool_code: str) -> str:
     )
 
 
-def _run_take_photo_baseline(
+def _run_take_photo_vlm(
     tool_name: str,
     tool_code: str,
     image,
     mode: str = 'take-photo',
     request_id: Optional[str] = None,
 ) -> str:
-    """Execute the P2 fused prompt through the mode's policy-configured cascade."""
+    """Execute the fused prompt through the mode's policy-configured cascade."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
     logger.info(
-        "[P2] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
+        "[Policy Cascade] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
         "request_id=%s",
         mode,
         request_id or 'generated',
     )
-    return call_take_photo_baseline_vlm(
+    return call_take_photo_vlm(
         image=image,
         prompt=prompt,
         mode=mode,
@@ -2272,7 +2604,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         current = active_streaming_tools.get(client_id)
         return current is not tool_config or current.get('generation', 0) != dispatched_generation
 
-    # P2 streaming resolves the same mode policy as take-photo. Generated tool
+    # Streaming resolves the same mode policy as take-photo. Generated tool
     # bodies are not executed per frame; TOOL_PROMPT is the complete fused task.
     if tool_language != 'python' or not tool_code:
         logger.error(
@@ -2287,7 +2619,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         execution_id = tool_config.get('current_execution_id')
         try:
             cascade_result = await asyncio.to_thread(
-                _run_take_photo_baseline,
+                _run_take_photo_vlm,
                 tool_name,
                 tool_code,
                 image,
@@ -4706,12 +5038,13 @@ Extract only these user-facing fields:
 - description: the task the tool performs
 - example_usage: expected output
 - additional: constraints and examples
-- execution_mode: exactly "take-photo", "streaming", or empty when unstated
+- execution_mode: exactly "take_photo", "hosted_video_streaming", or empty when unstated
 - missing_fields: only missing important fields
 
 Only block creation when the core task is genuinely unclear.
 - Tool name, task, and expected output are the core fields.
 - Constraints/examples and execution_mode may be empty when unstated.
+- Classify continuous actions or recent visual changes as "hosted_video_streaming".
 - Do not generate or improve a VLM prompt.
 - Do not return stages, subtasks, reasoning steps, capabilities, routes, or models.
 
@@ -4737,7 +5070,9 @@ def _normalize_issue_creation_requirements(
     normalized = dict(parsed_data)
     explicit_custom_gpt = _explicit_custom_gpt_value(transcript)
     execution_mode = str(normalized.get('execution_mode') or '').strip().lower()
-    mode_custom_gpt = 'yes' if execution_mode == 'streaming' else ('no' if execution_mode == 'take-photo' else '')
+    mode_custom_gpt = 'no' if execution_mode in {
+        'take_photo', 'hosted_video_streaming', 'take-photo', 'streaming'
+    } else ''
     parsed_custom_gpt = mode_custom_gpt or _normalize_custom_gpt_value(
         normalized.get('custom_gpt') or normalized.get('live_mode')
     )
@@ -4787,9 +5122,12 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
 
         parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
         execution_mode = str(issue_data.get('execution_mode') or '').strip().lower()
-        parsed_data['execution_mode'] = (
-            'streaming' if execution_mode == 'streaming' else 'take-photo'
-        )
+        mode_aliases = {'take-photo': 'take_photo', 'streaming': 'hosted_video_streaming'}
+        parsed_data['execution_mode'] = mode_aliases.get(execution_mode, execution_mode)
+        if parsed_data['execution_mode'] not in {
+            'take_photo', 'hosted_video_streaming'
+        }:
+            parsed_data['execution_mode'] = 'take_photo'
         parsed_data['stages'] = []
         
         # Preserve the original transcript for bookkeeping
@@ -4797,7 +5135,7 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         parsed_data['original_prompts'] = existing_prompts + [f"[{timestamp}] {transcript}"]
 
-        logger.info("P2 issue parser produced one fused-prompt tool with no runtime stages")
+        logger.info("Issue parser produced one fused-prompt tool with no runtime stages")
         
         logger.info(f"Successfully parsed transcript with AI: type={parsed_data.get('type', 'unknown')}, missing={len(parsed_data.get('missing_fields', []))}")
         return parsed_data
@@ -4862,7 +5200,7 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                             ensure_string(parsed_data.get('example_usage', '')))
     filled = filled.replace('<!-- Important constraints, edge cases, and example inputs or answers. -->',
                             ensure_string(parsed_data.get('additional', '')))
-    filled = filled.replace('<!-- Enter exactly: take-photo or streaming. -->',
+    filled = filled.replace('<!-- Enter exactly: take_photo or hosted_video_streaming. -->',
                             ensure_string(parsed_data.get('execution_mode', '')))
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
@@ -6244,15 +6582,8 @@ async def handle_client(websocket):
             'streaming_executor': STREAMING_EXECUTOR,
             'nvidia_hosted_active': NVIDIA_HOSTED_ACTIVE,
             'streaming_frame_interval_ms': (
-                max(
-                    100,
-                    round(
-                        NVIDIA_HOSTED_WINDOW_SECONDS
-                        * 1000
-                        / NVIDIA_HOSTED_SAMPLE_FRAMES
-                    ),
-                )
-                if NVIDIA_STREAMING_MODE == 'hosted_multiframe'
+                HOSTED_VIDEO_CAPTURE_INTERVAL_MS
+                if NVIDIA_STREAMING_MODE == 'hosted_video'
                 else None
             ),
             'default_model': '',
@@ -6292,6 +6623,32 @@ async def handle_client(websocket):
                 if msg_type == 'start_streaming_tool':
                     logger.info(f"Client {client_id} started streaming tool: {data.get('tool_name')}")
                     session_log.log("INFO", f"Started streaming tool: {data.get('tool_name')}")
+                    # Production streaming has exactly one hosted-video executor.
+                    # Take-photo messages follow their existing, separate path.
+                    await _cleanup_policy_streaming_registration(client_id)
+                    try:
+                        await _start_hosted_nvidia_session(websocket, client_id, data)
+                    except Exception as exc:
+                        logger.error(
+                            "[NVIDIA Hosted Video] session startup failed client=%s error=%s",
+                            client_id, exc,
+                        )
+                        await websocket.send(json.dumps({
+                            'type': 'tool_stream_result',
+                            'tool_name': data.get('tool_name', 'unknown'),
+                            'status': 'error',
+                            'result': f'Unable to start hosted NVIDIA video streaming: {exc}',
+                            'timestamp': datetime.now().isoformat(),
+                        }))
+                    continue
+                    execution_mode = _tool_execution_mode(data.get('tool_code', ''))
+                    if execution_mode == 'hosted_multiframe' or (
+                        not execution_mode and NVIDIA_STREAMING_MODE == 'hosted_multiframe'
+                    ):
+                        await _cleanup_policy_streaming_registration(client_id)
+                        await _cleanup_rtvi_session(client_id, reason='hosted_tool_active')
+                        await _start_hosted_nvidia_session(websocket, client_id, data)
+                        continue
                     await _cleanup_rtvi_session(client_id, reason='policy_cascade_active')
                     await _cleanup_hosted_nvidia_session(
                         client_id, reason='policy_cascade_active'
@@ -6301,7 +6658,7 @@ async def handle_client(websocket):
                         "configured_nvidia_mode=%s client=%s",
                         STREAMING_EXECUTOR,
                         str(NVIDIA_HOSTED_ACTIVE).lower(),
-                        _configured_nvidia_streaming_mode or 'disabled',
+                        STREAMING_EXECUTION_POLICY,
                         client_id,
                     )
 
@@ -6472,17 +6829,7 @@ async def handle_client(websocket):
                         await websocket.send(json.dumps({
                             'type': 'streaming_stopped',
                             'tool_name': tool_name,
-                            'mode': 'hosted_multiframe',
-                            'timestamp': datetime.now().isoformat(),
-                        }))
-                        continue
-                    if client_id in active_rtvi_sessions:
-                        tool_name = active_rtvi_sessions[client_id]['tool_name']
-                        await _cleanup_rtvi_session(client_id, reason='client_stop')
-                        await websocket.send(json.dumps({
-                            'type': 'streaming_stopped',
-                            'tool_name': tool_name,
-                            'mode': 'nvidia_rtvi',
+                            'mode': 'hosted_video_streaming',
                             'timestamp': datetime.now().isoformat(),
                         }))
                         continue
@@ -6977,18 +7324,22 @@ async def handle_client(websocket):
                     # Process image
                     frame_results = process_frame(data)
                     combined_results['frame'] = frame_results
+                    source_timestamp = data.get('timestamp')
+                    if isinstance(source_timestamp, (int, float)):
+                        frame_timestamp = float(source_timestamp)
+                        if frame_timestamp > 10_000_000_000:
+                            frame_timestamp /= 1000.0
+                    else:
+                        frame_timestamp = time.time()
+                    if client_id in active_hosted_nvidia_sessions:
+                        await _offer_hosted_nvidia_frame(
+                            client_id, data_field['base64Image'], frame_timestamp
+                        )
                     
                     if (
                         last_frame['image'] is not None
                         and client_id in active_streaming_tools
                     ):
-                        source_timestamp = data.get('timestamp')
-                        if isinstance(source_timestamp, (int, float)):
-                            frame_timestamp = float(source_timestamp)
-                            if frame_timestamp > 10_000_000_000:
-                                frame_timestamp /= 1000.0
-                        else:
-                            frame_timestamp = time.time()
                         logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
                         await _dispatch_active_streaming_frame(
                             websocket,
@@ -7220,20 +7571,20 @@ async def handle_client(websocket):
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
 
-                            baseline_result = await asyncio.to_thread(
-                                _run_take_photo_baseline,
+                            vlm_result = await asyncio.to_thread(
+                                _run_take_photo_vlm,
                                 tool_name,
                                 tool_code,
                                 frame_image,
                             )
                             response_data = _build_mobile_tool_response(
-                                'tool_result', tool_name, baseline_result, datetime.now()
+                                'tool_result', tool_name, vlm_result, datetime.now()
                             )
                             _log_final_tool_response(tool_name, response_data)
                             await websocket.send(json.dumps(response_data))
                             continue
                         except Exception as exc:
-                            logger.error("Error executing P2 tool %s: %s", tool_name, exc)
+                            logger.error("Error executing policy tool %s: %s", tool_name, exc)
                             await websocket.send(json.dumps({
                                 'type': 'tool_result',
                                 'tool_name': tool_name,
@@ -7302,7 +7653,6 @@ async def handle_client(websocket):
                         logger.error(f"Error registering conversation image: {e}")
                         logger.error(f"[REGISTER_IMG] Exception type: {type(e).__name__}")
                         logger.error(f"[REGISTER_IMG] Exception details: {str(e)}")
-                        import traceback
                         logger.error(f"[REGISTER_IMG] Traceback: {traceback.format_exc()}")
                         await websocket.send(json.dumps({
                             'type': 'conversation_image_registered',
@@ -7414,9 +7764,7 @@ async def handle_client(websocket):
                 logger.error(tb)
 
     except Exception as e:
-        # Import websockets module to avoid shadowing by parameter name
-        import websockets as ws_module
-        if isinstance(e, ws_module.exceptions.ConnectionClosed):
+        if isinstance(e, WebSocketConnectionClosed):
             logger.info(f"Client disconnected: {client_id} (code: {e.code}, reason: {e.reason})")
             if client_id in active_session_loggers:
                 active_session_loggers[client_id].log("INFO", f"Disconnected (code: {e.code}, reason: {e.reason})")
@@ -7426,7 +7774,6 @@ async def handle_client(websocket):
                 active_session_loggers[client_id].log("ERROR", f"Connection error: {e}")
     finally:
         connected_clients.discard(websocket)
-        await _cleanup_rtvi_session(client_id, reason='client_disconnect')
         await _cleanup_hosted_nvidia_session(client_id, reason='client_disconnect')
         # Cancel any in-flight streaming task
         if client_id in active_streaming_tasks:
@@ -7688,15 +8035,11 @@ async def main():
 
     logger.info(
         "[Streaming] streaming_executor=%s nvidia_hosted_active=%s "
-        "configured_nvidia_mode=%s",
+        "streaming_policy=%s",
         STREAMING_EXECUTOR,
         str(NVIDIA_HOSTED_ACTIVE).lower(),
-        _configured_nvidia_streaming_mode or 'disabled',
+        STREAMING_EXECUTION_POLICY,
     )
-    try:
-        await asyncio.to_thread(warm_streaming_frame_selector)
-    except Exception as exc:
-        logger.warning("[Streaming] CLIP warm-up failed; frame gating will fail open: %s", exc)
 
     app = web.Application(client_max_size=20 * 1024 * 1024)
     app.router.add_get('/', websocket_handler)
@@ -7727,11 +8070,8 @@ async def main():
     try:
         await asyncio.Future()  # Run forever
     finally:
-        for client_id in list(active_rtvi_sessions):
-            await _cleanup_rtvi_session(client_id, reason='server_shutdown')
         for client_id in list(active_hosted_nvidia_sessions):
             await _cleanup_hosted_nvidia_session(client_id, reason='server_shutdown')
-        await rtvi_client.close()
         await hosted_nvidia_client.close()
         await runner.cleanup()
 

@@ -27,7 +27,7 @@ assignees: ''
 
 ## Mode
 
-<!-- Enter exactly: take-photo or streaming. -->
+<!-- Enter exactly: take_photo or hosted_video_streaming. -->
 
 ### Take-photo implementation guidance
 
@@ -49,8 +49,17 @@ cascades, evaluators, or verification calls. Do not include capability names
 unless naturally needed.
 
 Every take-photo tool must define exactly one `TOOL_PROMPT`, call
-`call_take_photo_baseline_vlm` exactly once, and return its answer directly.
+`call_take_photo_vlm` exactly once, and return its answer directly.
 
-Tools belong in `tools/`, must be Python, and must expose `main(image,
-input_data)`. Return concise audio-friendly text. Do not connect to the backend
-server or use WebSockets; the backend supplies the image and delivers the result.
+### Hosted-video streaming implementation guidance
+
+For `hosted_video_streaming`, generate only `TOOL_NAME`, `EXECUTION_MODE =
+"hosted_video_streaming"`, optional literal `VIDEO_CONFIG` and `OUTPUT_CONFIG`,
+and a task-specific `TOOL_PROMPT`. The shared runtime owns FFmpeg clip encoding,
+hosted NVIDIA requests,
+filtering, deduplication, result delivery, and cleanup. Do not generate frame
+processing, buffers, asynchronous loops, model calls, or take-photo imports.
+
+Tools belong in `tools/` and must be Python. Take-photo tools expose
+`main(image, input_data)`; hosted-video tools contain only the declarative
+constants above. Do not connect to the backend server or use WebSockets.

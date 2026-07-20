@@ -56,6 +56,7 @@ import base64
 from collections import deque
 
 TOOL_NAME = "live_ocr"
+EXECUTION_MODE = "hosted_video_streaming"
 TOOL_PROMPT = (
     "Read the visible text accurately and return only the text in a concise, natural reading order. "
     "If no text is readable, say 'No readable text.'"
