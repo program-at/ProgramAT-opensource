@@ -43,7 +43,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 
 TOOL_NAME = "camera_aiming"
-EXECUTION_MODE = "hosted_video_streaming"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
     "Identify the main object in the image and give one concise direction to center it "
     "and frame it clearly. If no suitable object is visible, ask the user to point the camera at it."

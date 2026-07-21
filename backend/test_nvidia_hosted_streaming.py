@@ -554,6 +554,52 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             encode_mp4.assert_not_called()
             nvidia.assert_not_awaited()
 
+    async def test_non_card_temporal_gemini_uses_generic_ordered_frame_path(self):
+        sent_jpeg = io.BytesIO()
+        Image.new("RGB", (720, 1280), "green").save(sent_jpeg, format="JPEG")
+        encoded = sent_jpeg.getvalue()
+        source_uri = "data:image/jpeg;base64," + base64.b64encode(encoded).decode()
+        session = self._session()
+        session.update({
+            "provider": "gemini",
+            "model": None,
+            "model_id": "gemini-3.1-flash-lite-preview",
+            "output_config": {},
+        })
+        stream_server.active_hosted_nvidia_sessions["client"] = session
+        websocket = MagicMock(send=AsyncMock())
+        with patch.object(stream_server, "_prepare_gemini_ordered_jpegs", return_value=[encoded] * 4), \
+             patch.object(stream_server, "_save_last_gemini_images", return_value=Path("/tmp/last_hosted_images")), \
+             patch.object(stream_server, "infer_images_with_gemini", new=AsyncMock(return_value=("The door just opened.", {}))), \
+             patch.object(stream_server, "parse_structured_video_result") as parse_card:
+            await stream_server._run_hosted_nvidia_clip(
+                websocket, "client", session, 1,
+                [TimedFrame(float(index), source_uri) for index in range(4)],
+                [0, 4, 7, 11],
+            )
+        parse_card.assert_not_called()
+        payload = json.loads(websocket.send.await_args.args[0])
+        self.assertEqual(payload["result"], "The door just opened.")
+        self.assertEqual(payload["frame_count"], 4)
+
+    async def test_static_streaming_repeats_independent_single_image_calls(self):
+        code = (
+            'TOOL_NAME = "hand_identifier"\n'
+            'EXECUTION_MODE = "take_photo"\n'
+            'TOOL_PROMPT = "Identify the visible hand."\n'
+        )
+        stream_server.active_streaming_tools["client"] = {
+            "generation": 1,
+            "tool": {"name": "hand_identifier", "code": code, "language": "python", "input": ""},
+            "execution_lock": asyncio.Lock(),
+        }
+        websocket = MagicMock(send=AsyncMock())
+        with patch.object(stream_server, "_run_take_photo_vlm", side_effect=("first", "second")) as single:
+            self.assertTrue(await stream_server.run_streaming_tools(websocket, "client", b"one", "one"))
+            self.assertTrue(await stream_server.run_streaming_tools(websocket, "client", b"two", "two"))
+        self.assertEqual([call.args[2] for call in single.call_args_list], [b"one", b"two"])
+        self.assertEqual([call.args[3] for call in single.call_args_list], ["streaming", "streaming"])
+
     async def test_cleanup_cancels_tasks_and_clears_buffer(self):
         buffer = RollingFrameBuffer(2, 20)
         buffer.add("data:image/jpeg;base64,QQ==", __import__("time").time())

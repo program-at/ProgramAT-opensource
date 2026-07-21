@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const issue = context.payload.issue;
-            const extraLine = "\n\nWrite this Python tool inside `tools/`. Use the explicit Mode from the issue. For take_photo, author one concise `TOOL_PROMPT` and call `call_take_photo_vlm` exactly once. For hosted_video_streaming, generate only `TOOL_NAME`, `EXECUTION_MODE`, `TOOL_PROMPT`, and optional literal `VIDEO_CONFIG`/`OUTPUT_CONFIG`; the shared runtime owns buffering, MP4 encoding, hosted inference, and sessions. Do not create custom video processing, runtime stages, or extra model calls.";
+            const extraLine = "\n\nWrite this Python tool inside `tools/`. Use take_photo for a static current-frame task, even when it may run continuously. Use hosted_video_streaming only when the answer requires recent history, sequence, duration, before/after comparison, or what just happened. For take_photo, declare `EXECUTION_MODE = \"take_photo\"`, author one concise `TOOL_PROMPT`, call `call_take_photo_vlm` exactly once, and do not declare `VIDEO_CONFIG`. For hosted_video_streaming, generate only `TOOL_NAME`, `EXECUTION_MODE`, required literal `VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`, and a temporal `TOOL_PROMPT`; the shared runtime owns buffering, MP4 encoding, hosted inference, and sessions. Do not create custom video processing, runtime stages, or extra model calls.";
 
             await github.rest.issues.update({
               owner: context.repo.owner,

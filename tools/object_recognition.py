@@ -51,7 +51,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
 TOOL_NAME = "object_recognition"
-EXECUTION_MODE = "hosted_video_streaming"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
     "Identify the useful objects visible in the image and give a concise spoken list with counts. "
     "If no objects can be identified clearly, say so."

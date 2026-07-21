@@ -10,12 +10,32 @@ not print results, connect to the backend, or use WebSockets.
 
 ## Take-photo tools
 
+ProgramAT has two visual-context contracts:
+
+- **Static** tools answer from the current frame alone. Use
+  `EXECUTION_MODE = "take_photo"`. Static tools may run once in Take Photo or
+  repeatedly in Streaming; every streaming invocation receives one selected
+  current frame and must be independent. Never add `VIDEO_CONFIG`, a rolling
+  window, or cross-frame state to a static tool.
+- **Temporal** tools require evidence across multiple moments: recent history,
+  sequence, duration, an early/late or before/after comparison, a state change,
+  or “what just happened.” Use
+  `EXECUTION_MODE = "hosted_video_streaming"`. Temporal tools are streaming-only
+  and must declare literal `VIDEO_CONFIG` settings for `window_seconds`,
+  `interval_seconds`, `minimum_span_seconds`, and `minimum_unique_frames`.
+
+Do not classify a tool as temporal unless the user's requested answer clearly
+depends on multiple moments. Recognition, identification, OCR, description,
+classification, and other questions answerable from one frame are static even
+when the user may choose to run them continuously.
+
 Define exactly one `TOOL_PROMPT` and use this shape:
 
 ```python
 from litellm_utils import call_take_photo_vlm
 
 TOOL_NAME = "tool_name"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = "One task-specific instruction."
 
 
@@ -84,9 +104,12 @@ tools declarative and put event/scene behavior entirely in `TOOL_PROMPT`.
 
 ### Hosted-video streaming tools
 
-Use `EXECUTION_MODE = "hosted_video_streaming"` for requests involving continuous
-actions or recent visual changes. Generate only `TOOL_NAME`, that execution
-mode, and a task-specific `TOOL_PROMPT`. The shared
+Use `EXECUTION_MODE = "hosted_video_streaming"` only when the requested result
+requires recent history or comparison across time. Generate only `TOOL_NAME`,
+that execution mode, required literal `VIDEO_CONFIG`, optional literal
+`OUTPUT_CONFIG`, and a task-specific `TOOL_PROMPT`. The prompt must explain the
+chronological, early/late, before/after, duration, sequence, or state-change
+evidence the VLM should inspect. The shared
 runtime supplies the rolling buffer, MP4 encoding, hosted request, event filtering,
 deduplication, and output. Never implement RTSP/FFmpeg, frame buffering, async
 loops, provider calls, card parsing, before/after state, or take-photo imports.

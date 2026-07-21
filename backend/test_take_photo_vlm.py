@@ -419,6 +419,7 @@ class TestTakePhotoVlm(unittest.TestCase):
         tool = '''
 from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "read_label"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = "Read the label."
 def main(image, input_data):
     return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
@@ -430,6 +431,7 @@ def main(image, input_data):
         tool = '''
 TOOL_PROMPT = "Read the label."
 TOOL_NAME = "read_label"
+EXECUTION_MODE = "take_photo"
 def main(image, input_data):
     copilot_llm_call(capability="ocr", images=[image])
     call_take_photo_vlm(image=image, prompt=TOOL_PROMPT)
@@ -448,6 +450,7 @@ def main(image, input_data):
         tool = f'''
 from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "find_seat"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = {prompt!r}
 def main(image, input_data):
     return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
@@ -465,6 +468,7 @@ def main(image, input_data):
         tool = '''
 from litellm_utils import call_take_photo_vlm
 TOOL_NAME = "find_uber"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
     "Follow this sequence using the same image: 1. Identify the likely rideshare vehicle "
     "using visible make, model, color, or other distinguishing features. 2. Read the "

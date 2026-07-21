@@ -123,17 +123,16 @@ class TestRtviStreamingBoundary(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("call_take_photo_", tool_text)
         self.assertNotIn("Gemini", tool_text)
 
-    def test_all_existing_video_tools_declare_rtvi_streaming(self):
+    def test_existing_static_tools_declare_single_frame_mode(self):
         tools_dir = Path(__file__).resolve().parent.parent / "tools"
         for name in (
             "scene_description", "live_ocr", "clothing_recognition",
             "door_detection", "empty_seat_detection", "object_recognition",
-            "camera_aiming", "played_card_rtvi",
+            "camera_aiming",
         ):
             text = (tools_dir / f"{name}.py").read_text(encoding="utf-8")
-            self.assertEqual(stream_server._tool_execution_mode(text), "hosted_video_streaming", name)
-            _tool_name, prompt = stream_server._validated_rtvi_tool(text)
-            self.assertTrue(prompt.strip(), name)
+            self.assertEqual(stream_server._tool_execution_mode(text), "take_photo", name)
+            self.assertIsNone(stream_server._literal_tool_metadata(text, "VIDEO_CONFIG"), name)
 
     async def test_start_creates_one_isolated_rtvi_session(self):
         websocket = MagicMock(send=AsyncMock())
@@ -163,7 +162,7 @@ class TestRtviStreamingBoundary(unittest.IsolatedAsyncioTestCase):
             stream_server.active_rtvi_sessions["client-a"],
             stream_server.active_rtvi_sessions["client-b"],
         )
-        self.assertIn("Continuously observe", stream_server.active_rtvi_sessions["client-a"]["prompt"])
+        self.assertIn("chronological short video", stream_server.active_rtvi_sessions["client-a"]["prompt"])
         take_photo.assert_not_called()
         hosted.assert_not_awaited()
 

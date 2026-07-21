@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
 TOOL_NAME = "empty_seat_detection"
-EXECUTION_MODE = "hosted_video_streaming"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
     "Inspect the image for chairs, benches, couches, or other seating, determine which seats "
     "are visibly unoccupied, select the nearest suitable option, and give concise spoken "

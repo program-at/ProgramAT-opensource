@@ -700,6 +700,20 @@ def _tool_execution_mode(tool_code: str) -> str:
     return str(value or '').strip().lower().replace('-', '_')
 
 
+TEMPORAL_TAKE_PHOTO_ERROR = (
+    'This tool requires recent visual history and is only supported in streaming mode.'
+)
+
+
+def _tool_requires_temporal_context(tool_code: str) -> bool:
+    """Return whether a generated tool declares the rolling-window contract."""
+    return _tool_execution_mode(tool_code) == 'hosted_video_streaming'
+
+
+def _take_photo_mode_error(tool_code: str) -> Optional[str]:
+    return TEMPORAL_TAKE_PHOTO_ERROR if _tool_requires_temporal_context(tool_code) else None
+
+
 def _validated_rtvi_tool(tool_code: str) -> tuple[str, str]:
     name = _literal_tool_metadata(tool_code, 'TOOL_NAME')
     mode = _literal_tool_metadata(tool_code, 'EXECUTION_MODE')
@@ -712,6 +726,18 @@ def _validated_rtvi_tool(tool_code: str) -> tuple[str, str]:
         raise ValueError('Streaming tool requires a non-empty string TOOL_PROMPT')
     if len(prompt) > RTVI_PROMPT_MAX_CHARS:
         raise ValueError(f'Streaming TOOL_PROMPT exceeds {RTVI_PROMPT_MAX_CHARS} characters')
+    video_config = _literal_tool_metadata(tool_code, 'VIDEO_CONFIG')
+    if not isinstance(video_config, dict):
+        raise ValueError('Temporal streaming tool requires a literal VIDEO_CONFIG dictionary')
+    required = (
+        'window_seconds', 'interval_seconds', 'minimum_span_seconds',
+        'minimum_unique_frames',
+    )
+    missing = [key for key in required if key not in video_config]
+    if missing:
+        raise ValueError(
+            'Temporal VIDEO_CONFIG is missing required settings: ' + ', '.join(missing)
+        )
     return name.strip(), prompt
 
 
@@ -1272,34 +1298,46 @@ async def _run_hosted_gemini_images(
         if active_hosted_nvidia_sessions.get(client_id) is not session:
             logger.info("[Hosted Gemini Images] stale result dropped client=%s clip=%s", client_id, clip_sequence)
             return
-        try:
-            parsed = parse_structured_video_result(content)
-        except NvidiaHostedError as exc:
-            parsed = None
-            decision = 'invalid_json'
-            accepted = 'I could not determine whether a card was played.'
-            logger.warning(
-                "[Hosted Gemini Images] parsed client=%s clip=%s parsed=null "
-                "valid=false validation=%s error=%s",
-                client_id, clip_sequence, decision, exc,
-            )
-        else:
-            played_message, decision = validate_played_card_event(
-                parsed,
-                float(session['output_config'].get('confidence_threshold', 0.8)),
-                allow_remaining_cards_in_evidence=True,
-            )
-            if decision == 'accepted':
-                accepted = played_message
-            elif decision == 'stable_no_event':
-                accepted = 'No card played.'
-            else:
+        if session.get('output_config', {}).get('schema') == 'played_card_event':
+            try:
+                parsed = parse_structured_video_result(content)
+            except NvidiaHostedError as exc:
+                parsed = None
+                decision = 'invalid_json'
                 accepted = 'I could not determine whether a card was played.'
-            logger.info(
-                "[Hosted Gemini Images] parsed client=%s clip=%s parsed=%s validation=%s",
-                client_id, clip_sequence,
-                json.dumps(parsed, ensure_ascii=False, sort_keys=True), decision,
+                logger.warning(
+                    "[Hosted Gemini Images] parsed client=%s clip=%s parsed=null "
+                    "valid=false validation=%s error=%s",
+                    client_id, clip_sequence, decision, exc,
+                )
+            else:
+                played_message, decision = validate_played_card_event(
+                    parsed,
+                    float(session['output_config'].get('confidence_threshold', 0.8)),
+                    allow_remaining_cards_in_evidence=True,
+                )
+                if decision == 'accepted':
+                    accepted = played_message
+                elif decision == 'stable_no_event':
+                    accepted = 'No card played.'
+                else:
+                    accepted = 'I could not determine whether a card was played.'
+                logger.info(
+                    "[Hosted Gemini Images] parsed client=%s clip=%s parsed=%s validation=%s",
+                    client_id, clip_sequence,
+                    json.dumps(parsed, ensure_ascii=False, sort_keys=True), decision,
+                )
+        else:
+            parsed = content
+            accepted, decision = _filter_rtvi_event(
+                session, content, window_start, window_end, time.monotonic()
             )
+            if accepted is None:
+                logger.info(
+                    "[Hosted Gemini Images] result suppressed client=%s clip=%s reason=%s",
+                    client_id, clip_sequence, decision,
+                )
+                return
         session['latest_forwarded_clip'] = clip_sequence
         payload = {
             'type': 'tool_stream_result', 'tool_name': session['tool_name'],
@@ -1737,12 +1775,13 @@ async def _start_hosted_nvidia_session(
         'stopping': False,
         'temporary_paths': set(),
         'last_emitted_events': {},
-        'semantic_state': 'stable_no_event',
-        'last_emitted_event_window': None,
         'received_frame_count': 0,
         'first_frame_at': None,
         'last_frame_at': None,
     }
+    if output_config.get('schema') == 'played_card_event':
+        session['semantic_state'] = 'stable_no_event'
+        session['last_emitted_event_window'] = None
     active_hosted_nvidia_sessions[client_id] = session
     session['scheduler_task'] = asyncio.create_task(
         _hosted_nvidia_scheduler(websocket, client_id, session)
@@ -5346,7 +5385,12 @@ Extract only these user-facing fields:
 Only block creation when the core task is genuinely unclear.
 - Tool name, task, and expected output are the core fields.
 - Constraints/examples and execution_mode may be empty when unstated.
-- Classify continuous actions or recent visual changes as "hosted_video_streaming".
+- Classify a task as "hosted_video_streaming" only when its answer explicitly
+  requires evidence across multiple moments: recent history, sequence, duration,
+  before/after comparison, state change, or what just happened.
+- A task answerable from the current frame is "take_photo", even when the user
+  may run it continuously. Static identification, recognition, OCR, description,
+  and classification do not become temporal merely because Streaming is available.
 - Do not generate or improve a VLM prompt.
 - Do not return stages, subtasks, reasoning steps, capabilities, routes, or models.
 
@@ -6925,31 +6969,29 @@ async def handle_client(websocket):
                 if msg_type == 'start_streaming_tool':
                     logger.info(f"Client {client_id} started streaming tool: {data.get('tool_name')}")
                     session_log.log("INFO", f"Started streaming tool: {data.get('tool_name')}")
-                    # Production streaming has exactly one hosted-video executor.
-                    # Take-photo messages follow their existing, separate path.
+                    tool_code = resolve_tool_code_for_execution(
+                        tool_name=data.get('tool_name', ''),
+                        tool_path=data.get('tool_path', ''),
+                        client_tool_code=data.get('tool_code', ''),
+                    )
+                    execution_mode = _tool_execution_mode(tool_code)
+                    data = dict(data, tool_code=tool_code)
                     await _cleanup_policy_streaming_registration(client_id)
-                    try:
-                        await _start_hosted_nvidia_session(websocket, client_id, data)
-                    except Exception as exc:
-                        logger.error(
-                            "[NVIDIA Hosted Video] session startup failed client=%s error=%s",
-                            client_id, exc,
-                        )
-                        await websocket.send(json.dumps({
-                            'type': 'tool_stream_result',
-                            'tool_name': data.get('tool_name', 'unknown'),
-                            'status': 'error',
-                            'result': f'Unable to start hosted NVIDIA video streaming: {exc}',
-                            'timestamp': datetime.now().isoformat(),
-                        }))
-                    continue
-                    execution_mode = _tool_execution_mode(data.get('tool_code', ''))
-                    if execution_mode == 'hosted_multiframe' or (
-                        not execution_mode and NVIDIA_STREAMING_MODE == 'hosted_multiframe'
-                    ):
-                        await _cleanup_policy_streaming_registration(client_id)
-                        await _cleanup_rtvi_session(client_id, reason='hosted_tool_active')
-                        await _start_hosted_nvidia_session(websocket, client_id, data)
+                    if execution_mode == 'hosted_video_streaming':
+                        try:
+                            await _start_hosted_nvidia_session(websocket, client_id, data)
+                        except Exception as exc:
+                            logger.error(
+                                "[Hosted Video] session startup failed client=%s error=%s",
+                                client_id, exc,
+                            )
+                            await websocket.send(json.dumps({
+                                'type': 'tool_stream_result',
+                                'tool_name': data.get('tool_name', 'unknown'),
+                                'status': 'error',
+                                'result': f'Unable to start temporal streaming: {exc}',
+                                'timestamp': datetime.now().isoformat(),
+                            }))
                         continue
                     await _cleanup_rtvi_session(client_id, reason='policy_cascade_active')
                     await _cleanup_hosted_nvidia_session(
@@ -7801,6 +7843,22 @@ async def handle_client(websocket):
                     if tool_language == 'python' and tool_code:
                         image_context_token = None
                         try:
+                            resolved_tool_code = resolve_tool_code_for_execution(
+                                tool_name=tool_name,
+                                tool_path=tool_path,
+                                client_tool_code=tool_code,
+                            )
+                            mode_error = _take_photo_mode_error(resolved_tool_code)
+                            if mode_error:
+                                await websocket.send(json.dumps({
+                                    'type': 'tool_result',
+                                    'tool_name': tool_name,
+                                    'status': 'error',
+                                    'error': mode_error,
+                                    'result': mode_error,
+                                    'timestamp': datetime.now().isoformat(),
+                                }))
+                                continue
                             # Use frame from message if provided, otherwise use last streaming frame
                             frame_image = None
                             frame_base64 = None
@@ -7876,7 +7934,7 @@ async def handle_client(websocket):
                             vlm_result = await asyncio.to_thread(
                                 _run_take_photo_vlm,
                                 tool_name,
-                                tool_code,
+                                resolved_tool_code,
                                 frame_image,
                             )
                             response_data = _build_mobile_tool_response(

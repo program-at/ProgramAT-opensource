@@ -33,7 +33,7 @@ from litellm_utils import (
 from model_router_client import copilot_llm_call
 
 TOOL_NAME = "scene_description"
-EXECUTION_MODE = "hosted_video_streaming"
+EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
     "Describe the scene concisely for a blind or low-vision user, prioritizing people, obstacles, "
     "important objects, and spatial relationships. If the scene is unclear, say what cannot be determined."

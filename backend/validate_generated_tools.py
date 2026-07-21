@@ -49,6 +49,23 @@ def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
     return constants
 
 
+def _extract_literal_constants(tree: ast.AST) -> dict[str, object]:
+    constants: dict[str, object] = {}
+    if not isinstance(tree, ast.Module):
+        return constants
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not isinstance(target, ast.Name):
+            continue
+        try:
+            constants[target.id] = ast.literal_eval(node.value)
+        except (ValueError, TypeError):
+            continue
+    return constants
+
+
 def extract_copilot_llm_task_categories(tool_text: str) -> List[Optional[str]]:
     try:
         tree = ast.parse(tool_text)
@@ -161,12 +178,16 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
             f"{rel_path}: take-photo tools require exactly one call_take_photo_vlm() call; "
             f"found {len(vlm_calls)}."
         )
-    constants = _extract_string_constants(tree)
+    constants = _extract_literal_constants(tree)
     tool_prompt = constants.get("TOOL_PROMPT")
     if tool_prompt is None:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_PROMPT constant.")
     if "TOOL_NAME" not in constants:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_NAME constant.")
+    if constants.get('EXECUTION_MODE') != 'take_photo':
+        failures.append(f"{rel_path}: static tools require EXECUTION_MODE = 'take_photo'.")
+    if 'VIDEO_CONFIG' in constants:
+        failures.append(f"{rel_path}: static tools must not declare temporal VIDEO_CONFIG.")
     prompt_uses = []
     for call in vlm_calls:
         prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
@@ -206,7 +227,7 @@ def validate_rtvi_streaming_tool(
         tree = ast.parse(tool_text)
     except SyntaxError:
         return []
-    constants = _extract_string_constants(tree)
+    constants = _extract_literal_constants(tree)
     failures = []
     if constants.get('EXECUTION_MODE') != 'hosted_video_streaming':
         failures.append(
@@ -217,6 +238,38 @@ def validate_rtvi_streaming_tool(
         failures.append(f"{rel_path}: RTVI tools require one string TOOL_NAME.")
     if not isinstance(constants.get('TOOL_PROMPT'), str) or not constants.get('TOOL_PROMPT', '').strip():
         failures.append(f"{rel_path}: RTVI tools require one non-empty string TOOL_PROMPT.")
+    video_config = constants.get('VIDEO_CONFIG')
+    required_settings = {
+        'window_seconds', 'interval_seconds', 'minimum_span_seconds',
+        'minimum_unique_frames',
+    }
+    if not isinstance(video_config, dict):
+        failures.append(f"{rel_path}: temporal tools require a literal VIDEO_CONFIG dictionary.")
+    else:
+        missing = sorted(required_settings - set(video_config))
+        if missing:
+            failures.append(f"{rel_path}: temporal VIDEO_CONFIG is missing: {', '.join(missing)}.")
+        else:
+            try:
+                window = float(video_config['window_seconds'])
+                interval = float(video_config['interval_seconds'])
+                minimum_span = float(video_config['minimum_span_seconds'])
+                minimum_frames = int(video_config['minimum_unique_frames'])
+                if (window <= 0 or interval <= 0 or minimum_span <= 0
+                        or minimum_span > window or minimum_frames < 2):
+                    raise ValueError
+            except (TypeError, ValueError):
+                failures.append(f"{rel_path}: temporal VIDEO_CONFIG settings are invalid.")
+    prompt = str(constants.get('TOOL_PROMPT') or '').casefold()
+    temporal_terms = (
+        'chronological', 'early', 'late', 'before', 'after', 'sequence',
+        'duration', 'state change', 'changed', 'recent frames', 'video',
+        'what just happened', 'history', 'multiple moments',
+    )
+    if prompt and not any(term in prompt for term in temporal_terms):
+        failures.append(
+            f"{rel_path}: temporal TOOL_PROMPT must explain chronological or state-change evidence."
+        )
     forbidden = {
         'call_take_photo_vlm', 'copilot_llm_call', 'RtspPublisher',
         'NvidiaRtviClient', 'asyncio', 're', 'requests', 'aiohttp', 'ffmpeg',

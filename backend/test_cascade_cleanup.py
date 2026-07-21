@@ -30,7 +30,7 @@ class TestCascadeCleanup(unittest.TestCase):
             "3. Give concise guidance to the nearest empty seat.\n"
             "Return only the final guidance."
         )
-        code = f'TOOL_NAME = "seat_finder"\nTOOL_PROMPT = {prompt!r}\n'
+        code = f'TOOL_NAME = "seat_finder"\nEXECUTION_MODE = "take_photo"\nTOOL_PROMPT = {prompt!r}\n'
         with patch.object(
             stream_server, "call_take_photo_vlm", return_value="Go left."
         ) as shared:
@@ -42,6 +42,16 @@ class TestCascadeCleanup(unittest.TestCase):
         shared.assert_called_once_with(
             image=b"image", prompt=prompt, mode="take-photo", request_id=None
         )
+
+    def test_temporal_take_photo_contract_has_clear_error(self):
+        code = 'EXECUTION_MODE = "hosted_video_streaming"\n'
+        self.assertEqual(
+            stream_server._take_photo_mode_error(code),
+            'This tool requires recent visual history and is only supported in streaming mode.',
+        )
+        self.assertIsNone(stream_server._take_photo_mode_error(
+            'EXECUTION_MODE = "take_photo"\n'
+        ))
 
     def test_both_modes_resolve_the_same_gemini_gpt5_c3_policy(self):
         policies = [

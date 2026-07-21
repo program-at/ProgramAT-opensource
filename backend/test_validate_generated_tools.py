@@ -163,6 +163,54 @@ def main(image, input_data=None):
         failures = validate_generated_tools.validate_files([path], issue_text=self.UBER_STAGE_ISSUE)
         self.assertEqual(failures, [])
 
+    def test_static_contract_rejects_video_config(self):
+        issue = "## Mode\n\ntake_photo\n"
+        tool = '''
+from litellm_utils import call_take_photo_vlm
+TOOL_NAME = "hand_identifier"
+EXECUTION_MODE = "take_photo"
+VIDEO_CONFIG = {"window_seconds": 6}
+TOOL_PROMPT = "Identify the current hand."
+def main(image, input_data):
+    return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
+'''
+        failures = validate_generated_tools.validate_take_photo_tool(
+            tool, issue, Path("tools/hand_identifier.py")
+        )
+        self.assertTrue(any("must not declare" in failure for failure in failures))
+
+    def test_temporal_contract_requires_complete_window_and_temporal_prompt(self):
+        issue = "## Mode\n\nhosted_video_streaming\n"
+        incomplete = '''
+TOOL_NAME = "door_change"
+EXECUTION_MODE = "hosted_video_streaming"
+VIDEO_CONFIG = {"window_seconds": 6}
+TOOL_PROMPT = "Describe the door."
+'''
+        failures = validate_generated_tools.validate_rtvi_streaming_tool(
+            incomplete, issue, Path("tools/door_change.py")
+        )
+        self.assertTrue(any("VIDEO_CONFIG is missing" in failure for failure in failures))
+        self.assertTrue(any("chronological or state-change" in failure for failure in failures))
+
+        complete = '''
+TOOL_NAME = "door_change"
+EXECUTION_MODE = "hosted_video_streaming"
+VIDEO_CONFIG = {
+    "window_seconds": 6,
+    "interval_seconds": 3,
+    "minimum_span_seconds": 5,
+    "minimum_unique_frames": 12,
+}
+TOOL_PROMPT = "Compare chronological early and late frames and report whether the door changed."
+'''
+        self.assertEqual(
+            validate_generated_tools.validate_rtvi_streaming_tool(
+                complete, issue, Path("tools/door_change.py")
+            ),
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
