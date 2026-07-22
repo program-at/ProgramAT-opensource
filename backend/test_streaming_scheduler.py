@@ -265,7 +265,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
             stream_server.active_streaming_tools["client"] = {
                 "generation": 5, "tool": tool_config["tool"]
             }
-            return "Completed old-frame C3 result"
+            return "Completed old-frame policy result"
 
         with patch.object(
             stream_server, "_run_take_photo_vlm", side_effect=finish_after_restart
@@ -279,7 +279,7 @@ class TestStreamingScheduler(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(sent)
         cascade.assert_called_once()
         websocket.send.assert_not_awaited()
-        self.assertIn("policy cascade result discarded as stale", "\n".join(logs.output))
+        self.assertIn("tool policy result discarded as stale", "\n".join(logs.output))
 
     async def test_streaming_sends_only_final_policy_cascade_result(self):
         tool_config = {

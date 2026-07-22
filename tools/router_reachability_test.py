@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 
 TOOL_NAME = "router_reachability_test"

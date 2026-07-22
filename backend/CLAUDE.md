@@ -30,8 +30,10 @@ uv run python stream_server.py   # serves ws://0.0.0.0:8081
 - `gemini_summarizer.py` — summarizes Copilot session logs for screen readers.
 - `copilot_db.py` — SQLite store for Copilot session data.
 - `module_manager.py` — installs missing pip packages for tools at runtime.
-- `model_router.py` — semantic Copilot routing plus simple system/Copilot LLM calls.
-- `execution_policy.yaml` — the single policy cascade cascade configuration.
+- `model_adapters.py` — provider-specific model invocation adapters.
+- `tool_policy_runtime.py` — policy resolution and adapter bridge.
+- `model_registry.py` / `strategy_registry.py` — available models and policy schemas.
+- `policy_executor.py` — shared structured tool-policy execution.
 - `litellm_utils.py` — shared LiteLLM invocation and response helpers.
 
 `ARCHITECTURE.md` (repo root) explains how these fit together.

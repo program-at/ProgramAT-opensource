@@ -4,7 +4,7 @@ Gemini-based summarization for Copilot session logs.
 import logging
 from typing import List, Dict
 from litellm_utils import extract_text
-from model_router import system_llm_call
+from tool_policy_runtime import system_llm_call
 
 logger = logging.getLogger(__name__)
 

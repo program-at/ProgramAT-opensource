@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-import yaml
 from dotenv import load_dotenv
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -45,8 +44,8 @@ def normalize_expected_card(value: str) -> str:
 
 
 def configured_gemini_model() -> str:
-    policy = yaml.safe_load((BACKEND_DIR / "execution_policy.yaml").read_text())
-    model = policy["implementations"]["gemini_flash_lite"]["model"]
+    from model_registry import MODEL_REGISTRY
+    model = MODEL_REGISTRY["gemini-3.1-flash-lite"]["provider_model"]
     if not isinstance(model, str) or not model.startswith("gemini/"):
         raise RuntimeError("gemini_flash_lite is not configured as a Gemini model")
     return model

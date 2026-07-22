@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Benchmark configured VLM implementation latency on a single image.
 
-This script measures end-to-end latency for model implementations listed in
-execution_policy.yaml through the same LiteLLM call path used at runtime.
+This script measures end-to-end latency for models in model_registry.py through
+the same LiteLLM call path used at runtime.
 
 The script writes a JSON report with timings and a short response preview for each model.
 You can also run grouped benchmarks with --group:
@@ -22,9 +22,10 @@ from typing import Any, Dict, List, Literal, Optional
 
 from PIL import Image
 
-import model_router
+import litellm_utils
 from litellm_utils import extract_text
-from model_router import load_implementation_profiles
+from model_registry import MODEL_REGISTRY
+from model_adapters import ImplementationProfile
 
 
 BACKEND_DIR = Path(__file__).resolve().parent
@@ -55,7 +56,10 @@ def _provider(profile: Any) -> str:
 
 
 def _select_profiles(group: Literal["all", "groq", "dashscope"] = "all") -> List[Any]:
-    profiles = [profile for profile in load_implementation_profiles().values() if profile.kind == "model"]
+    profiles = [
+        ImplementationProfile(name, entry["executor"], model=entry["provider_model"])
+        for name, entry in MODEL_REGISTRY.items() if entry["executor"] == "model"
+    ]
     if group != "all":
         return [profile for profile in profiles if _provider(profile) == group]
     return profiles
@@ -77,7 +81,7 @@ def _short_preview(text: str, max_chars: int = 300) -> str:
 def _benchmark_api_model(profile: Any, image: Image.Image, prompt: str) -> BenchmarkResult:
     started = time.perf_counter()
     try:
-        response = model_router.call_model(
+        response = litellm_utils.call_model(
             profile.model,
             [{"role": "user", "content": prompt}],
             images=[image],

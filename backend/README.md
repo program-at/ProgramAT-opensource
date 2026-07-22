@@ -44,11 +44,11 @@ The server uses environment variables for configuration:
 
 ### Required for AI-Powered Template Filling
 
-- `global.system_model` in `backend/execution_policy.yaml`: fixed implementation used for parsing, template filling, issue generation, and other ProgramAT internal LLM work.
+- `SYSTEM_MODEL` in `backend/model_registry.py`: fixed model used for internal LLM work.
 
-- Provider credentials: the default system model uses `GROQ_API_KEY`; the active policy cascade flow uses `GEMINI_API_KEY` and `OPENAI_API_KEY`.
+- Provider credentials depend on the models selected by a tool policy; the fixed system model uses `GROQ_API_KEY`.
   - System calls use the fixed system model.
-  - Gemini 3.1 Flash Lite runs first, GPT-4o-mini evaluates its answer, and GPT-5 runs only when Gemini fails or is rejected.
+  - The default take-photo policy makes one Gemini 3.1 Flash Lite call.
 
 ### LLM Interfaces
 
@@ -57,39 +57,24 @@ ProgramAT separates fixed infrastructure LLM calls from take-photo capability ex
 For take-photo tools, the system LLM extracts issue fields and the coding agent
 authors one fused `TOOL_PROMPT`. The generated tool makes exactly one call to
 the shared VLM helper and does not execute task stages, routers, or specialist
-calls. The helper owns the active experiment's model selection, evaluation, and
-fallback behavior; those backend details are not generated prompt stages.
+calls. The helper executes an optional literal `TOOL_POLICY`; without one it
+uses the default single-model Gemini policy.
 
-Infrastructure/system work such as text parsing, command extraction, issue generation, metadata generation, and internal assistant logic should call `system_llm_call(...)` from `model_router.py`. This uses `global.system_model` and bypasses capability routing.
+Infrastructure/system work should call `system_llm_call(...)` from `tool_policy_runtime.py`.
 
-Generated tools call `call_take_photo_vlm(...)`. Both take-photo and
-streaming resolve the same concrete implementations from `execution_policy.yaml`:
+Generated tools call `call_take_photo_vlm(...)`. A minimal policy is:
 
-```yaml
-mode_execution:
-  take-photo:
-    cascade: default_reasoning
-    planner_mode: FUSED_PROMPT
-  streaming:
-    cascade: default_reasoning
-    planner_mode: FUSED_PROMPT
-
-cascade_profiles:
-  default_reasoning:
-    candidates: [gemini_flash_lite, gpt5]
-    evaluator: gpt4o-mini
-    result_passing: failed_attempts
+```json
+{"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
 ```
 
-Edit `backend/execution_policy.yaml` to change the active cascade order or evaluator.
-There are no runtime planner stages, difficulty starts, capability-specific routes,
-or alternate experiment modes. Complex dependent logic belongs inside the single
-Copilot-authored fused `TOOL_PROMPT`.
+Models and strategy schemas live in `model_registry.py` and
+`strategy_registry.py`. The runtime does not infer or generate policies.
 
 ### Optional
 
-- `ENABLE_MOONDREAM_CLOUD`: Enable the execution-policy candidate (`true` by default).
-- `MOONDREAM_MODEL`: Cloud model (`moondream/moondream3-preview` from `execution_policy.yaml` by default).
+- `ENABLE_MOONDREAM_CLOUD`: Enable Moondream when an explicit policy selects it (`true` by default).
+- `MOONDREAM_MODEL`: Cloud model (`moondream/moondream3-preview` by default).
 - `MOONDREAM_TIMEOUT_SECONDS`: Per-request timeout (`2.0` by default).
 - `MOONDREAM_MAX_IMAGE_DIMENSION`: Moondream-only resize bound (`768` by default).
 - `MOONDREAM_JPEG_QUALITY`: Moondream-only RGB JPEG quality (`75` by default).

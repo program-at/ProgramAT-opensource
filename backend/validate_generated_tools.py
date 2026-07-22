@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from policy_executor import ToolPolicyError, validate_tool_policy
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 TOOLS_DIR = REPO_ROOT / "tools"
 
@@ -27,13 +29,14 @@ FORBIDDEN_PATTERNS = [
     ("COCO class list", re.compile(r"\bCOCO_CLASSES\b")),
     ("model registry", re.compile(r"\b(?:MODEL_REGISTRY|model_registry|available_models|provider_registry)\b")),
     ("provider fallback logic", re.compile(r"\b(?:fallback_models|fallback_model|provider_fallback|fallback_provider)\b")),
+    ("custom model orchestration", re.compile(r"\b(?:execute_tool_policy|execute_resolved_tool_policy|call_model|ThreadPoolExecutor|as_completed)\b")),
     ("model file reference", re.compile(r"\.pt\b|['\"][^'\"]+\.pt['\"]")),
     ("model file discovery", re.compile(r"\b(?:glob|rglob)\s*\([^)]*\.pt[^)]*\)|os\.walk\s*\(")),
 ]
 
 ALLOWED_SHARED_TOOL_FILES = {
     "litellm_utils.py",
-    "model_router_client.py",
+    "tool_policy_client.py",
 }
 
 def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
@@ -206,6 +209,31 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_NAME directly as tool_name.")
     if extract_copilot_llm_task_categories(tool_text):
         failures.append(f"{rel_path}: take-photo tools must not call copilot_llm_call().")
+    if "TOOL_POLICY" in constants:
+        try:
+            validate_tool_policy(constants["TOOL_POLICY"])
+        except (ToolPolicyError, TypeError) as exc:
+            failures.append(f"{rel_path}: invalid TOOL_POLICY: {exc}.")
+        policy_uses = []
+        for call in vlm_calls:
+            keyword = next((kw for kw in call.keywords if kw.arg == "policy"), None)
+            policy_uses.append(
+                keyword is not None and isinstance(keyword.value, ast.Name)
+                and keyword.value.id == "TOOL_POLICY"
+            )
+        if policy_uses != [True]:
+            failures.append(
+                f"{rel_path}: tools declaring TOOL_POLICY must pass policy=TOOL_POLICY "
+                "to call_take_photo_vlm()."
+            )
+    elif any(
+        isinstance(node, (ast.Assign, ast.AnnAssign))
+        and any(isinstance(target, ast.Name) and target.id == "TOOL_POLICY" for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        ))
+        for node in tree.body
+    ):
+        failures.append(f"{rel_path}: TOOL_POLICY must be static literal data.")
     return failures
 
 

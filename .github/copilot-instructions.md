@@ -66,6 +66,48 @@ def main(image, input_data):
     )
 ```
 
+Copilot may optionally declare a literal `TOOL_POLICY` when the user expresses a
+meaningful speed, accuracy, cost, fallback, or multi-model preference. Inspect
+`backend/model_registry.py` and `backend/strategy_registry.py`, then choose the
+simplest policy that satisfies the request. With no such preference, omit
+`TOOL_POLICY`; the runtime uses one Gemini 3.1 Flash Lite call.
+
+- Prefer `single` for normal and speed-focused tools.
+- Use `cascade` only for an explicit fast-first, stronger-fallback request.
+- Use `parallel_first` only when multiple models should start together and the
+  first acceptable result should win.
+- Use `parallel_aggregate` only to compare or combine several outputs.
+- Use `conditional` only for a clearly defined fast-default/stronger condition.
+- Gemini 3.1 Flash Lite is the default general VLM. YOLO is object detection
+  only. Moondream is for simple, low-risk tasks where lower accuracy is
+  acceptable. GPT-5 is for accuracy/strong reasoning despite latency and cost.
+  GPT-4o-mini is mainly an evaluator or aggregator.
+
+Policies are static data, never custom routing code. Pass an explicit declaration
+to the helper as `policy=TOOL_POLICY`. Never implement model orchestration outside
+`TOOL_POLICY`, and never add cascade, evaluation, parallelism, or aggregation
+without a user-driven reason.
+
+```python
+TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
+```
+
+```python
+TOOL_POLICY = {
+    "strategy": "cascade",
+    "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
+    "evaluator": "gpt-4o-mini",
+}
+```
+
+```python
+TOOL_POLICY = {
+    "strategy": "parallel_aggregate",
+    "models": ["gemini-3.1-flash-lite", "gpt-5"],
+    "aggregator": "gpt-4o-mini",
+}
+```
+
 Before writing `TOOL_PROMPT`, analyze whether the requested task is achievable
 as one operation or contains genuinely dependent visual or reasoning
 subproblems. Default to the simpler prompt. A task that can be completed in one
@@ -86,11 +128,8 @@ concise, audio-friendly final answer.
   reliability. Ask the VLM to return only the final user-facing answer, not its
   intermediate reasoning.
 
-These are prompt-level instructions for one VLM helper call. Never turn them
-into runtime stages, multiple model calls, router stages, specialist calls, or
-verification calls. You may consult repository capability descriptions as
-reasoning examples, but do not emit capability names, routing metadata,
-cascades, or evaluators.
+These are prompt-level instructions for one shared helper call. Any requested
+multi-model behavior belongs only in the literal `TOOL_POLICY`.
 
 ### Prompt examples
 
@@ -113,8 +152,7 @@ If none is visible, say so. Return only the final guidance.
 ```
 
 Make exactly one VLM helper call. Do not add planner, router, specialist,
-fallback model, verification, or provider calls. The shared helper owns the
-experiment's model execution.
+verification, or provider calls. The shared policy executor owns model execution.
 
 ## Streaming tools
 

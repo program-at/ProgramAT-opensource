@@ -61,11 +61,11 @@ def detect_vehicles(image):
         self.assertTrue(any("COCO class list" in failure for failure in failures))
         self.assertTrue(any("model file reference" in failure for failure in failures))
 
-    def test_allows_model_router_client_import(self):
+    def test_allows_tool_policy_client_import(self):
         path = self._write_temp_tool(
             "good_generated_tool.py",
             """
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 TASK_CATEGORY = "general_reasoning"
 
@@ -85,7 +85,7 @@ def main(image, input_data=None):
         path = self._write_temp_tool(
             "good_ocr_tool.py",
             '''
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 def main(image, input_data=None):
     result = copilot_llm_call(capability="ocr", images=[image])
@@ -100,7 +100,7 @@ def main(image, input_data=None):
             path = self._write_temp_tool(
                 "stringified_result_tool.py",
                 f'''
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 def main(image, input_data=None):
     guidance = copilot_llm_call(
@@ -119,7 +119,7 @@ def main(image, input_data=None):
         path = self._write_temp_tool(
             "response_field_tool.py",
             '''
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 def main(image, input_data=None):
     guidance = copilot_llm_call(
@@ -137,7 +137,7 @@ def main(image, input_data=None):
         path = self._write_temp_tool(
             "uber_three_stage_tool.py",
             """
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 def main(image, input_data=None):
     vehicle = copilot_llm_call(

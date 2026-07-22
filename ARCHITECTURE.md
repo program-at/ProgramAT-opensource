@@ -196,7 +196,7 @@ AudioOutputService.speak()     setToolOutput() → UI text
 ### Technology Stack
 - **Language**: Python 3.11
 - **WebSocket Server**: `websockets` library (asyncio)
-- **AI – General**: Google Gemini API (`gemini-2.5-flash-lite` default; configurable)
+- **AI – General**: Gemini 3.1 Flash Lite (default single-call take-photo policy)
 - **AI – Live Audio**: `gemini-2.5-flash-native-audio-preview` via `google-genai` SDK
 - **Object Detection**: YOLO11 (`yolo11n.pt`) and YOLOWorld (`yolov8s-world.pt`) via Ultralytics
 - **OCR**: Google Cloud Vision API
@@ -243,7 +243,7 @@ AudioOutputService.speak()     setToolOutput() → UI text
 
 #### 6. **gemini_summarizer.py** – Log Summarizer
 - Summarizes batches of Copilot log entries into 1–3 sentence TTS-friendly strings
-- Uses `system_llm_call(...)` with the fixed `SYSTEM_LLM_MODEL`; internal summaries do not use capability routing
+- Uses `system_llm_call(...)` with the fixed infrastructure model; internal summaries are outside tool-policy execution
 - Called periodically while a Copilot session is streaming
 
 #### 7. **GitHub Integration** (in `stream_server.py`)

@@ -26,6 +26,12 @@ def main(image, input_data):
     )
 ```
 
+Tools may declare a literal `TOOL_POLICY` using the schema in
+`backend/strategy_registry.py`. If omitted, the runtime makes one
+`gemini-3.1-flash-lite` call. When declared, pass it to the helper as
+`policy=TOOL_POLICY`. Do not infer a policy inside tool code or implement custom
+model orchestration.
+
 Make exactly one helper call and return it directly. Do not add another model or
 specialist call, verification pass, fallback model, model name, or provider SDK.
 Author one concise fused prompt following the detailed guidance in

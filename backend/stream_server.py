@@ -31,7 +31,6 @@ from aiohttp import web, WSMsgType
 from google.cloud import secretmanager
 from github import Github
 import os
-import yaml
 from dotenv import load_dotenv
 
 # Load .env before importing modules that read routing/provider settings at import time.
@@ -64,7 +63,7 @@ STREAMING_MIN_STABLE_CONFIRMATIONS = max(
     1, int(os.getenv('STREAMING_MIN_STABLE_CONFIRMATIONS', '2'))
 )
 
-from model_router import (
+from tool_policy_runtime import (
     STREAMING_EXECUTION_CONTEXT,
     StreamingExecutionCancelled,
     TOOL_EXECUTION_IMAGES,
@@ -112,7 +111,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from door_detection import main as door_recognition_main
-from model_router_client import copilot_llm_call as tool_copilot_llm_call
+from tool_policy_client import copilot_llm_call as tool_copilot_llm_call
 
 # Configure logging
 logging.basicConfig(
@@ -1883,7 +1882,7 @@ async def _dispatch_active_streaming_frame(
     image_base64: str,
     frame_timestamp: float | None = None,
 ) -> asyncio.Task | None:
-    """Dispatch an incoming frame only to the policy-cascade scheduler."""
+    """Dispatch an incoming frame to the unchanged tool-policy scheduler."""
     if image is None or client_id not in active_streaming_tools:
         return None
     task = asyncio.create_task(
@@ -1893,31 +1892,24 @@ async def _dispatch_active_streaming_frame(
     task.add_done_callback(_log_streaming_task_error)
     return task
 
-EXECUTION_POLICY_PATH = Path(__file__).resolve().parent / 'execution_policy.yaml'
 _clip_encoders = {}
 _clip_encoder_load_lock = threading.Lock()
 _clip_ready_models = set()
 
 
-def load_streaming_frame_selector_config(path=EXECUTION_POLICY_PATH) -> Dict[str, Any]:
-    """Load and validate streaming-only frame selector configuration."""
-    with Path(path).open('r', encoding='utf-8') as handle:
-        root = yaml.safe_load(handle) or {}
-    selector = (root.get('streaming') or {}).get('frame_selector') or {}
-    if selector.get('implementation') != 'clip':
-        raise ValueError("streaming.frame_selector.implementation must be 'clip'")
-    model = str(selector.get('model') or '').strip()
-    threshold = float(selector.get('similarity_threshold'))
+def load_streaming_frame_selector_config(path=None) -> Dict[str, Any]:
+    """Return the unchanged streaming frame-selection settings."""
+    del path
+    model = 'openai/clip-vit-base-patch32'
+    threshold = 0.985
     last_sent_threshold = float(os.getenv(
         'STREAMING_MAX_SIMILARITY_TO_LAST_SENT',
         os.getenv(
             'MAX_SIMILARITY_TO_LAST_SENT',
-            selector.get(
-                'max_similarity_to_last_sent', STREAMING_MAX_SIMILARITY_TO_LAST_SENT
-            ),
+            STREAMING_MAX_SIMILARITY_TO_LAST_SENT,
         ),
     ))
-    max_skip_frames = int(selector.get('max_skip_frames'))
+    max_skip_frames = 20
     if not model:
         raise ValueError('streaming.frame_selector.model is required')
     if not -1.0 <= threshold <= 1.0:
@@ -2188,12 +2180,14 @@ def _run_take_photo_vlm(
     mode: str = 'take-photo',
     request_id: Optional[str] = None,
 ) -> str:
-    """Execute the fused prompt through the mode's policy-configured cascade."""
+    """Execute the fused prompt through the shared structured policy executor."""
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
+    policy = _take_photo_tool_policy(tool_code)
     logger.info(
-        "[Policy Cascade] mode=%s prompt_author=copilot policy_source=execution_policy.yaml "
+        "[Tool Policy] mode=%s prompt_author=copilot policy_source=%s "
         "request_id=%s",
         mode,
+        'TOOL_POLICY' if policy else 'default',
         request_id or 'generated',
     )
     return call_take_photo_vlm(
@@ -2201,7 +2195,25 @@ def _run_take_photo_vlm(
         prompt=prompt,
         mode=mode,
         request_id=request_id,
+        policy=policy,
     )
+
+
+def _take_photo_tool_policy(tool_code: str) -> Any:
+    """Read an optional literal TOOL_POLICY without executing generated code."""
+    try:
+        tree = ast.parse(tool_code or '')
+        for node in tree.body:
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            if any(isinstance(target, ast.Name) and target.id == 'TOOL_POLICY' for target in targets):
+                value = ast.literal_eval(node.value)
+                return value
+    except (SyntaxError, ValueError, TypeError) as exc:
+        logger.warning("[Tool Policy] unreadable TOOL_POLICY; using default error=%s", exc)
+        return None
+    return None
 
 
 def _resolve_tool_prompt(tool_code: str) -> Optional[str]:
@@ -3025,7 +3037,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
     # bodies are not executed per frame; TOOL_PROMPT is the complete fused task.
     if tool_language != 'python' or not tool_code:
         logger.error(
-            "[Streaming] policy cascade requires a Python tool with TOOL_PROMPT "
+            "[Streaming] tool policy requires a Python tool with TOOL_PROMPT "
             "client=%s tool=%s language=%s",
             client_id,
             tool_name,
@@ -3045,13 +3057,13 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
             )
         except Exception as exc:
             logger.error(
-                "[Streaming] policy cascade failed client=%s execution=%s error=%s",
+                "[Streaming] tool policy failed client=%s execution=%s error=%s",
                 client_id, execution_id, exc,
             )
             return False
         if streaming_cancelled():
             logger.info(
-                "[Streaming] policy cascade result discarded as stale client=%s execution=%s",
+                "[Streaming] tool policy result discarded as stale client=%s execution=%s",
                 client_id, execution_id,
             )
             return False
@@ -7026,8 +7038,6 @@ async def handle_client(websocket):
         # Send server capabilities so the app can show/hide features accordingly.
         capabilities_payload = {
             **SERVER_CAPABILITIES,
-            'model_routing': True,
-            'routing_mode': 'semantic',
             'nvidia_streaming_mode': NVIDIA_STREAMING_MODE,
             'streaming_executor': STREAMING_EXECUTOR,
             'nvidia_hosted_active': NVIDIA_HOSTED_ACTIVE,

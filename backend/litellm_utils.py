@@ -206,12 +206,13 @@ def call_take_photo_vlm(
     *,
     mode: str = "take-photo",
     request_id: Optional[str] = None,
+    policy: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Delegate the fused prompt to the mode's YAML-configured cascade."""
-    # Imported lazily because model_router uses the individual provider wrappers
-    # in this module when constructing its implementation executor registry.
-    from model_router import run_mode_cascade
+    """Execute a tool policy, defaulting to one Gemini 3.1 Flash Lite call."""
+    # Lazy import avoids a cycle with provider adapters that use call_model().
+    from tool_policy_runtime import execute_resolved_tool_policy
 
-    return run_mode_cascade(
-        mode=mode, prompt=prompt, image=image, request_id=request_id
+    return execute_resolved_tool_policy(
+        prompt=prompt, image=image, request_id=request_id, policy=policy,
+        metadata={"mode": mode, "tool_name": tool_name or ""},
     )

@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 
 from litellm_utils import extract_text, pil_image_to_data_uri
-from model_router_client import copilot_llm_call
+from tool_policy_client import copilot_llm_call
 
 TOOL_NAME = "clothing_recognition"
 EXECUTION_MODE = "take_photo"
