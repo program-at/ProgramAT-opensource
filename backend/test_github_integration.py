@@ -107,5 +107,49 @@ class TestTextProcessing(unittest.TestCase):
         self.assertEqual(empty_string.strip(), "")
 
 
+class TestCopilotUpdateComments(unittest.TestCase):
+    """Regression coverage for update-mode Copilot triggering."""
+
+    def test_update_mode_existing_pr_adds_exactly_one_copilot_mention(self):
+        import stream_server
+
+        user_text = "Update the results view to show the full error message."
+        mock_issue = Mock()
+        mock_issue.pull_request = object()
+        mock_issue.html_url = "https://github.test/test/repo/pull/42"
+        mock_issue.user.login = "copilot-swe-agent[bot]"
+        mock_issue.assignees = []
+        mock_issue.labels = []
+        mock_repo = Mock()
+        mock_repo.get_issue.return_value = mock_issue
+
+        old_token = stream_server.GITHUB_TOKEN
+        old_selected = stream_server.selected_issue.copy()
+        try:
+            stream_server.GITHUB_TOKEN = "test_token"
+            stream_server.selected_issue.update({
+                'mode': 'update', 'number': 42, 'title': 'Copilot PR'
+            })
+            with patch.object(stream_server, 'Github') as mock_github:
+                mock_github.return_value.get_repo.return_value = mock_repo
+                asyncio.run(stream_server.create_github_issue(user_text))
+        finally:
+            stream_server.GITHUB_TOKEN = old_token
+            stream_server.selected_issue.clear()
+            stream_server.selected_issue.update(old_selected)
+
+        posted = mock_issue.create_comment.call_args.args[0]
+        self.assertEqual(posted.lower().count('@copilot'), 1)
+        self.assertEqual(posted, f"@copilot\n\n{user_text}")
+
+    def test_existing_copilot_mention_is_not_duplicated(self):
+        from stream_server import build_copilot_comment
+
+        comment = "@Copilot\n\nPlease update this."
+        posted, automatically_added = build_copilot_comment(comment, True)
+        self.assertEqual(posted, comment)
+        self.assertFalse(automatically_added)
+
+
 if __name__ == '__main__':
     unittest.main()
