@@ -51,28 +51,39 @@ movements, a sign lasting seconds, or the sign/phrase just made are temporal.
 Define exactly one `TOOL_PROMPT` and use this shape:
 
 ```python
-from litellm_utils import call_take_photo_vlm
+from model_execution import execute_tool_policy
 
 TOOL_NAME = "tool_name"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = "One task-specific instruction."
+TOOL_POLICY = {
+    "strategy": "single",
+    "models": ["gemini-3.1-flash-lite"],
+}
 
 
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    return call_take_photo_vlm(
-        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
+    return execute_tool_policy(
+        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
     )
 ```
 
-Copilot may optionally declare a literal `TOOL_POLICY` when the user expresses a
-meaningful speed, accuracy, cost, fallback, or multi-model preference. Inspect
-`backend/model_registry.py` and `backend/strategy_registry.py`, then choose the
-simplest policy that satisfies the request. With no such preference, omit
-`TOOL_POLICY`; the runtime uses one Gemini 3.1 Flash Lite call.
+Copilot is responsible for choosing and emitting a literal `TOOL_POLICY`.
+Inspect `backend/model_registry.py` and `backend/strategy_registry.py`, then
+choose the simplest policy that satisfies the request. For ordinary requests
+without a meaningful execution preference or specialized-model need, emit the
+single Gemini 3.1 Flash Lite policy shown above. The backend only validates and
+executes this data; it never infers difficulty, chooses models, or expands it.
 
-- Prefer `single` for normal and speed-focused tools.
+- For speed, prefer one fast suitable model: YOLO only for supported object
+  detection, Moondream only for very simple low-risk tasks where reduced
+  accuracy is acceptable, and otherwise Gemini 3.1 Flash Lite.
+- For accuracy when substantially higher latency is acceptable, prefer GPT-5.
+- For "usually fast, but more accurate when needed," use `conditional` or
+  `cascade`, starting with Gemini 3.1 Flash Lite and escalating to GPT-5 only
+  under an explicit sufficiency condition.
 - Use `cascade` only for an explicit fast-first, stronger-fallback request.
 - Use `parallel_first` only when multiple models should start together and the
   first acceptable result should win.
@@ -83,8 +94,8 @@ simplest policy that satisfies the request. With no such preference, omit
   acceptable. GPT-5 is for accuracy/strong reasoning despite latency and cost.
   GPT-4o-mini is mainly an evaluator or aggregator.
 
-Policies are static data, never custom routing code. Pass an explicit declaration
-to the helper as `policy=TOOL_POLICY`. Never implement model orchestration outside
+Policies are static data, never custom routing code. Pass the declaration to
+`execute_tool_policy` as `policy=TOOL_POLICY`. Never implement model orchestration outside
 `TOOL_POLICY`, and never add cascade, evaluation, parallelism, or aggregation
 without a user-driven reason.
 
@@ -128,7 +139,8 @@ concise, audio-friendly final answer.
   reliability. Ask the VLM to return only the final user-facing answer, not its
   intermediate reasoning.
 
-These are prompt-level instructions for one shared helper call. Any requested
+These are prompt-level instructions for one shared helper call. Never turn them
+into runtime stages, multiple model calls, or custom routing. Any requested
 multi-model behavior belongs only in the literal `TOOL_POLICY`.
 
 ### Prompt examples
@@ -142,16 +154,29 @@ is clear, say "No clear gesture."
 
 Complex task—use one fused prompt with dependent ordered sub-tasks:
 
-```text
-Follow this sequence using the same image:
+```python
+from model_execution import execute_tool_policy
+
+TOOL_NAME = "empty_chair"
+EXECUTION_MODE = "take_photo"
+TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
+TOOL_PROMPT = """Follow this sequence using the same image:
 1. Identify chairs, benches, or other seating.
 2. Determine which visible seats are unoccupied.
 3. Select the nearest suitable option.
 4. Give concise spoken guidance toward it.
-If none is visible, say so. Return only the final guidance.
+If none is visible, say so. Return only the final guidance."""
+
+def main(image, input_data):
+    if image is None:
+        return "No camera image is available."
+    return execute_tool_policy(
+        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
+    )
 ```
 
-Make exactly one VLM helper call. Do not add planner, router, specialist,
+The empty-chair example uses the default visible policy above: strategy
+`single`, model `gemini-3.1-flash-lite`. Make exactly one executor call. Do not add planner, router, specialist,
 verification, or provider calls. The shared policy executor owns model execution.
 
 ## Streaming tools
@@ -163,8 +188,10 @@ tools declarative and put event/scene behavior entirely in `TOOL_PROMPT`.
 
 Use `EXECUTION_MODE = "hosted_video_streaming"` only when the requested result
 requires recent history or comparison across time. Generate only `TOOL_NAME`,
-that execution mode, required literal `VIDEO_CONFIG`, optional literal
-`OUTPUT_CONFIG`, and a task-specific `TOOL_PROMPT`. The prompt must explain the
+that execution mode, explicit literal `TOOL_POLICY`, required literal
+`VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`, and a task-specific
+`TOOL_PROMPT`. The runtime reads and validates the same policy for take-photo
+and independently scheduled streaming execution. The prompt must explain the
 chronological, early/late, before/after, duration, sequence, or state-change
 evidence the VLM should inspect. The shared
 runtime supplies the rolling buffer, MP4 encoding, hosted request, event filtering,

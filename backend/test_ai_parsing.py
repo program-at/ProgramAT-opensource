@@ -54,14 +54,16 @@ def load_stream_server_function(name: str):
 class TestIssueTemplateGuidance(unittest.TestCase):
     """Test Copilot-facing issue template guidance."""
 
-    def test_visual_at_template_uses_take_photo_vlm(self):
+    def test_visual_at_template_uses_explicit_tool_policy(self):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
         for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
             self.assertIn(f"## {heading}", template)
             self.assertIn(f"## {heading}\n\n<!--", template)
-        self.assertIn("call_take_photo_vlm", template)
+        self.assertNotIn("call_take_photo_vlm", template)
+        self.assertIn("execute_tool_policy", template)
+        self.assertIn("TOOL_POLICY", template)
         self.assertIn("TOOL_PROMPT", template)
         self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
         self.assertNotIn("Task Stages", template)
@@ -73,7 +75,9 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("### Prompt examples", instructions)
         self.assertIn("Simple task—use one direct instruction with no steps", instructions)
         self.assertIn("Complex task—use one fused prompt", instructions)
-        self.assertEqual(instructions.count("```text"), 2)
+        self.assertEqual(instructions.count("```text"), 1)
+        self.assertIn('TOOL_NAME = "empty_chair"', instructions)
+        self.assertIn('"models": ["gemini-3.1-flash-lite"]', instructions)
         self.assertIn("requested task is achievable", instructions)
         self.assertIn("as one operation", instructions)
         self.assertIn("Default to the simpler prompt", instructions)

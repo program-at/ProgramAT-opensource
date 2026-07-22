@@ -148,7 +148,7 @@ class TestRtviStreamingBoundary(unittest.IsolatedAsyncioTestCase):
             return publisher
 
         with patch.object(stream_server, "RtspPublisher", side_effect=publisher_factory), \
-             patch.object(stream_server, "call_take_photo_vlm") as take_photo, \
+             patch.object(stream_server, "execute_tool_policy") as take_photo, \
              patch.object(stream_server, "_start_hosted_nvidia_session", new=AsyncMock()) as hosted:
             await stream_server._start_rtvi_session(websocket, "client-a", {
                 "tool_name": "played_card_rtvi", "tool_code": tool_code,

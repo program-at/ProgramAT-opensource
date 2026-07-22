@@ -54,16 +54,19 @@ into runtime stages, multiple model calls, router stages, specialist calls,
 cascades, evaluators, or verification calls. Do not include capability names
 unless naturally needed.
 
-Every take-photo tool must define exactly one `TOOL_PROMPT`, call
-`call_take_photo_vlm` exactly once, and return its answer directly.
+Every take-photo tool must define exactly one `TOOL_PROMPT`, emit a literal
+`TOOL_POLICY`, call `execute_tool_policy` exactly once with that policy, and
+return its answer directly. The ordinary default is
+`{"strategy": "single", "models": ["gemini-3.1-flash-lite"]}`.
 It must declare `EXECUTION_MODE = "take_photo"` and must not declare
 `VIDEO_CONFIG`. The same tool may be streamed as independent single-frame calls.
 
 ### Hosted-video streaming implementation guidance
 
 For `hosted_video_streaming`, generate only `TOOL_NAME`, `EXECUTION_MODE =
-"hosted_video_streaming"`, required literal `VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`,
-and a task-specific `TOOL_PROMPT`. The shared runtime owns FFmpeg clip encoding,
+"hosted_video_streaming"`, explicit literal `TOOL_POLICY`, required literal
+`VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`, and a task-specific
+`TOOL_PROMPT`. The shared runtime owns FFmpeg clip encoding,
 hosted NVIDIA requests,
 filtering, deduplication, result delivery, and cleanup. Do not generate frame
 processing, buffers, asynchronous loops, model calls, or take-photo imports.

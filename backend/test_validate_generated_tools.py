@@ -166,13 +166,14 @@ def main(image, input_data=None):
     def test_static_contract_rejects_video_config(self):
         issue = "## Mode\n\ntake_photo\n"
         tool = '''
-from litellm_utils import call_take_photo_vlm
+from model_execution import execute_tool_policy
 TOOL_NAME = "hand_identifier"
 EXECUTION_MODE = "take_photo"
 VIDEO_CONFIG = {"window_seconds": 6}
 TOOL_PROMPT = "Identify the current hand."
+TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
 def main(image, input_data):
-    return call_take_photo_vlm(image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME)
+    return execute_tool_policy(image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME)
 '''
         failures = validate_generated_tools.validate_take_photo_tool(
             tool, issue, Path("tools/hand_identifier.py")

@@ -6,6 +6,7 @@ from policy_executor import ToolPolicyError, execute_tool_policy, validate_tool_
 from strategy_registry import STRATEGY_REGISTRY
 from tool_policy_runtime import resolve_tool_policy
 import tool_policy_runtime
+import model_execution
 
 
 class PolicyExecutorTests(unittest.TestCase):
@@ -105,6 +106,37 @@ class PolicyExecutorTests(unittest.TestCase):
                 "task", b"image", policy={"strategy": "bad"}, request_id="test"
             )
         self.assertEqual(execute.call_args.args[0], DEFAULT_TAKE_PHOTO_POLICY)
+
+    def test_public_executor_preserves_exact_declared_policy(self):
+        explicit = {"strategy": "parallel_first", "models": ["moondream", "gpt-5"]}
+        with patch.object(model_execution, "execute_resolved_tool_policy", return_value="ok") as execute:
+            result = model_execution.execute_tool_policy(
+                image=b"image", prompt="task", policy=explicit, tool_name="test"
+            )
+        self.assertEqual(result, "ok")
+        self.assertIs(execute.call_args.kwargs["policy"], explicit)
+        self.assertEqual(execute.call_args.kwargs["metadata"]["tool_name"], "test")
+
+    def test_policy_logs_declared_strategy_and_models(self):
+        with self.assertLogs("policy_executor", level="INFO") as captured:
+            execute_tool_policy(
+                {"strategy": "single", "models": ["gemini-3.1-flash-lite"]},
+                "task", b"image", lambda model, prompt, image, metadata: "answer",
+            )
+        output = "\n".join(captured.output)
+        self.assertIn("strategy=single", output)
+        self.assertIn("gemini-3.1-flash-lite", output)
+
+    def test_public_executor_missing_policy_uses_one_gemini_call(self):
+        calls = []
+        with patch.object(tool_policy_runtime, "IMPLEMENTATION_EXECUTORS", {
+            "model": lambda profile, messages, images, metadata: type(
+                "Result", (), {"response": "answer"}
+            )(),
+        }), patch.object(tool_policy_runtime, "_response_text", side_effect=lambda value: calls.append(value) or value):
+            result = model_execution.execute_tool_policy(image=b"image", prompt="task")
+        self.assertEqual(result, "answer")
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

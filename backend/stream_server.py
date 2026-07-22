@@ -69,10 +69,8 @@ from tool_policy_runtime import (
     TOOL_EXECUTION_IMAGES,
     system_llm_call,
 )
-from litellm_utils import (
-    call_take_photo_vlm,
-    extract_text,
-)
+from litellm_utils import extract_text
+from model_execution import execute_tool_policy
 from module_manager import get_module_manager
 import copilot_db
 from gemini_summarizer import summarize_entries_sync
@@ -2190,12 +2188,13 @@ def _run_take_photo_vlm(
         'TOOL_POLICY' if policy else 'default',
         request_id or 'generated',
     )
-    return call_take_photo_vlm(
+    return execute_tool_policy(
         image=image,
         prompt=prompt,
         mode=mode,
         request_id=request_id,
         policy=policy,
+        tool_name=tool_name,
     )
 
 

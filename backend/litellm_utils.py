@@ -208,11 +208,10 @@ def call_take_photo_vlm(
     request_id: Optional[str] = None,
     policy: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Execute a tool policy, defaulting to one Gemini 3.1 Flash Lite call."""
-    # Lazy import avoids a cycle with provider adapters that use call_model().
-    from tool_policy_runtime import execute_resolved_tool_policy
+    """Compatibility shim; generated tools must use model_execution instead."""
+    from model_execution import execute_tool_policy
 
-    return execute_resolved_tool_policy(
+    return execute_tool_policy(
         prompt=prompt, image=image, request_id=request_id, policy=policy,
-        metadata={"mode": mode, "tool_name": tool_name or ""},
+        mode=mode, tool_name=tool_name,
     )

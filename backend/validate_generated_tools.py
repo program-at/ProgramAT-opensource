@@ -29,7 +29,7 @@ FORBIDDEN_PATTERNS = [
     ("COCO class list", re.compile(r"\bCOCO_CLASSES\b")),
     ("model registry", re.compile(r"\b(?:MODEL_REGISTRY|model_registry|available_models|provider_registry)\b")),
     ("provider fallback logic", re.compile(r"\b(?:fallback_models|fallback_model|provider_fallback|fallback_provider)\b")),
-    ("custom model orchestration", re.compile(r"\b(?:execute_tool_policy|execute_resolved_tool_policy|call_model|ThreadPoolExecutor|as_completed)\b")),
+    ("custom model orchestration", re.compile(r"\b(?:execute_resolved_tool_policy|call_model|ThreadPoolExecutor|as_completed)\b")),
     ("model file reference", re.compile(r"\.pt\b|['\"][^'\"]+\.pt['\"]")),
     ("model file discovery", re.compile(r"\b(?:glob|rglob)\s*\([^)]*\.pt[^)]*\)|os\.walk\s*\(")),
 ]
@@ -37,6 +37,7 @@ FORBIDDEN_PATTERNS = [
 ALLOWED_SHARED_TOOL_FILES = {
     "litellm_utils.py",
     "tool_policy_client.py",
+    "model_execution.py",
 }
 
 def _extract_string_constants(tree: ast.AST) -> dict[str, str]:
@@ -164,20 +165,34 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
     if constants.get('EXECUTION_MODE') != 'take_photo':
         return []
 
-    vlm_calls = [
+    policy_calls = [
         node for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and (
             isinstance(node.func, ast.Name)
-            and node.func.id == "call_take_photo_vlm"
+            and node.func.id == "execute_tool_policy"
         )
     ]
     failures = []
-    if len(vlm_calls) != 1:
+    if "call_take_photo_vlm" in {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}:
+        failures.append(f"{rel_path}: generated tools must not use call_take_photo_vlm().")
+    if len(policy_calls) != 1:
         failures.append(
-            f"{rel_path}: take-photo tools require exactly one call_take_photo_vlm() call; "
-            f"found {len(vlm_calls)}."
+            f"{rel_path}: take-photo tools require exactly one execute_tool_policy() call; "
+            f"found {len(policy_calls)}."
         )
+    parent_by_child = {
+        child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
+    }
+    for call in policy_calls:
+        parent = parent_by_child.get(call)
+        while parent is not None:
+            if isinstance(parent, (ast.For, ast.AsyncFor, ast.While)):
+                failures.append(
+                    f"{rel_path}:{call.lineno}: execute_tool_policy() must not run inside a custom routing loop."
+                )
+                break
+            parent = parent_by_child.get(parent)
     tool_prompt = constants.get("TOOL_PROMPT")
     if tool_prompt is None:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_PROMPT constant.")
@@ -188,7 +203,7 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
     if 'VIDEO_CONFIG' in constants:
         failures.append(f"{rel_path}: static tools must not declare temporal VIDEO_CONFIG.")
     prompt_uses = []
-    for call in vlm_calls:
+    for call in policy_calls:
         prompt_keyword = next((kw for kw in call.keywords if kw.arg == "prompt"), None)
         prompt_uses.append(
             prompt_keyword is not None
@@ -198,7 +213,7 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
     if prompt_uses != [True]:
         failures.append(f"{rel_path}: take-photo tools must pass TOOL_PROMPT directly as the helper prompt.")
     tool_name_uses = []
-    for call in vlm_calls:
+    for call in policy_calls:
         keyword = next((kw for kw in call.keywords if kw.arg == "tool_name"), None)
         tool_name_uses.append(
             keyword is not None
@@ -215,7 +230,7 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
         except (ToolPolicyError, TypeError) as exc:
             failures.append(f"{rel_path}: invalid TOOL_POLICY: {exc}.")
         policy_uses = []
-        for call in vlm_calls:
+        for call in policy_calls:
             keyword = next((kw for kw in call.keywords if kw.arg == "policy"), None)
             policy_uses.append(
                 keyword is not None and isinstance(keyword.value, ast.Name)
@@ -224,7 +239,7 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
         if policy_uses != [True]:
             failures.append(
                 f"{rel_path}: tools declaring TOOL_POLICY must pass policy=TOOL_POLICY "
-                "to call_take_photo_vlm()."
+                "to execute_tool_policy()."
             )
     elif any(
         isinstance(node, (ast.Assign, ast.AnnAssign))
@@ -234,6 +249,8 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
         for node in tree.body
     ):
         failures.append(f"{rel_path}: TOOL_POLICY must be static literal data.")
+    else:
+        failures.append(f"{rel_path}: new take-photo tools require a literal TOOL_POLICY constant.")
     return failures
 
 
@@ -315,13 +332,13 @@ def validate_rtvi_streaming_tool(
         for node in tree.body if isinstance(node, ast.Assign)
         for target in node.targets if isinstance(target, ast.Name)
         and target.id not in {
-            'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
+            'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'TOOL_POLICY', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
         }
     ]
     if module_state:
         failures.append(f"{rel_path}: RTVI tools must not keep module state: {module_state}")
     allowed_names = {
-        'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
+        'TOOL_NAME', 'EXECUTION_MODE', 'TOOL_PROMPT', 'TOOL_POLICY', 'VIDEO_CONFIG', 'OUTPUT_CONFIG'
     }
     non_declarative = []
     for node in tree.body:

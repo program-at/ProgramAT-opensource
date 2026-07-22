@@ -11,26 +11,26 @@ audio-friendly text; do not print.
 For a take-photo tool, use this shape:
 
 ```python
-from litellm_utils import call_take_photo_vlm
+from model_execution import execute_tool_policy
 
 TOOL_NAME = "tool_name"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = "One concise task-specific fused prompt."
+TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
 
 
 def main(image, input_data):
     if image is None:
         return "No camera image is available."
-    return call_take_photo_vlm(
-        image=image, prompt=TOOL_PROMPT, tool_name=TOOL_NAME
+    return execute_tool_policy(
+        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
     )
 ```
 
-Tools may declare a literal `TOOL_POLICY` using the schema in
-`backend/strategy_registry.py`. If omitted, the runtime makes one
-`gemini-3.1-flash-lite` call. When declared, pass it to the helper as
-`policy=TOOL_POLICY`. Do not infer a policy inside tool code or implement custom
-model orchestration.
+Tools must normally declare a literal `TOOL_POLICY` using the schema in
+`backend/strategy_registry.py` and pass it as `policy=TOOL_POLICY`. The runtime
+uses one `gemini-3.1-flash-lite` call only as a compatibility fallback for a
+missing or invalid policy. Do not implement custom model orchestration.
 
 Make exactly one helper call and return it directly. Do not add another model or
 specialist call, verification pass, fallback model, model name, or provider SDK.

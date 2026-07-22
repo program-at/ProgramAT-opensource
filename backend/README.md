@@ -55,14 +55,15 @@ The server uses environment variables for configuration:
 ProgramAT separates fixed infrastructure LLM calls from take-photo capability execution.
 
 For take-photo tools, the system LLM extracts issue fields and the coding agent
-authors one fused `TOOL_PROMPT`. The generated tool makes exactly one call to
-the shared VLM helper and does not execute task stages, routers, or specialist
-calls. The helper executes an optional literal `TOOL_POLICY`; without one it
-uses the default single-model Gemini policy.
+authors one fused `TOOL_PROMPT` and an explicit literal `TOOL_POLICY`. The
+generated tool makes exactly one call to the shared generic executor and does
+not execute task stages, routers, or specialist calls. A missing or invalid
+policy uses the single-model Gemini policy only as a compatibility fallback.
 
 Infrastructure/system work should call `system_llm_call(...)` from `tool_policy_runtime.py`.
 
-Generated tools call `call_take_photo_vlm(...)`. A minimal policy is:
+Generated tools call `execute_tool_policy(...)` from `model_execution.py` with
+an explicit policy. A minimal policy is:
 
 ```json
 {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
