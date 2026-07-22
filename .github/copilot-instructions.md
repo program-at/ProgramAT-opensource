@@ -20,14 +20,33 @@ ProgramAT has two visual-context contracts:
 - **Temporal** tools require evidence across multiple moments: recent history,
   sequence, duration, an early/late or before/after comparison, a state change,
   or “what just happened.” Use
-  `EXECUTION_MODE = "hosted_video_streaming"`. Temporal tools are streaming-only
-  and must declare literal `VIDEO_CONFIG` settings for `window_seconds`,
+  `EXECUTION_MODE = "hosted_video_streaming"` to select their Streaming behavior.
+  They must declare literal `VIDEO_CONFIG` settings for `window_seconds`,
   `interval_seconds`, `minimum_span_seconds`, and `minimum_unique_frames`.
+
+Take Photo is available for every tool and always supplies exactly one current
+image with the tool's normal `TOOL_PROMPT`. For a temporal tool, author that
+prompt to work safely with either input shape:
+
+- With multiple chronological frames, use motion, sequence, duration, and state
+  changes as relevant to the task.
+- With one image, use only recognizable static evidence. Never invent unseen
+  movement, earlier state, or later state.
+- When one frame is insufficient, return the task-specific concise uncertainty
+  response requested by the prompt.
 
 Do not classify a tool as temporal unless the user's requested answer clearly
 depends on multiple moments. Recognition, identification, OCR, description,
 classification, and other questions answerable from one frame are static even
 when the user may choose to run them continuously.
+
+The issue `Mode` value is a parser suggestion, not an instruction to ignore the
+request semantics. Read the preserved `ORIGINAL_PROMPTS` and Task/Expected output
+before deciding the contract. Correct the suggested mode when they conflict.
+If a request permits both static and dynamic examples, choose temporal whenever
+correct interpretation may require recent movement or several ordered frames.
+For sign language specifically, a current held posture is static; recent hand
+movements, a sign lasting seconds, or the sign/phrase just made are temporal.
 
 Define exactly one `TOOL_PROMPT` and use this shape:
 
@@ -113,6 +132,28 @@ evidence the VLM should inspect. The shared
 runtime supplies the rolling buffer, MP4 encoding, hosted request, event filtering,
 deduplication, and output. Never implement RTSP/FFmpeg, frame buffering, async
 loops, provider calls, card parsing, before/after state, or take-photo imports.
+
+Temporal describes the **input context**: several ordered recent frames. It does
+not imply that every temporal tool has before/after fields or persistent state.
+Choose the output contract independently from the task:
+
+- Prefer concise plain text for recognition tasks such as a recent sign-language
+  gesture. Ask for only the final sentence or phrase and omit `OUTPUT_CONFIG`
+  unless filtering settings are needed.
+- Use a task-specific structured schema only when the runtime supports and the
+  task genuinely needs structured fields. The prompt must name those fields and
+  still yield a concise user-facing result through the runtime adapter.
+- Use explicit state-change fields only when the requested output depends on
+  comparing states.
+
+Never copy an unrelated tool's output schema. In particular,
+`OUTPUT_CONFIG = {"schema": "played_card_event"}` is exclusively for played-card
+detection. Only that explicit declaration may request card JSON or fields such
+as `before_cards`, `after_cards`, and `played_card`. Sign-language and other
+generic temporal tools must not mention or declare card fields.
+
+Although hosted-video declarations contain no `main` function, the shared Take
+Photo runtime reads the same `TOOL_PROMPT` and performs one single-image call.
 
 Supported explicit modes are `take_photo` and `hosted_video_streaming`.
 Never infer execution mode from the filename. Do not generate a `main` function for a hosted-video

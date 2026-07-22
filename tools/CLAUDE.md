@@ -41,3 +41,14 @@ For `hosted_video_streaming`, declare `TOOL_NAME`, `EXECUTION_MODE`,
 compare. The shared runtime owns the continuous video
 session and output filtering. Do not import take-photo helpers or implement
 buffering, FFmpeg, model calls, asynchronous loops, or before/after state.
+
+Temporal input and output schema are separate decisions. Generic temporal
+recognition tools should request one concise plain-text result. Declare
+`OUTPUT_CONFIG = {"schema": "played_card_event"}` only for played-card detection;
+never use card fields for sign language or another unrelated task.
+
+Take Photo works for temporal tools through the shared runtime and supplies one
+current image to the same `TOOL_PROMPT`. Write temporal prompts to use ordered
+motion evidence when multiple frames exist, use only visible static evidence
+with one frame, and return a task-specific uncertainty response rather than
+inventing unseen motion.

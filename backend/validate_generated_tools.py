@@ -153,15 +153,12 @@ def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> L
 
 def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
     """Enforce the unified single-call take-photo generation contract."""
-    if not re.search(
-        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*take[_-]photo\s*$",
-        issue_text,
-        re.IGNORECASE | re.MULTILINE,
-    ):
-        return []
     try:
         tree = ast.parse(tool_text)
     except SyntaxError:
+        return []
+    constants = _extract_literal_constants(tree)
+    if constants.get('EXECUTION_MODE') != 'take_photo':
         return []
 
     vlm_calls = [
@@ -178,7 +175,6 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
             f"{rel_path}: take-photo tools require exactly one call_take_photo_vlm() call; "
             f"found {len(vlm_calls)}."
         )
-    constants = _extract_literal_constants(tree)
     tool_prompt = constants.get("TOOL_PROMPT")
     if tool_prompt is None:
         failures.append(f"{rel_path}: take-photo tools require one string TOOL_PROMPT constant.")
@@ -217,23 +213,14 @@ def validate_rtvi_streaming_tool(
     tool_text: str, issue_text: str, rel_path: Path
 ) -> List[str]:
     """Require hosted-video tools to remain declarative and runtime-owned."""
-    if not re.search(
-        r"^##\s+Mode\s*\n(?:\s*<!--[^\n]*-->\s*\n)?\s*rtvi_streaming\s*$",
-        issue_text.replace("hosted_video_streaming", "rtvi_streaming"),
-        re.IGNORECASE | re.MULTILINE,
-    ):
-        return []
     try:
         tree = ast.parse(tool_text)
     except SyntaxError:
         return []
     constants = _extract_literal_constants(tree)
-    failures = []
     if constants.get('EXECUTION_MODE') != 'hosted_video_streaming':
-        failures.append(
-            f"{rel_path}: hosted-video tools require "
-            "EXECUTION_MODE = 'hosted_video_streaming'."
-        )
+        return []
+    failures = []
     if not isinstance(constants.get('TOOL_NAME'), str):
         failures.append(f"{rel_path}: RTVI tools require one string TOOL_NAME.")
     if not isinstance(constants.get('TOOL_PROMPT'), str) or not constants.get('TOOL_PROMPT', '').strip():
@@ -270,6 +257,13 @@ def validate_rtvi_streaming_tool(
         failures.append(
             f"{rel_path}: temporal TOOL_PROMPT must explain chronological or state-change evidence."
         )
+    output_config = constants.get('OUTPUT_CONFIG') or {}
+    if isinstance(output_config, dict) and output_config.get('schema') == 'played_card_event':
+        card_terms = ('played card', 'played_card', 'before_cards', 'after_cards')
+        if not any(term in prompt for term in card_terms):
+            failures.append(
+                f"{rel_path}: played_card_event may only be used by a card-specific prompt."
+            )
     forbidden = {
         'call_take_photo_vlm', 'copilot_llm_call', 'RtspPublisher',
         'NvidiaRtviClient', 'asyncio', 're', 'requests', 'aiohttp', 'ffmpeg',

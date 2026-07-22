@@ -1,6 +1,7 @@
 import tempfile
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -43,15 +44,40 @@ class TestCascadeCleanup(unittest.TestCase):
             image=b"image", prompt=prompt, mode="take-photo", request_id=None
         )
 
-    def test_temporal_take_photo_contract_has_clear_error(self):
-        code = 'EXECUTION_MODE = "hosted_video_streaming"\n'
-        self.assertEqual(
-            stream_server._take_photo_mode_error(code),
-            'This tool requires recent visual history and is only supported in streaming mode.',
+    def test_temporal_take_photo_uses_one_image_and_preserves_prompt(self):
+        prompt = (
+            "When chronological frames are available, use the motion sequence. "
+            "With one image, use only recognizable static evidence and return "
+            "'No clear sign detected.' when motion is required."
         )
-        self.assertIsNone(stream_server._take_photo_mode_error(
-            'EXECUTION_MODE = "take_photo"\n'
-        ))
+        code = (
+            'TOOL_NAME = "recent_sign_language"\n'
+            'EXECUTION_MODE = "hosted_video_streaming"\n'
+            f'TOOL_PROMPT = {prompt!r}\n'
+        )
+        with patch.object(
+            stream_server, "call_take_photo_vlm",
+            return_value="No clear sign detected.",
+        ) as shared:
+            answer = stream_server._run_take_photo_vlm(
+                "recent_sign_language", code, b"one-current-image"
+            )
+
+        self.assertEqual(answer, "No clear sign detected.")
+        shared.assert_called_once_with(
+            image=b"one-current-image", prompt=prompt,
+            mode="take-photo", request_id=None,
+        )
+        payload = stream_server._build_mobile_tool_response(
+            "tool_result", "recent_sign_language", answer, datetime.now()
+        )
+        self.assertEqual(payload["result"], "No clear sign detected.")
+        self.assertEqual(payload["audio"]["text"], "No clear sign detected.")
+
+    def test_backend_has_no_temporal_take_photo_rejection(self):
+        source = (Path(__file__).resolve().parent / "stream_server.py").read_text()
+        self.assertNotIn("TEMPORAL_TAKE_PHOTO_ERROR", source)
+        self.assertNotIn("_take_photo_mode_error", source)
 
     def test_both_modes_resolve_the_same_gemini_gpt5_c3_policy(self):
         policies = [

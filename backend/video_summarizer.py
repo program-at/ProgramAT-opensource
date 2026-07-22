@@ -73,18 +73,24 @@ def _make_video_inference_client():
     return _video_inference_client
 
 
-def _played_card_generation_config():
+def _image_generation_config(output_schema: str | None = None):
     from google.genai import types
-    return types.GenerateContentConfig(
+    kwargs = dict(
         temperature=0,
-        response_mime_type="application/json",
-        response_json_schema=PLAYED_CARD_RESPONSE_SCHEMA,
         tools=[],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
     )
+    if output_schema == "played_card_event":
+        kwargs.update(
+            response_mime_type="application/json",
+            response_json_schema=PLAYED_CARD_RESPONSE_SCHEMA,
+        )
+    return types.GenerateContentConfig(**kwargs)
 
 
-async def infer_images_with_gemini(images: list[bytes], prompt: str, model: str):
+async def infer_images_with_gemini(
+    images: list[bytes], prompt: str, model: str, output_schema: str | None = None
+):
     """Send ordered JPEG bytes directly to Gemini and return text plus usage."""
     from google.genai import types
     client = _make_video_inference_client()
@@ -95,7 +101,7 @@ async def infer_images_with_gemini(images: list[bytes], prompt: str, model: str)
         client.models.generate_content,
         model=model.removeprefix('gemini/'),
         contents=[prompt, *parts],
-        config=_played_card_generation_config(),
+        config=_image_generation_config(output_schema),
     )
     return (response.text or '').strip(), getattr(response, 'usage_metadata', None)
 

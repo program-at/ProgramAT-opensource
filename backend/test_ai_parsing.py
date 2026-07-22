@@ -36,6 +36,9 @@ def load_stream_server_function(name: str):
             "_explicit_custom_gpt_value",
         },
         "_append_task_stages_to_issue_body": {"_build_task_stages_markdown"},
+        "_select_visual_execution_mode": {
+            "_request_explicitly_requires_temporal_context",
+        },
     }.get(name, set())
     dependencies = [
         node for node in tree.body
@@ -95,6 +98,49 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("runtime owns FFmpeg clip encoding", template)
         self.assertIn("Hosted-video streaming tools", instructions)
         self.assertIn("Never infer execution mode from the filename", instructions)
+
+    def test_temporal_sign_language_request_cannot_be_downgraded_to_take_photo(self):
+        request = """Problem:
+I need help understanding a temporal short sign language gesture.
+
+Example Usage:
+Observe the signer’s recent hand movements and identify the sign or short signed phrase they just made. The sign language might be static or last for a few seconds.
+
+Custom GPT:
+No"""
+        select_mode = load_stream_server_function("_select_visual_execution_mode")
+
+        # Regression: even a mistaken Llama suggestion must not erase the
+        # request's explicit recent-motion and just-made semantics.
+        self.assertEqual(
+            select_mode("take_photo", request),
+            "hosted_video_streaming",
+        )
+        self.assertEqual(
+            select_mode("", request),
+            "hosted_video_streaming",
+        )
+
+        fill_issue = load_stream_server_function("fill_template")
+        template = (
+            Path(__file__).resolve().parent.parent
+            / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
+        ).read_text(encoding="utf-8")
+        issue = fill_issue(template, {
+            "title": "recent_sign_language",
+            "description": "Understand a temporal short sign language gesture.",
+            "example_usage": "Observe recent hand movements and identify the phrase just made.",
+            "additional": "The sign may last for a few seconds.",
+            "execution_mode": select_mode("take_photo", request),
+            "original_prompts": [request],
+        })
+        self.assertIn("## Mode\n\nhosted_video_streaming", issue)
+        self.assertIn("signer’s recent hand movements", issue)
+
+    def test_current_held_sign_posture_remains_static(self):
+        select_mode = load_stream_server_function("_select_visual_execution_mode")
+        request = "Identify the sign shown by the signer’s current held hand posture."
+        self.assertEqual(select_mode("take_photo", request), "take_photo")
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

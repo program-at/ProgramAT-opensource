@@ -28,6 +28,8 @@ assignees: ''
 ## Mode
 
 <!-- Enter exactly: take_photo or hosted_video_streaming. -->
+<!-- This is a parser suggestion. Copilot must correct it if the preserved
+original request clearly requires a different visual context. -->
 
 <!-- Use take_photo for a static current-frame task, even if it may be run
 continuously. Use hosted_video_streaming only when the answer requires recent
@@ -68,7 +70,14 @@ processing, buffers, asynchronous loops, model calls, or take-photo imports.
 `VIDEO_CONFIG` must include valid `window_seconds`, `interval_seconds`,
 `minimum_span_seconds`, and `minimum_unique_frames`. `TOOL_PROMPT` must state
 what chronological or early/late state-change evidence to compare.
+Temporal input does not imply a before/after output schema. Prefer concise plain
+text for recognition tasks. Declare `played_card_event` only for played-card
+detection; never reuse its card fields for unrelated temporal tools.
+The same temporal `TOOL_PROMPT` is also used by Take Photo with one current
+image. It must use static evidence when available, never infer unseen motion,
+and return a task-specific uncertainty response when one frame is insufficient.
 
-Tools belong in `tools/` and must be Python. Take-photo tools expose
-`main(image, input_data)`; hosted-video tools contain only the declarative
-constants above. Do not connect to the backend server or use WebSockets.
+Tools belong in `tools/` and must be Python. Static tools expose
+`main(image, input_data)`; temporal hosted-video tools contain only the
+declarative constants above. The shared runtime still supports Take Photo for
+both contracts. Do not connect to the backend server or use WebSockets.

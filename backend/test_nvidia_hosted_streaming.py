@@ -554,7 +554,7 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             encode_mp4.assert_not_called()
             nvidia.assert_not_awaited()
 
-    async def test_non_card_temporal_gemini_uses_generic_ordered_frame_path(self):
+    async def test_sign_language_temporal_gemini_uses_plain_ordered_frame_path(self):
         sent_jpeg = io.BytesIO()
         Image.new("RGB", (720, 1280), "green").save(sent_jpeg, format="JPEG")
         encoded = sent_jpeg.getvalue()
@@ -564,13 +564,49 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             "provider": "gemini",
             "model": None,
             "model_id": "gemini-3.1-flash-lite-preview",
+            "tool_name": "recent_sign_language",
+            "prompt": "Identify the signed phrase from chronological hand motion. Return plain text.",
             "output_config": {},
         })
         stream_server.active_hosted_nvidia_sessions["client"] = session
         websocket = MagicMock(send=AsyncMock())
         with patch.object(stream_server, "_prepare_gemini_ordered_jpegs", return_value=[encoded] * 4), \
              patch.object(stream_server, "_save_last_gemini_images", return_value=Path("/tmp/last_hosted_images")), \
-             patch.object(stream_server, "infer_images_with_gemini", new=AsyncMock(return_value=("The door just opened.", {}))), \
+             patch.object(stream_server, "infer_images_with_gemini", new=AsyncMock(return_value=("The signer is waving hello.", {}))) as infer, \
+             patch.object(stream_server, "parse_structured_video_result") as parse_card:
+            await stream_server._run_hosted_nvidia_clip(
+                websocket, "client", session, 1,
+                [TimedFrame(float(index), source_uri) for index in range(4)],
+                [0, 4, 7, 11],
+            )
+        parse_card.assert_not_called()
+        infer.assert_awaited_once()
+        inference_args = infer.await_args.args
+        self.assertEqual(len(inference_args[0]), 4)
+        self.assertEqual(inference_args[1:3], (session["prompt"], session["model_id"]))
+        self.assertIsNone(inference_args[3])
+        payload = json.loads(websocket.send.await_args.args[0])
+        self.assertEqual(payload["result"], "The signer is waving hello.")
+        self.assertEqual(payload["frame_count"], 4)
+        self.assertFalse(payload["result"].startswith("{"))
+
+    async def test_generic_temporal_json_is_converted_to_user_facing_text(self):
+        sent_jpeg = io.BytesIO()
+        Image.new("RGB", (720, 1280), "green").save(sent_jpeg, format="JPEG")
+        encoded = sent_jpeg.getvalue()
+        source_uri = "data:image/jpeg;base64," + base64.b64encode(encoded).decode()
+        session = self._session()
+        session.update({
+            "provider": "gemini", "model": None,
+            "model_id": "gemini-3.1-flash-lite-preview",
+            "tool_name": "recent_sign_language", "output_config": {},
+        })
+        stream_server.active_hosted_nvidia_sessions["client"] = session
+        websocket = MagicMock(send=AsyncMock())
+        content = json.dumps({"result": "The signer is waving hello.", "confidence": 0.9})
+        with patch.object(stream_server, "_prepare_gemini_ordered_jpegs", return_value=[encoded] * 4), \
+             patch.object(stream_server, "_save_last_gemini_images", return_value=Path("/tmp/last_hosted_images")), \
+             patch.object(stream_server, "infer_images_with_gemini", new=AsyncMock(return_value=(content, {}))), \
              patch.object(stream_server, "parse_structured_video_result") as parse_card:
             await stream_server._run_hosted_nvidia_clip(
                 websocket, "client", session, 1,
@@ -579,8 +615,8 @@ class TestHostedStreamingIntegration(unittest.IsolatedAsyncioTestCase):
             )
         parse_card.assert_not_called()
         payload = json.loads(websocket.send.await_args.args[0])
-        self.assertEqual(payload["result"], "The door just opened.")
-        self.assertEqual(payload["frame_count"], 4)
+        self.assertEqual(payload["result"], "The signer is waving hello.")
+        self.assertNotIn("confidence", payload["result"])
 
     async def test_static_streaming_repeats_independent_single_image_calls(self):
         code = (

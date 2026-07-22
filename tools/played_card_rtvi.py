@@ -17,10 +17,12 @@ OUTPUT_CONFIG = {
     "cooldown_seconds": 5,
 }
 TOOL_PROMPT = """
-Watch this chronological short video. Establish the before hand only from
-multiple stable, sharp early frames. Establish the after hand only from
-multiple stable, sharp final frames. Ignore the moving middle frames except for
-locating the action.
+When multiple chronological frames are available, establish the before hand
+only from stable, sharp early frames and the after hand only from stable, sharp
+final frames. Ignore the moving middle frames except for locating the action.
+When only one image is available, use any clearly readable static card evidence
+but do not infer that a card moved or disappeared. One image cannot prove a
+played-card event, so return the uncertain no-event JSON described below.
 
 A played card is valid only when the same specific rank and suit is clearly
 visible in the hand before the action and clearly absent from the hand after the

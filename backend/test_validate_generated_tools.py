@@ -211,6 +211,92 @@ TOOL_PROMPT = "Compare chronological early and late frames and report whether th
             [],
         )
 
+    def test_temporal_sign_language_tool_validates_as_ordered_video(self):
+        issue = """## Task
+Understand a temporal short sign-language gesture from recent hand movements.
+
+## Expected output
+Identify the sign or short signed phrase they just made, including signs lasting seconds.
+
+## Mode
+
+hosted_video_streaming
+"""
+        tool = '''
+TOOL_NAME = "recent_sign_language"
+EXECUTION_MODE = "hosted_video_streaming"
+VIDEO_CONFIG = {
+    "window_seconds": 6,
+    "interval_seconds": 3,
+    "minimum_span_seconds": 4,
+    "minimum_unique_frames": 8,
+}
+OUTPUT_CONFIG = {"deduplicate": True}
+TOOL_PROMPT = (
+    "Inspect the four chronological frames from early to late. Track the signer's "
+    "hand shapes, orientation, location, and motion sequence over the recent interval, "
+    "then identify the completed sign or short signed phrase."
+)
+'''
+        self.assertEqual(
+            validate_generated_tools.validate_rtvi_streaming_tool(
+                tool, issue, Path("tools/recent_sign_language.py")
+            ),
+            [],
+        )
+
+    def test_validation_follows_copilot_declaration_not_parser_mode_suggestion(self):
+        issue_with_wrong_suggestion = """## Task
+Identify the signed phrase from recent movement.
+
+## Mode
+
+take_photo
+"""
+        temporal_tool = '''
+TOOL_NAME = "recent_sign_language"
+EXECUTION_MODE = "hosted_video_streaming"
+VIDEO_CONFIG = {
+    "window_seconds": 6,
+    "interval_seconds": 3,
+    "minimum_span_seconds": 4,
+    "minimum_unique_frames": 8,
+}
+TOOL_PROMPT = "Compare chronological early and late hand movement and identify the signed phrase."
+'''
+        path = Path("tools/recent_sign_language.py")
+        self.assertEqual(
+            validate_generated_tools.validate_take_photo_tool(
+                temporal_tool, issue_with_wrong_suggestion, path
+            ),
+            [],
+        )
+        self.assertEqual(
+            validate_generated_tools.validate_rtvi_streaming_tool(
+                temporal_tool, issue_with_wrong_suggestion, path
+            ),
+            [],
+        )
+
+    def test_sign_language_tool_cannot_reuse_played_card_schema(self):
+        issue = "## Mode\n\nhosted_video_streaming\n"
+        tool = '''
+TOOL_NAME = "recent_sign_language"
+EXECUTION_MODE = "hosted_video_streaming"
+VIDEO_CONFIG = {
+    "window_seconds": 6,
+    "interval_seconds": 3,
+    "minimum_span_seconds": 4,
+    "minimum_unique_frames": 8,
+}
+OUTPUT_CONFIG = {"schema": "played_card_event"}
+TOOL_PROMPT = "Inspect chronological hand motion and identify the signed phrase."
+'''
+        failures = validate_generated_tools.validate_rtvi_streaming_tool(
+            tool, issue, Path("tools/recent_sign_language.py")
+        )
+        self.assertTrue(any("card-specific prompt" in failure for failure in failures))
+
 
 if __name__ == "__main__":
     unittest.main()
