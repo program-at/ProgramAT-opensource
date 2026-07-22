@@ -2204,6 +2204,66 @@ def _run_take_photo_vlm(
     )
 
 
+def _resolve_tool_prompt(tool_code: str) -> Optional[str]:
+    """Resolve the prompt already declared by a generated tool without executing it."""
+    try:
+        tree = ast.parse(tool_code or '')
+    except SyntaxError:
+        return None
+
+    string_values: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                string_values[target.id] = value.value
+
+    declared_prompt = string_values.get('TOOL_PROMPT')
+    if declared_prompt and declared_prompt.strip():
+        return declared_prompt.strip()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        is_copilot_call = (
+            isinstance(node.func, ast.Name) and node.func.id == 'copilot_llm_call'
+        ) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == 'copilot_llm_call'
+        )
+        if not is_copilot_call:
+            continue
+        messages_kw = next((kw.value for kw in node.keywords if kw.arg == 'messages'), None)
+        if not isinstance(messages_kw, (ast.List, ast.Tuple)):
+            continue
+        for message_node in messages_kw.elts:
+            if not isinstance(message_node, ast.Dict):
+                continue
+            message = {
+                key.value: value
+                for key, value in zip(message_node.keys, message_node.values)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            role_node = message.get('role')
+            if not (
+                isinstance(role_node, ast.Constant)
+                and role_node.value == 'user'
+            ):
+                continue
+            content_node = message.get('content')
+            if isinstance(content_node, ast.Constant) and isinstance(content_node.value, str):
+                return content_node.value.strip() or None
+            if isinstance(content_node, ast.Name):
+                prompt = string_values.get(content_node.id, '').strip()
+                if prompt:
+                    return prompt
+    return None
+
+
 def _streaming_embedding_similarity(
     first: Optional[np.ndarray], second: Optional[np.ndarray]
 ) -> Optional[float]:

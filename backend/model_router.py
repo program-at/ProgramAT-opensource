@@ -380,6 +380,26 @@ def _simple_response(text: str) -> Any:
 def _model_executor(profile, messages, images, metadata) -> ImplementationResult:
     if not profile.model:
         raise ExecutionPolicyError(f"Model implementation {profile.name!r} has no model")
+    capability = (metadata or {}).get("capability", "unknown")
+    tool_name = (metadata or {}).get("tool_name", "")
+    has_images = bool(images)
+    header = (
+        f"[Model Prompt] model={profile.model} capability={capability}"
+        f" tool={tool_name} has_images={has_images}"
+    )
+    print(header, flush=True)
+    for msg in (messages or []):
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            content = " ".join(text_parts)
+        print(f"  [{role}] {content}", flush=True)
+    logger.info(header)
     return ImplementationResult(call_model(profile.model, messages, images=images, metadata=metadata))
 
 
