@@ -5332,9 +5332,12 @@ def should_mention_copilot(text: str) -> bool:
         'switching to', 'selected issue', 'working on'
     ]
     
-    # Check for status keywords first - these take precedence
+    # Treat these as navigation/status comments only when the whole comment is
+    # such a command.  A substring check made implementation requests such as
+    # "update the view to show ..." incorrectly return False.
+    normalized = ' '.join(text_lower.split()).strip(' .!?')
     for keyword in status_keywords:
-        if keyword in text_lower:
+        if normalized == keyword or normalized.startswith(f"{keyword} issue ") or normalized.startswith(f"{keyword} pr "):
             return False
     
     # Check for code change keywords
@@ -5344,6 +5347,21 @@ def should_mention_copilot(text: str) -> bool:
     
     # Default: always mention @copilot so it stays aware of issue updates.
     return True
+
+
+def build_copilot_comment(comment_text: str, trigger_required: bool) -> tuple[str, bool]:
+    """Build a comment, adding one leading Copilot mention when required."""
+    if not trigger_required or re.search(r'(?i)(?<![\w-])@copilot\b', comment_text):
+        return comment_text, False
+    return f"@copilot\n\n{comment_text}", True
+
+
+def is_copilot_target(issue) -> bool:
+    """Return whether an existing GitHub issue/PR belongs to a Copilot workflow."""
+    identities = [getattr(getattr(issue, 'user', None), 'login', '')]
+    identities.extend(getattr(assignee, 'login', '') for assignee in (getattr(issue, 'assignees', None) or []))
+    labels = [getattr(label, 'name', '') for label in (getattr(issue, 'labels', None) or [])]
+    return any('copilot' in str(value).lower() for value in (*identities, *labels))
 
 
 async def update_github_issue(issue_number: int, comment_text: str, mention_copilot: bool = True):
@@ -5367,17 +5385,26 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         g = Github(GITHUB_TOKEN)
         repo = g.get_repo(GITHUB_REPO)
         issue = repo.get_issue(issue_number)
-        
-        # Append @copilot to the comment if requested (for code change requests)
-        final_comment = f"{comment_text}\n\n@copilot" if mention_copilot else comment_text
+
+        is_pr = issue.pull_request is not None
+        target_kind = "PR" if is_pr else "issue"
+        trigger_required = mention_copilot and is_copilot_target(issue)
+        final_comment, mention_added = build_copilot_comment(comment_text, trigger_required)
+        preview = ' '.join(final_comment.split())[:240]
+        decision_log = (
+            f"GitHub comment decision: target={target_kind} #{issue_number}, "
+            f"copilot_trigger_required={trigger_required}, "
+            f"mention_added_automatically={mention_added}, preview={preview!r}"
+        )
+        _log_to_all_sessions("INFO", decision_log)
+        logger.info(decision_log)
         
         # Add comment to the issue/PR
         issue.create_comment(final_comment)
-        _log_to_all_sessions("INFO", f"GitHub API: Added comment to #{issue_number}" + (" with @copilot mention" if mention_copilot else ""))
-        logger.info(f"Added comment to #{issue_number}" + (" with @copilot mention" if mention_copilot else ""))
+        _log_to_all_sessions("INFO", f"GitHub API: Added comment to #{issue_number}" + (" with @copilot mention" if trigger_required else ""))
+        logger.info(f"Added comment to #{issue_number}" + (" with @copilot mention" if trigger_required else ""))
         
         # Check if this is a PR (pull_request attribute exists) or an issue
-        is_pr = issue.pull_request is not None
         pr_number = issue_number if is_pr else None
         pr_url = issue.html_url if is_pr else None
         
@@ -5392,8 +5419,8 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                         pr_number = pr.number
                         pr.create_issue_comment(final_comment)
                         pr_url = pr.html_url
-                        _log_to_all_sessions("INFO", f"GitHub API: Added comment to associated PR #{pr_number}" + (" with @copilot mention" if mention_copilot else ""))
-                        logger.info(f"Added comment to associated PR #{pr_number}" + (" with @copilot mention" if mention_copilot else ""))
+                        _log_to_all_sessions("INFO", f"GitHub API: Added comment to associated PR #{pr_number}" + (" with @copilot mention" if trigger_required else ""))
+                        logger.info(f"Added comment to associated PR #{pr_number}" + (" with @copilot mention" if trigger_required else ""))
                         break
             except Exception as e:
                 _log_to_all_sessions("WARNING", f"Could not add comment to PR for issue #{issue_number}: {e}")
