@@ -88,6 +88,8 @@ executes this data; it never infers difficulty, chooses models, or expands it.
 - Use `parallel_first` only when multiple models should start together and the
   first acceptable result should win.
 - Use `parallel_aggregate` only to compare or combine several outputs.
+- Use `parallel_progressive` only when the user explicitly wants every model
+  result delivered separately as each model completes.
 - Use `conditional` only for a clearly defined fast-default/stronger condition.
 - Gemini 3.1 Flash Lite is the default general VLM. YOLO is object detection
   only. Moondream is for simple, low-risk tasks where lower accuracy is
@@ -98,6 +100,22 @@ Policies are static data, never custom routing code. Pass the declaration to
 `execute_tool_policy` as `policy=TOOL_POLICY`. Never implement model orchestration outside
 `TOOL_POLICY`, and never add cascade, evaluation, parallelism, or aggregation
 without a user-driven reason.
+
+Do not claim progressive output unless the strategy is `parallel_progressive`.
+Use `parallel_first` when only the first acceptable result is wanted and
+`parallel_aggregate` when all results should be combined. Generated tools must
+not implement concurrency, callbacks, cancellation, WebSocket/event transport,
+or provider calls. For an individual tool creation or update, modify only that
+tool file; do not modify backend or frontend files.
+
+When progressive delivery is explicitly requested, declare it only through:
+
+```python
+TOOL_POLICY = {
+    "strategy": "parallel_progressive",
+    "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
+}
+```
 
 ```python
 TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}

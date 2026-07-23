@@ -1,4 +1,6 @@
 import unittest
+import threading
+import time
 from unittest.mock import patch
 
 from model_registry import DEFAULT_TAKE_PHOTO_POLICY, MODEL_REGISTRY
@@ -14,7 +16,10 @@ class PolicyExecutorTests(unittest.TestCase):
         self.assertTrue({"yolo", "moondream", "gemini-3.1-flash-lite", "gpt-5", "gpt-4o-mini"} <= MODEL_REGISTRY.keys())
         self.assertEqual(
             set(STRATEGY_REGISTRY),
-            {"single", "cascade", "parallel_first", "parallel_aggregate", "conditional"},
+            {
+                "single", "cascade", "parallel_first", "parallel_aggregate",
+                "parallel_progressive", "conditional",
+            },
         )
 
     def test_default_is_exactly_one_gemini_call(self):
@@ -56,6 +61,66 @@ class PolicyExecutorTests(unittest.TestCase):
             "aggregator": "gpt-4o-mini",
         }, "task", b"image", call)
         self.assertEqual(result, "combined")
+
+    def test_parallel_progressive_emits_successes_in_completion_order(self):
+        emitted = []
+        finished = []
+        delays = {
+            "moondream": 0.01,
+            "gemini-3.1-flash-lite": 0.04,
+            "gpt-5": 0.08,
+        }
+
+        def call(model, prompt, image, metadata):
+            time.sleep(delays[model])
+            finished.append(model)
+            return f"{model} result"
+
+        result = execute_tool_policy({
+            "strategy": "parallel_progressive",
+            "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
+        }, "task", b"image", call, on_progress=lambda model, text: emitted.append((model, text)))
+
+        self.assertEqual([model for model, _ in emitted], [
+            "moondream", "gemini-3.1-flash-lite", "gpt-5",
+        ])
+        self.assertEqual(finished, [model for model, _ in emitted])
+        self.assertEqual(result, "gpt-5 result")
+
+    def test_parallel_progressive_emits_first_before_slow_model_finishes(self):
+        first_emitted = threading.Event()
+        slow_finished = threading.Event()
+
+        def call(model, prompt, image, metadata):
+            if model == "gpt-5":
+                time.sleep(0.08)
+                slow_finished.set()
+            else:
+                time.sleep(0.01)
+            return model
+
+        worker = threading.Thread(target=lambda: execute_tool_policy({
+            "strategy": "parallel_progressive",
+            "models": ["moondream", "gpt-5"],
+        }, "task", b"image", call, on_progress=lambda model, text: first_emitted.set()))
+        worker.start()
+        self.assertTrue(first_emitted.wait(0.05))
+        self.assertFalse(slow_finished.is_set())
+        worker.join()
+
+    def test_parallel_progressive_failure_does_not_block_successes(self):
+        emitted = []
+
+        def call(model, prompt, image, metadata):
+            if model == "moondream":
+                raise RuntimeError("failed")
+            return model
+
+        execute_tool_policy({
+            "strategy": "parallel_progressive",
+            "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
+        }, "task", b"image", call, on_progress=lambda model, text: emitted.append(model))
+        self.assertCountEqual(emitted, ["gemini-3.1-flash-lite", "gpt-5"])
 
     def test_conditional_uses_explicit_metadata_only(self):
         calls = []

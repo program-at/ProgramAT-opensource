@@ -28,6 +28,7 @@ import Voice, {
   SpeechResultsEvent,
   SpeechErrorEvent,
 } from '@react-native-voice/voice';
+import {acceptsProgressiveResult} from './progressiveResults';
 
 // Configuration for text similarity filtering
 const SIMILARITY_THRESHOLDS = {
@@ -81,6 +82,8 @@ export default function ToolRunner({
   const [lastStreamingText, setLastStreamingText] = useState(''); // Track last streaming text for similarity
   const lastStreamingTextRef = useRef(''); // Backup ref to persist across re-renders
   const lastStreamingExecutionRef = useRef(0);
+  const activeProgressiveInvocationRef = useRef<string | null>(null);
+  const lastProgressiveResultIndexRef = useRef(0);
   
   // Custom GPT follow-up state
   const [isCustomGptStreaming, setIsCustomGptStreaming] = useState(false);
@@ -575,7 +578,46 @@ export default function ToolRunner({
         const message = JSON.parse(event.data);
         console.log('[ToolRunner] Received message type:', message.type);
         
-        if (message.type === 'tool_result') {
+        if (message.type === 'tool_progress_started') {
+          activeProgressiveInvocationRef.current = message.invocation_id;
+          lastProgressiveResultIndexRef.current = 0;
+          setIsRunning(true);
+          setToolOutput('Waiting for model results...');
+        } else if (message.type === 'tool_progress_result') {
+          if (!acceptsProgressiveResult(
+            activeProgressiveInvocationRef.current,
+            lastProgressiveResultIndexRef.current,
+            message,
+          )) {
+            console.log('[ToolProgress] obsolete or duplicate result ignored:', message.invocation_id);
+            return;
+          }
+          lastProgressiveResultIndexRef.current = message.result_index;
+          if (message.final) {
+            if (!isStreamingRef.current) {
+              setIsRunning(false);
+            }
+            return;
+          }
+          if (message.text) {
+            const labeledText = message.model
+              ? `${message.model}: ${message.text}`
+              : message.text;
+            setToolOutput(labeledText);
+            if (audioEnabled) {
+              AudioOutputService.play({
+                type: 'speech',
+                text: labeledText,
+                rate: 1.0,
+                interrupt: false,
+              });
+              AccessibilityInfo.announceForAccessibilityWithOptions(
+                labeledText,
+                {queue: true},
+              );
+            }
+          }
+        } else if (message.type === 'tool_result') {
           console.log('[ToolRunner] Tool result received:', message.status);
           console.log('[ToolRunner] Raw message.result length:', message.result?.length);
           console.log('[ToolRunner] Result/Error:', message.result || message.error);
@@ -929,6 +971,8 @@ export default function ToolRunner({
     }
 
     setToolOutput('Running tool...');
+    activeProgressiveInvocationRef.current = null;
+    lastProgressiveResultIndexRef.current = 0;
 
     // Generate conversation ID if this is a conversation run
     const conversationId = isConversation ? `conv_${Date.now()}` : undefined;

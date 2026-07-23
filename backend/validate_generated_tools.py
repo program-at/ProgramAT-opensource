@@ -30,6 +30,10 @@ FORBIDDEN_PATTERNS = [
     ("model registry", re.compile(r"\b(?:MODEL_REGISTRY|model_registry|available_models|provider_registry)\b")),
     ("provider fallback logic", re.compile(r"\b(?:fallback_models|fallback_model|provider_fallback|fallback_provider)\b")),
     ("custom model orchestration", re.compile(r"\b(?:execute_resolved_tool_policy|call_model|ThreadPoolExecutor|as_completed)\b")),
+    ("custom concurrency import", re.compile(r"^\s*(?:import|from)\s+(?:asyncio|threading|concurrent(?:\.futures)?|multiprocessing|queue|subprocess)\b", re.MULTILINE)),
+    ("custom concurrency call", re.compile(r"\b(?:create_task|ensure_future|gather|to_thread|start_new_thread|ProcessPoolExecutor|submit)\s*\(")),
+    ("custom output transport import", re.compile(r"^\s*(?:import|from)\s+(?:websockets?|aiohttp|requests)\b", re.MULTILINE)),
+    ("custom output transport", re.compile(r"\b(?:websocket|event_emitter|result_callback|response_callback|on_progress|is_cancelled)\b", re.IGNORECASE)),
     ("model file reference", re.compile(r"\.pt\b|['\"][^'\"]+\.pt['\"]")),
     ("model file discovery", re.compile(r"\b(?:glob|rglob)\s*\([^)]*\.pt[^)]*\)|os\.walk\s*\(")),
 ]
@@ -174,6 +178,11 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
         )
     ]
     failures = []
+    if any(isinstance(node, (ast.AsyncFunctionDef, ast.Yield, ast.YieldFrom)) for node in ast.walk(tree)):
+        failures.append(
+            f"{rel_path}: generated take-photo tools must use synchronous single-return functions; "
+            "progressive execution is runtime-owned."
+        )
     if "call_take_photo_vlm" in {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}:
         failures.append(f"{rel_path}: generated tools must not use call_take_photo_vlm().")
     if len(policy_calls) != 1:
@@ -181,6 +190,17 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
             f"{rel_path}: take-photo tools require exactly one execute_tool_policy() call; "
             f"found {len(policy_calls)}."
         )
+    generated_policy_keywords = {"image", "prompt", "policy", "tool_name"}
+    for call in policy_calls:
+        unsupported_keywords = sorted(
+            keyword.arg for keyword in call.keywords
+            if keyword.arg is not None and keyword.arg not in generated_policy_keywords
+        )
+        if unsupported_keywords:
+            failures.append(
+                f"{rel_path}:{call.lineno}: generated tools cannot pass runtime-owned "
+                f"execution controls: {unsupported_keywords}."
+            )
     parent_by_child = {
         child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)
     }

@@ -26,6 +26,14 @@ class GeneratedToolPolicyValidationTests(unittest.TestCase):
         ))
         self.assertEqual(failures, [])
 
+    def test_accepts_parallel_progressive_literal_policy(self):
+        failures = self.validate(tool(
+            'TOOL_POLICY = {"strategy": "parallel_progressive", '
+            '"models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"]}',
+            ", policy=TOOL_POLICY",
+        ))
+        self.assertEqual(failures, [])
+
     def test_rejects_unsupported_strategy_model_and_field(self):
         cases = [
             '{"strategy": "race", "models": ["gemini-3.1-flash-lite"]}',
@@ -68,6 +76,51 @@ class GeneratedToolPolicyValidationTests(unittest.TestCase):
             "for attempt in range(2):\n        return execute_tool_policy(",
         )
         self.assertTrue(any("custom routing loop" in failure for failure in self.validate(looped)))
+
+    def test_guardrails_forbid_tool_owned_concurrency_and_transport(self):
+        forbidden_source = (
+            "import asyncio\nimport multiprocessing\nimport websockets\n"
+            "result_callback = object()\n"
+            "on_progress = object()\n"
+            "create_task(work())\n"
+        )
+        matched = [
+            label for label, pattern in FORBIDDEN_PATTERNS
+            if pattern.search(forbidden_source)
+        ]
+        self.assertIn("custom concurrency import", matched)
+        self.assertIn("custom concurrency call", matched)
+        self.assertIn("custom output transport import", matched)
+        self.assertIn("custom output transport", matched)
+
+    def test_rejects_async_or_yielding_generated_tool(self):
+        async_source = tool(
+            'TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}',
+            ", policy=TOOL_POLICY",
+        ).replace("def main(", "async def main(")
+        self.assertTrue(any(
+            "synchronous single-return" in failure
+            for failure in self.validate(async_source)
+        ))
+
+        yielding_source = async_source.replace("async def main(", "def main(").replace(
+            "return execute_tool_policy(", "yield execute_tool_policy("
+        )
+        self.assertTrue(any(
+            "synchronous single-return" in failure
+            for failure in self.validate(yielding_source)
+        ))
+
+    def test_rejects_runtime_owned_progress_callback_argument(self):
+        source = tool(
+            'TOOL_POLICY = {"strategy": "parallel_progressive", '
+            '"models": ["moondream", "gpt-5"]}',
+            ", policy=TOOL_POLICY, on_progress=emit",
+        )
+        self.assertTrue(any(
+            "runtime-owned execution controls" in failure
+            for failure in self.validate(source)
+        ))
 
 
 if __name__ == "__main__":

@@ -45,6 +45,7 @@ def _profile(model_name: str) -> ImplementationProfile:
 def execute_resolved_tool_policy(
     prompt: str, image: Any, *, policy: Any = None,
     request_id: Optional[str] = None, metadata: Optional[Mapping[str, Any]] = None,
+    on_progress=None, is_cancelled=None,
 ) -> str:
     resolved = resolve_tool_policy(policy)
 
@@ -64,7 +65,10 @@ def execute_resolved_tool_policy(
 
     call_metadata = dict(metadata or {})
     call_metadata.update({"request_id": request_id or uuid.uuid4().hex, "num_retries": 0})
-    return execute_tool_policy(resolved, prompt, image, invoke, metadata=call_metadata)
+    return execute_tool_policy(
+        resolved, prompt, image, invoke, metadata=call_metadata,
+        on_progress=on_progress, is_cancelled=is_cancelled,
+    )
 
 
 def system_llm_call(messages=None, images=None, metadata=None):

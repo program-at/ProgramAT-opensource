@@ -11,6 +11,8 @@ from strategy_registry import STRATEGY_REGISTRY
 
 logger = logging.getLogger(__name__)
 ModelCall = Callable[[str, str, Any, Mapping[str, Any]], str]
+ProgressCallback = Callable[[str, str], None]
+CancellationCheck = Callable[[], bool]
 
 
 class ToolPolicyError(ValueError):
@@ -71,6 +73,8 @@ def _evaluation_prompt(task: str, answer: str) -> str:
 def execute_tool_policy(
     policy: Mapping[str, Any], prompt: str, image: Any, model_call: ModelCall,
     *, metadata: Optional[Mapping[str, Any]] = None,
+    on_progress: Optional[ProgressCallback] = None,
+    is_cancelled: Optional[CancellationCheck] = None,
 ) -> str:
     policy = validate_tool_policy(policy)
     metadata = dict(metadata or {})
@@ -112,7 +116,7 @@ def execute_tool_policy(
             attempts.append(candidate)
         if not result and attempts:
             result = attempts[-1]
-    elif strategy in {"parallel_first", "parallel_aggregate"}:
+    elif strategy in {"parallel_first", "parallel_aggregate", "parallel_progressive"}:
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(models))
         try:
             futures = {pool.submit(call, name): name for name in models}
@@ -123,13 +127,35 @@ def execute_tool_policy(
                     if policy.get("stop_condition", "first_complete") == "first_complete" or accepted(candidate):
                         result = candidate
                         break
-            else:
+            elif strategy == "parallel_aggregate":
                 candidates = [future.result() for future in futures]
                 aggregation_used = True
                 aggregate_prompt = policy.get("aggregation_prompt") or "Combine the candidate answers into one accurate, concise answer."
                 result = call(policy["aggregator"], aggregate_prompt + "\n\n" + "\n\n".join(candidates), None)
+            else:
+                result = ""
+                for future in concurrent.futures.as_completed(futures):
+                    if is_cancelled and is_cancelled():
+                        break
+                    model_name = futures[future]
+                    try:
+                        candidate = future.result()
+                    except Exception:
+                        logger.warning(
+                            "[Tool Policy] progressive model=%s failed; continuing",
+                            model_name,
+                        )
+                        continue
+                    if is_cancelled and is_cancelled():
+                        break
+                    result = candidate
+                    if on_progress:
+                        on_progress(model_name, candidate)
         finally:
-            pool.shutdown(wait=strategy == "parallel_aggregate", cancel_futures=True)
+            pool.shutdown(
+                wait=strategy == "parallel_aggregate",
+                cancel_futures=True,
+            )
     else:
         condition = policy["condition"]
         if isinstance(condition, str):
@@ -140,7 +166,8 @@ def execute_tool_policy(
             raise ToolPolicyError("conditional condition must be a metadata key or object")
         result = execute_tool_policy(
             policy["if_true"] if decision else policy["if_false"], prompt, image,
-            model_call, metadata=metadata,
+            model_call, metadata=metadata, on_progress=on_progress,
+            is_cancelled=is_cancelled,
         )
     logger.info(
         "[Tool Policy] completed strategy=%s models=%s fallback=%s evaluator=%s aggregation=%s",

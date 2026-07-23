@@ -67,6 +67,7 @@ from tool_policy_runtime import (
     STREAMING_EXECUTION_CONTEXT,
     StreamingExecutionCancelled,
     TOOL_EXECUTION_IMAGES,
+    execute_resolved_tool_policy,
     system_llm_call,
 )
 from litellm_utils import extract_text
@@ -2054,6 +2055,10 @@ yolo_model_cache = {}
 # Format: {client_id: {'process': subprocess, 'session_id': str, 'task': asyncio.Task}}
 active_copilot_streams = {}
 
+# Opt-in progressive policy invocations, keyed by (client_id, tool_name).
+# Provider work may outlive cancellation, so every send also checks record identity.
+active_progressive_invocations = {}
+
 # Issues awaiting Copilot PR creation - tracks issues we're monitoring for PR creation
 # Format: {issue_number: {'created_at': datetime, 'websocket': websocket, 'client_id': str}}
 pending_copilot_issues = {}
@@ -2215,6 +2220,208 @@ def _take_photo_tool_policy(tool_code: str) -> Any:
         logger.warning("[Tool Policy] unreadable TOOL_POLICY; using default error=%s", exc)
         return None
     return None
+
+
+def _is_progressive_tool_policy(tool_code: str) -> bool:
+    policy = _take_photo_tool_policy(tool_code)
+    return isinstance(policy, dict) and policy.get('strategy') == 'parallel_progressive'
+
+
+def _progressive_invocation_key(client_id: str, tool_name: str) -> tuple[str, str]:
+    return client_id, tool_name
+
+
+def _obsolete_progressive_invocation(client_id: str, tool_name: str) -> None:
+    key = _progressive_invocation_key(client_id, tool_name)
+    record = active_progressive_invocations.pop(key, None)
+    if record is None:
+        return
+    record['cancelled'].set()
+    task = record.get('task')
+    if (
+        task is not None
+        and task is not asyncio.current_task()
+        and not task.done()
+    ):
+        task.cancel()
+    logger.info(
+        "[ToolProgress] invocation=%s tool=%s obsolete=true",
+        record['invocation_id'],
+        tool_name,
+    )
+
+
+def _obsolete_client_progressive_invocations(client_id: str) -> None:
+    keys = [
+        key for key in active_progressive_invocations
+        if key[0] == client_id
+    ]
+    for _, tool_name in keys:
+        _obsolete_progressive_invocation(client_id, tool_name)
+
+
+def _progressive_invocation_is_fresh(
+    key: tuple[str, str], record: Dict[str, Any]
+) -> bool:
+    return (
+        active_progressive_invocations.get(key) is record
+        and not record['cancelled'].is_set()
+    )
+
+
+def _log_progressive_task_error(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error(
+            "Progressive tool task error",
+            exc_info=(type(error), error, error.__traceback__),
+        )
+
+
+async def _execute_progressive_invocation(
+    websocket,
+    client_id: str,
+    tool_name: str,
+    tool_code: str,
+    image,
+    mode: str,
+    record: Dict[str, Any],
+) -> bool:
+    key = _progressive_invocation_key(client_id, tool_name)
+    loop = asyncio.get_running_loop()
+    prompt = _take_photo_tool_prompt(tool_name, tool_code)
+    policy = _take_photo_tool_policy(tool_code)
+    result_index = 0
+    pending_sends = []
+
+    async def send_progress(model_name: str, text: str, index: int) -> None:
+        if not _progressive_invocation_is_fresh(key, record):
+            return
+        await websocket.send(json.dumps({
+            'type': 'tool_progress_result',
+            'invocation_id': record['invocation_id'],
+            'tool_name': tool_name,
+            'model': model_name,
+            'result_index': index,
+            'text': text,
+            'final': False,
+            'mode': mode,
+            'timestamp': datetime.now().isoformat(),
+        }))
+
+    def on_progress(model_name: str, text: str) -> None:
+        nonlocal result_index
+        if not _progressive_invocation_is_fresh(key, record):
+            return
+        result_index += 1
+        future = asyncio.run_coroutine_threadsafe(
+            send_progress(model_name, text, result_index),
+            loop,
+        )
+        pending_sends.append(future)
+
+    try:
+        await asyncio.to_thread(
+            execute_resolved_tool_policy,
+            prompt,
+            image,
+            policy=policy,
+            request_id=record['invocation_id'],
+            metadata={'mode': mode, 'tool_name': tool_name},
+            on_progress=on_progress,
+            is_cancelled=record['cancelled'].is_set,
+        )
+        for future in pending_sends:
+            try:
+                await asyncio.wrap_future(future)
+            except Exception:
+                if _progressive_invocation_is_fresh(key, record):
+                    logger.exception(
+                        "[ToolProgress] partial send failed invocation=%s",
+                        record['invocation_id'],
+                    )
+        if not _progressive_invocation_is_fresh(key, record):
+            return False
+        await websocket.send(json.dumps({
+            'type': 'tool_progress_result',
+            'invocation_id': record['invocation_id'],
+            'tool_name': tool_name,
+            'model': None,
+            'result_index': result_index + 1,
+            'text': '',
+            'final': True,
+            'mode': mode,
+            'timestamp': datetime.now().isoformat(),
+        }))
+        return True
+    except asyncio.CancelledError:
+        record['cancelled'].set()
+        raise
+    except Exception as exc:
+        logger.error(
+            "[ToolProgress] invocation failed tool=%s invocation=%s error=%s",
+            tool_name,
+            record['invocation_id'],
+            exc,
+        )
+        if _progressive_invocation_is_fresh(key, record):
+            try:
+                await websocket.send(json.dumps({
+                    'type': 'tool_progress_result',
+                    'invocation_id': record['invocation_id'],
+                    'tool_name': tool_name,
+                    'model': None,
+                    'result_index': result_index + 1,
+                    'text': '',
+                    'final': True,
+                    'error': str(exc),
+                    'mode': mode,
+                    'timestamp': datetime.now().isoformat(),
+                }))
+            except Exception:
+                logger.exception(
+                    "[ToolProgress] final error marker send failed invocation=%s",
+                    record['invocation_id'],
+                )
+        return False
+    finally:
+        if active_progressive_invocations.get(key) is record:
+            active_progressive_invocations.pop(key, None)
+
+
+async def _start_progressive_invocation(
+    websocket,
+    client_id: str,
+    tool_name: str,
+    tool_code: str,
+    image,
+    mode: str,
+) -> str:
+    _obsolete_progressive_invocation(client_id, tool_name)
+    invocation_id = secrets.token_hex(16)
+    record = {
+        'invocation_id': invocation_id,
+        'cancelled': threading.Event(),
+        'task': None,
+    }
+    active_progressive_invocations[
+        _progressive_invocation_key(client_id, tool_name)
+    ] = record
+    await websocket.send(json.dumps({
+        'type': 'tool_progress_started',
+        'invocation_id': invocation_id,
+        'tool_name': tool_name,
+        'mode': mode,
+        'timestamp': datetime.now().isoformat(),
+    }))
+    task = asyncio.create_task(_execute_progressive_invocation(
+        websocket, client_id, tool_name, tool_code, image, mode, record
+    ))
+    record['task'] = task
+    task.add_done_callback(_log_progressive_task_error)
+    return invocation_id
 
 
 def _resolve_tool_prompt(tool_code: str) -> Optional[str]:
@@ -3047,6 +3254,16 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         return False
     if tool_language == 'python' and tool_code:
         execution_id = tool_config.get('current_execution_id')
+        if _is_progressive_tool_policy(tool_code):
+            await _start_progressive_invocation(
+                websocket,
+                client_id,
+                tool_name,
+                tool_code,
+                image,
+                'streaming',
+            )
+            return True
         try:
             cascade_result = await asyncio.to_thread(
                 _run_take_photo_vlm,
@@ -7341,6 +7558,7 @@ async def handle_client(websocket):
                     if client_id in active_streaming_tools:
                         stopping_config = active_streaming_tools[client_id]
                         tool_name = stopping_config['tool']['name']
+                        _obsolete_progressive_invocation(client_id, tool_name)
                         cascade_task = stopping_config.get('cascade_task')
                         if cascade_task is not None and not cascade_task.done():
                             cascade_task.cancel()
@@ -7954,6 +8172,7 @@ async def handle_client(websocket):
                 if data.get('type') == 'run_tool':
                     logger.info(f"Client {client_id} requested tool execution: {data.get('tool_name')}")
                     tool_name = data.get('tool_name', 'unknown')
+                    _obsolete_progressive_invocation(client_id, tool_name)
                     tool_path = data.get('tool_path', '')
                     tool_code = resolve_tool_code_for_execution(
                         tool_name=tool_name,
@@ -8073,6 +8292,17 @@ async def handle_client(websocket):
                                 
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
+
+                            if _is_progressive_tool_policy(resolved_tool_code):
+                                await _start_progressive_invocation(
+                                    websocket,
+                                    client_id,
+                                    tool_name,
+                                    resolved_tool_code,
+                                    frame_image,
+                                    'take-photo',
+                                )
+                                continue
 
                             vlm_result = await asyncio.to_thread(
                                 _run_take_photo_vlm,
@@ -8290,6 +8520,7 @@ async def handle_client(websocket):
             if active_streaming_tools[client_id].get('gemini_live') and gemini_live_manager:
                 await gemini_live_manager.stop_session(client_id)
             del active_streaming_tools[client_id]
+        _obsolete_client_progressive_invocations(client_id)
         # Clean up any active Copilot streams for this client
         if client_id in active_copilot_streams:
             logger.info(f"Stopping Copilot stream for disconnected client {client_id}")

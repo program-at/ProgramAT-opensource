@@ -32,6 +32,12 @@ Tools must normally declare a literal `TOOL_POLICY` using the schema in
 uses one `gemini-3.1-flash-lite` call only as a compatibility fallback for a
 missing or invalid policy. Do not implement custom model orchestration.
 
+`parallel_progressive` is opt-in and only for requests that explicitly want
+every model result as it completes. Use `parallel_first` for one winning result
+and `parallel_aggregate` for one combined result. A tool must never implement
+threads, async tasks, callbacks, cancellation, WebSockets, or output transport;
+the shared runtime owns that lifecycle.
+
 Make exactly one helper call and return it directly. Do not add another model or
 specialist call, verification pass, fallback model, model name, or provider SDK.
 Author one concise fused prompt following the detailed guidance in

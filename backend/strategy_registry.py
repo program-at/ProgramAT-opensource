@@ -33,6 +33,13 @@ STRATEGY_REGISTRY = {
             "aggregation_prompt": "string (optional)",
         },
     },
+    "parallel_progressive": {
+        "description": "Run models concurrently and emit every successful result in completion order.",
+        "required": ["models"],
+        "schema": {
+            "models": "list[str]",
+        },
+    },
     "conditional": {
         "description": "Select a nested policy from an explicit runtime condition.",
         "required": ["condition", "if_true", "if_false"],
