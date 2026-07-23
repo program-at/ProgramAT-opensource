@@ -172,6 +172,36 @@ class PolicyExecutorTests(unittest.TestCase):
             )
         self.assertEqual(execute.call_args.args[0], DEFAULT_TAKE_PHOTO_POLICY)
 
+    def test_progressive_gpt_uses_responses_adapter_with_finite_timeout(self):
+        observed = {}
+
+        def responses_adapter(profile, messages, images, metadata):
+            observed.update({
+                "kind": profile.kind,
+                "model": profile.model,
+                "timeout": metadata.get("timeout"),
+            })
+            return type("Result", (), {"response": "gpt result"})()
+
+        with patch.object(
+            tool_policy_runtime, "IMPLEMENTATION_EXECUTORS",
+            {"openai_responses": responses_adapter},
+        ), patch.dict(
+            tool_policy_runtime.os.environ,
+            {"PROGRESSIVE_MODEL_TIMEOUT_SECONDS": "12.5"},
+        ):
+            tool_policy_runtime.execute_resolved_tool_policy(
+                "task", b"image",
+                policy={"strategy": "parallel_progressive", "models": ["gpt-5"]},
+                request_id="test",
+            )
+
+        self.assertEqual(observed, {
+            "kind": "openai_responses",
+            "model": "gpt-5",
+            "timeout": 12.5,
+        })
+
     def test_public_executor_preserves_exact_declared_policy(self):
         explicit = {"strategy": "parallel_first", "models": ["moondream", "gpt-5"]}
         with patch.object(model_execution, "execute_resolved_tool_policy", return_value="ok") as execute:

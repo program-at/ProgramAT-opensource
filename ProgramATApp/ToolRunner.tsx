@@ -28,7 +28,10 @@ import Voice, {
   SpeechResultsEvent,
   SpeechErrorEvent,
 } from '@react-native-voice/voice';
-import {acceptsProgressiveResult} from './progressiveResults';
+import {
+  acceptsProgressiveResult,
+  progressiveInvocationIsRunning,
+} from './progressiveResults';
 
 // Configuration for text similarity filtering
 const SIMILARITY_THRESHOLDS = {
@@ -579,23 +582,38 @@ export default function ToolRunner({
         console.log('[ToolRunner] Received message type:', message.type);
         
         if (message.type === 'tool_progress_started') {
+          console.log(
+            '[Progressive] event_received_frontend',
+            'invocation_id=', message.invocation_id,
+            'model=none result_index=0 final=false stale=false cancelled=false',
+          );
           activeProgressiveInvocationRef.current = message.invocation_id;
           lastProgressiveResultIndexRef.current = 0;
           setIsRunning(true);
           setToolOutput('Waiting for model results...');
         } else if (message.type === 'tool_progress_result') {
-          if (!acceptsProgressiveResult(
+          const accepted = acceptsProgressiveResult(
             activeProgressiveInvocationRef.current,
             lastProgressiveResultIndexRef.current,
             message,
-          )) {
+          );
+          console.log(
+            '[Progressive] event_received_frontend',
+            'invocation_id=', message.invocation_id,
+            'model=', message.model || 'none',
+            'result_index=', message.result_index,
+            'final=', Boolean(message.final),
+            'stale=', !accepted,
+            'cancelled=', Boolean(message.cancelled),
+          );
+          if (!accepted) {
             console.log('[ToolProgress] obsolete or duplicate result ignored:', message.invocation_id);
             return;
           }
           lastProgressiveResultIndexRef.current = message.result_index;
           if (message.final) {
             if (!isStreamingRef.current) {
-              setIsRunning(false);
+              setIsRunning(progressiveInvocationIsRunning(message));
             }
             return;
           }

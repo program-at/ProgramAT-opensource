@@ -15,3 +15,9 @@ export function acceptsProgressiveResult(
     event.result_index > lastResultIndex
   );
 }
+
+export function progressiveInvocationIsRunning(
+  event: {final?: boolean},
+): boolean {
+  return !event.final;
+}

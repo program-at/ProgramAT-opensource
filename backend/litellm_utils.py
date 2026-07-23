@@ -180,11 +180,18 @@ def call_openai_responses_model(
     image: Any,
     *,
     reasoning_effort: str = "medium",
+    timeout: Optional[float] = None,
 ) -> str:
     """Call one OpenAI Responses API model with one fresh multimodal request."""
     from openai import OpenAI
 
-    client = OpenAI(api_key=resolve_api_key(model_name), max_retries=0)
+    client_kwargs = {
+        "api_key": resolve_api_key(model_name),
+        "max_retries": 0,
+    }
+    if timeout is not None:
+        client_kwargs["timeout"] = timeout
+    client = OpenAI(**client_kwargs)
     response = client.responses.create(
         model=model_name,
         input=[{

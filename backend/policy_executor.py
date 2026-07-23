@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import time
 from typing import Any, Callable, Mapping, Optional
 
 from model_registry import MODEL_REGISTRY
@@ -12,6 +13,7 @@ from strategy_registry import STRATEGY_REGISTRY
 logger = logging.getLogger(__name__)
 ModelCall = Callable[[str, str, Any, Mapping[str, Any]], str]
 ProgressCallback = Callable[[str, str], None]
+ProgressErrorCallback = Callable[[str, Exception], None]
 CancellationCheck = Callable[[], bool]
 
 
@@ -74,6 +76,7 @@ def execute_tool_policy(
     policy: Mapping[str, Any], prompt: str, image: Any, model_call: ModelCall,
     *, metadata: Optional[Mapping[str, Any]] = None,
     on_progress: Optional[ProgressCallback] = None,
+    on_progress_error: Optional[ProgressErrorCallback] = None,
     is_cancelled: Optional[CancellationCheck] = None,
 ) -> str:
     policy = validate_tool_policy(policy)
@@ -119,7 +122,15 @@ def execute_tool_policy(
     elif strategy in {"parallel_first", "parallel_aggregate", "parallel_progressive"}:
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(models))
         try:
-            futures = {pool.submit(call, name): name for name in models}
+            futures = {}
+            for name in models:
+                if strategy == "parallel_progressive":
+                    logger.info(
+                        "[Progressive] model_started invocation_id=%s model=%s "
+                        "result_index=0 final=false stale=false cancelled=false",
+                        metadata.get("request_id", "unknown"), name,
+                    )
+                futures[pool.submit(call, name)] = name
             if strategy == "parallel_first":
                 result = ""
                 for future in concurrent.futures.as_completed(futures):
@@ -134,23 +145,71 @@ def execute_tool_policy(
                 result = call(policy["aggregator"], aggregate_prompt + "\n\n" + "\n\n".join(candidates), None)
             else:
                 result = ""
-                for future in concurrent.futures.as_completed(futures):
+                pending = set(futures)
+                timeout_seconds = max(
+                    0.01,
+                    float(metadata.get("progressive_model_timeout_seconds", 60.0)),
+                )
+                deadline = time.monotonic() + timeout_seconds
+                while pending:
                     if is_cancelled and is_cancelled():
+                        for future in pending:
+                            model_name = futures[future]
+                            future.cancel()
+                            logger.info(
+                                "[Progressive] model_cancelled invocation_id=%s model=%s "
+                                "result_index=0 final=false stale=true cancelled=true",
+                                metadata.get("request_id", "unknown"), model_name,
+                            )
                         break
-                    model_name = futures[future]
-                    try:
-                        candidate = future.result()
-                    except Exception:
-                        logger.warning(
-                            "[Tool Policy] progressive model=%s failed; continuing",
-                            model_name,
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        for future in pending:
+                            model_name = futures[future]
+                            future.cancel()
+                            error = TimeoutError(
+                                f"{model_name} timed out after {timeout_seconds:.1f}s"
+                            )
+                            logger.warning(
+                                "[Progressive] model_failed invocation_id=%s model=%s "
+                                "timeout_seconds=%.1f cancelled=false error=%s",
+                                metadata.get("request_id", "unknown"), model_name,
+                                timeout_seconds, error,
+                            )
+                            if on_progress_error:
+                                on_progress_error(model_name, error)
+                        break
+                    done, pending = concurrent.futures.wait(
+                        pending,
+                        timeout=remaining,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    for future in done:
+                        model_name = futures[future]
+                        try:
+                            candidate = future.result()
+                        except Exception as exc:
+                            logger.warning(
+                                "[Progressive] model_failed invocation_id=%s model=%s "
+                                "result_index=0 final=false stale=false cancelled=%s error=%s",
+                                metadata.get("request_id", "unknown"), model_name,
+                                bool(is_cancelled and is_cancelled()), exc,
+                            )
+                            if on_progress_error:
+                                on_progress_error(model_name, exc)
+                            continue
+                        if is_cancelled and is_cancelled():
+                            break
+                        logger.info(
+                            "[Progressive] model_completed invocation_id=%s model=%s "
+                            "result_index=0 final=false stale=false cancelled=false",
+                            metadata.get("request_id", "unknown"), model_name,
                         )
+                        result = candidate
+                        if on_progress:
+                            on_progress(model_name, candidate)
+                    if not done:
                         continue
-                    if is_cancelled and is_cancelled():
-                        break
-                    result = candidate
-                    if on_progress:
-                        on_progress(model_name, candidate)
         finally:
             pool.shutdown(
                 wait=strategy == "parallel_aggregate",
@@ -167,6 +226,7 @@ def execute_tool_policy(
         result = execute_tool_policy(
             policy["if_true"] if decision else policy["if_false"], prompt, image,
             model_call, metadata=metadata, on_progress=on_progress,
+            on_progress_error=on_progress_error,
             is_cancelled=is_cancelled,
         )
     logger.info(

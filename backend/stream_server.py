@@ -18,6 +18,7 @@ import json
 import base64
 import io
 import logging
+import queue
 import sys
 import threading
 import time
@@ -2290,61 +2291,122 @@ async def _execute_progressive_invocation(
     record: Dict[str, Any],
 ) -> bool:
     key = _progressive_invocation_key(client_id, tool_name)
-    loop = asyncio.get_running_loop()
+    event_queue: queue.Queue = queue.Queue()
     prompt = _take_photo_tool_prompt(tool_name, tool_code)
     policy = _take_photo_tool_policy(tool_code)
     result_index = 0
-    pending_sends = []
 
-    async def send_progress(model_name: str, text: str, index: int) -> None:
-        if not _progressive_invocation_is_fresh(key, record):
+    def queue_event(model_name: str, text: str, error: Optional[str] = None) -> None:
+        nonlocal result_index
+        stale = not _progressive_invocation_is_fresh(key, record)
+        if stale:
+            logger.info(
+                "[Progressive] event_queued invocation_id=%s model=%s result_index=0 "
+                "final=false stale=true cancelled=%s",
+                record['invocation_id'], model_name, record['cancelled'].is_set(),
+            )
             return
-        await websocket.send(json.dumps({
+        result_index += 1
+        event = {
             'type': 'tool_progress_result',
             'invocation_id': record['invocation_id'],
             'tool_name': tool_name,
             'model': model_name,
-            'result_index': index,
+            'result_index': result_index,
             'text': text,
             'final': False,
             'mode': mode,
             'timestamp': datetime.now().isoformat(),
-        }))
+        }
+        if error:
+            event['error'] = error
+
+        try:
+            logger.info(
+                "[Progressive] event_queued invocation_id=%s model=%s result_index=%d "
+                "final=false stale=false cancelled=false",
+                record['invocation_id'], model_name, event['result_index'],
+            )
+            event_queue.put_nowait(event)
+        except Exception:
+            logger.exception(
+                "[Progressive] event_queue_failed invocation_id=%s model=%s "
+                "result_index=%d final=false stale=%s cancelled=%s",
+                record['invocation_id'], model_name, result_index, stale,
+                record['cancelled'].is_set(),
+            )
 
     def on_progress(model_name: str, text: str) -> None:
-        nonlocal result_index
-        if not _progressive_invocation_is_fresh(key, record):
-            return
-        result_index += 1
-        future = asyncio.run_coroutine_threadsafe(
-            send_progress(model_name, text, result_index),
-            loop,
-        )
-        pending_sends.append(future)
+        queue_event(model_name, text)
+
+    def on_progress_error(model_name: str, error: Exception) -> None:
+        queue_event(model_name, '', str(error))
 
     try:
-        await asyncio.to_thread(
-            execute_resolved_tool_policy,
-            prompt,
-            image,
-            policy=policy,
-            request_id=record['invocation_id'],
-            metadata={'mode': mode, 'tool_name': tool_name},
-            on_progress=on_progress,
-            is_cancelled=record['cancelled'].is_set,
-        )
-        for future in pending_sends:
+        worker_state: Dict[str, Any] = {}
+
+        def run_worker() -> str:
             try:
-                await asyncio.wrap_future(future)
+                worker_state['result'] = execute_resolved_tool_policy(
+                    prompt,
+                    image,
+                    policy=policy,
+                    request_id=record['invocation_id'],
+                    metadata={'mode': mode, 'tool_name': tool_name},
+                    on_progress=on_progress,
+                    on_progress_error=on_progress_error,
+                    is_cancelled=record['cancelled'].is_set,
+                )
+                return worker_state['result']
+            except BaseException as exc:
+                worker_state['error'] = exc
+                return ''
+            finally:
+                event_queue.put_nowait(None)
+
+        worker = threading.Thread(
+            target=run_worker,
+            name=f"tool-progress-{record['invocation_id'][:8]}",
+            daemon=True,
+        )
+        record['worker_thread'] = worker
+        worker.start()
+        while True:
+            try:
+                event = event_queue.get_nowait()
+            except queue.Empty:
+                await asyncio.sleep(0.01)
+                continue
+            if event is None:
+                break
+            stale = not _progressive_invocation_is_fresh(key, record)
+            logger.info(
+                "[Progressive] event_sending invocation_id=%s model=%s result_index=%d "
+                "final=false stale=%s cancelled=%s",
+                record['invocation_id'], event['model'], event['result_index'],
+                stale, record['cancelled'].is_set(),
+            )
+            if stale:
+                continue
+            try:
+                await websocket.send(json.dumps(event))
+                logger.info(
+                    "[Progressive] event_sent invocation_id=%s model=%s result_index=%d "
+                    "final=false stale=false cancelled=false",
+                    record['invocation_id'], event['model'], event['result_index'],
+                )
             except Exception:
-                if _progressive_invocation_is_fresh(key, record):
-                    logger.exception(
-                        "[ToolProgress] partial send failed invocation=%s",
-                        record['invocation_id'],
-                    )
+                logger.exception(
+                    "[Progressive] event_send_failed invocation_id=%s model=%s "
+                    "result_index=%d final=false stale=false cancelled=false",
+                    record['invocation_id'], event['model'], event['result_index'],
+                )
+                raise
+        if worker_state.get('error') is not None:
+            raise worker_state['error']
         if not _progressive_invocation_is_fresh(key, record):
             return False
-        await websocket.send(json.dumps({
+        final_event = {
             'type': 'tool_progress_result',
             'invocation_id': record['invocation_id'],
             'tool_name': tool_name,
@@ -2354,7 +2416,23 @@ async def _execute_progressive_invocation(
             'final': True,
             'mode': mode,
             'timestamp': datetime.now().isoformat(),
-        }))
+        }
+        logger.info(
+            "[Progressive] event_sending invocation_id=%s model=none result_index=%d "
+            "final=true stale=false cancelled=false",
+            record['invocation_id'], final_event['result_index'],
+        )
+        await websocket.send(json.dumps(final_event))
+        logger.info(
+            "[Progressive] event_sent invocation_id=%s model=none result_index=%d "
+            "final=true stale=false cancelled=false",
+            record['invocation_id'], final_event['result_index'],
+        )
+        logger.info(
+            "[Progressive] invocation_complete invocation_id=%s model=none "
+            "result_index=%d final=true stale=false cancelled=false",
+            record['invocation_id'], final_event['result_index'],
+        )
         return True
     except asyncio.CancelledError:
         record['cancelled'].set()
@@ -2368,7 +2446,7 @@ async def _execute_progressive_invocation(
         )
         if _progressive_invocation_is_fresh(key, record):
             try:
-                await websocket.send(json.dumps({
+                final_event = {
                     'type': 'tool_progress_result',
                     'invocation_id': record['invocation_id'],
                     'tool_name': tool_name,
@@ -2379,7 +2457,13 @@ async def _execute_progressive_invocation(
                     'error': str(exc),
                     'mode': mode,
                     'timestamp': datetime.now().isoformat(),
-                }))
+                }
+                await websocket.send(json.dumps(final_event))
+                logger.info(
+                    "[Progressive] invocation_complete invocation_id=%s model=none "
+                    "result_index=%d final=true stale=false cancelled=false error=%s",
+                    record['invocation_id'], final_event['result_index'], exc,
+                )
             except Exception:
                 logger.exception(
                     "[ToolProgress] final error marker send failed invocation=%s",
@@ -2416,6 +2500,11 @@ async def _start_progressive_invocation(
         'mode': mode,
         'timestamp': datetime.now().isoformat(),
     }))
+    logger.info(
+        "[Progressive] event_sent invocation_id=%s model=none result_index=0 "
+        "final=false stale=false cancelled=false type=tool_progress_started",
+        invocation_id,
+    )
     task = asyncio.create_task(_execute_progressive_invocation(
         websocket, client_id, tool_name, tool_code, image, mode, record
     ))

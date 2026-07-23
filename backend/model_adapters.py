@@ -114,11 +114,13 @@ def _openai_responses_executor(profile, messages, images, metadata) -> Implement
         ),
         "",
     )
+    response_kwargs: Dict[str, Any] = {
+        "reasoning_effort": str(metadata.get("reasoning_effort") or "medium"),
+    }
+    if metadata.get("timeout") is not None:
+        response_kwargs["timeout"] = float(metadata["timeout"])
     text = call_openai_responses_model(
-        profile.model,
-        prompt,
-        image_items[0],
-        reasoning_effort=str(metadata.get("reasoning_effort") or "medium"),
+        profile.model, prompt, image_items[0], **response_kwargs,
     )
     return ImplementationResult(_simple_response(text), {"text": text})
 
