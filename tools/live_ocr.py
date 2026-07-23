@@ -58,8 +58,9 @@ from collections import deque
 TOOL_NAME = "live_ocr"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
-    "Read the visible text accurately and return only the text in a concise, natural reading order. "
-    "If no text is readable, say 'No readable text.'"
+    "Read the visible text accurately for a blind or low-vision user and return only the text "
+    "in a concise, natural order suitable for speech. If no text is readable, say "
+    "'No readable text.'"
 )
 
 # Default configuration

@@ -88,6 +88,9 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("may use numbered instructions", instructions)
         self.assertIn("Never turn them", instructions)
         self.assertIn("into runtime stages, multiple model calls", instructions)
+        self.assertIn("blind and low-vision users", instructions)
+        self.assertIn("clock directions, left/right, approximate distance", instructions)
+        self.assertIn("does not depend only on visual landmarks", instructions)
 
         self.assertIn("### Take-photo implementation guidance", template)
         self.assertIn("Default to no steps", template)

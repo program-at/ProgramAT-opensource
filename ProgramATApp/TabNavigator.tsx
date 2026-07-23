@@ -23,6 +23,7 @@ interface Tool {
   pr_number?: number;
   pr_title?: string;
   branch_name?: string;
+  source?: string;
 }
 
 interface TabNavigatorProps {

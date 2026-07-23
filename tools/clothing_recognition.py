@@ -17,8 +17,9 @@ from tool_policy_client import copilot_llm_call
 TOOL_NAME = "clothing_recognition"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
-    "Identify the most prominent clothing item and briefly state its category, color, "
-    "pattern, and other useful visible features. If no clothing is clearly visible, say so."
+    "For a blind or low-vision user, identify the most prominent clothing item and briefly "
+    "state its category, color, pattern, and other useful visible features. Return only a "
+    "concise spoken description. If no clothing is clearly visible, say so."
 )
 TASK_CATEGORY = "general_reasoning"
 

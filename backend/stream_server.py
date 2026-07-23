@@ -976,6 +976,7 @@ async def _start_rtvi_session(websocket, client_id: str, data: Dict[str, Any]) -
     tool_code = resolve_tool_code_for_execution(
         tool_name=data.get('tool_name', ''), tool_path=data.get('tool_path', ''),
         client_tool_code=data.get('tool_code', ''),
+        client_tool_source=data.get('tool_source', ''),
     )
     tool_name, tool_prompt = _validated_rtvi_tool(tool_code)
     session_id = f"{safe_rtsp_path(client_id)}-{secrets.token_hex(8)}"
@@ -1741,6 +1742,7 @@ async def _start_hosted_nvidia_session(
     tool_code = resolve_tool_code_for_execution(
         tool_name=data.get('tool_name', ''), tool_path=data.get('tool_path', ''),
         client_tool_code=data.get('tool_code', ''),
+        client_tool_source=data.get('tool_source', ''),
     )
     tool_name, tool_prompt = _validated_rtvi_tool(tool_code)
     video_config = _literal_tool_metadata(tool_code, 'VIDEO_CONFIG') or {}
@@ -4438,8 +4440,29 @@ def get_local_tools_for_pr_merge() -> list:
     return local_tools
 
 
-def resolve_tool_code_for_execution(tool_name: str, tool_path: str = '', client_tool_code: str = '') -> str:
-    """Prefer the server's current local tool code over stale client-sent code."""
+def resolve_tool_code_for_execution(
+    tool_name: str,
+    tool_path: str = '',
+    client_tool_code: str = '',
+    client_tool_source: str = '',
+) -> str:
+    """Prefer fetched remote code, using the current local tool only as fallback."""
+    remote_code = client_tool_code or ''
+    if remote_code and not (client_tool_source or '').strip().lower().startswith('local'):
+        normalized_path = (tool_path or '').strip().lower()
+        remote_is_python = not normalized_path or normalized_path.endswith('.py')
+        try:
+            if remote_is_python:
+                ast.parse(remote_code)
+            logger.info("[ToolResolution] tool=%s source=remote", tool_name)
+            return remote_code
+        except SyntaxError as exc:
+            logger.warning(
+                "[ToolResolution] tool=%s remote_invalid=%s; trying local fallback",
+                tool_name,
+                exc,
+            )
+
     candidates = []
 
     raw_path = (tool_path or '').strip()
@@ -4468,16 +4491,13 @@ def resolve_tool_code_for_execution(tool_name: str, tool_path: str = '', client_
         if candidate.exists() and candidate.is_file():
             try:
                 server_tool_code = candidate.read_text(encoding='utf-8')
-                if client_tool_code and client_tool_code != server_tool_code:
-                    logger.info(
-                        f"[RUN_TOOL] Using server-local tool code for {tool_name} from {candidate}; "
-                        "client-sent code was stale or different"
-                    )
+                logger.info("[ToolResolution] tool=%s source=local_fallback", tool_name)
                 return server_tool_code
             except Exception as e:
                 logger.warning(f"Failed to read local tool {candidate}: {e}")
 
-    return client_tool_code or ''
+    logger.warning("[ToolResolution] tool=%s source=unavailable", tool_name)
+    return ''
 
 
 def fetch_pr_tools_from_github(pr, repo) -> list:
@@ -4817,7 +4837,8 @@ def fetch_branch_tools(branch_name: str = 'main') -> list:
                     'code': code,
                     'language': language,
                     'branch_name': branch_name,
-                    'is_production': True
+                    'is_production': True,
+                    'source': 'github_branch',
                 })
                 logger.info(f"Added production tool: {tool_name} from {file_info['path']} (branch {branch_name})")
             except Exception as e:
@@ -7113,6 +7134,7 @@ async def handle_client(websocket):
                         tool_name=data.get('tool_name', ''),
                         tool_path=data.get('tool_path', ''),
                         client_tool_code=data.get('tool_code', ''),
+                        client_tool_source=data.get('tool_source', ''),
                     )
                     execution_mode = _tool_execution_mode(tool_code)
                     data = dict(data, tool_code=tool_code)
@@ -7164,11 +7186,6 @@ async def handle_client(websocket):
                     custom_gpt = False
                     tool_name = data.get('tool_name', 'unknown')
                     tool_path = data.get('tool_path', '')
-                    tool_code = resolve_tool_code_for_execution(
-                        tool_name=tool_name,
-                        tool_path=tool_path,
-                        client_tool_code=data.get('tool_code', ''),
-                    )
                     
                     previous_config = active_streaming_tools.get(client_id)
                     previous_task = previous_config.get('cascade_task') if previous_config else None
@@ -7942,6 +7959,7 @@ async def handle_client(websocket):
                         tool_name=tool_name,
                         tool_path=tool_path,
                         client_tool_code=data.get('tool_code', ''),
+                        client_tool_source=data.get('tool_source', ''),
                     )
                     tool_language = data.get('tool_language', 'python')
                     tool_input = data.get('input', '')
@@ -7983,11 +8001,7 @@ async def handle_client(websocket):
                     if tool_language == 'python' and tool_code:
                         image_context_token = None
                         try:
-                            resolved_tool_code = resolve_tool_code_for_execution(
-                                tool_name=tool_name,
-                                tool_path=tool_path,
-                                client_tool_code=tool_code,
-                            )
+                            resolved_tool_code = tool_code
                             # Use frame from message if provided, otherwise use last streaming frame
                             frame_image = None
                             frame_base64 = None

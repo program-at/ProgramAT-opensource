@@ -53,8 +53,10 @@ from collections import defaultdict
 TOOL_NAME = "object_recognition"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
-    "Identify the useful objects visible in the image and give a concise spoken list with counts. "
-    "If no objects can be identified clearly, say so."
+    "For a blind or low-vision user, identify useful visible objects and give a concise spoken "
+    "list with counts and accessible relative positions such as left, center, right, or clock "
+    "direction when helpful. Do not locate objects only by color or nearby people. If no objects "
+    "can be identified clearly, say so."
 )
 
 # Detection constants

@@ -23,6 +23,7 @@ interface Tool {
   gpt_query?: string;
   system_instruction?: string;
   query_interval?: number;
+  source?: string;
 }
 
 interface ToolsAndRunnerProps {

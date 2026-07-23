@@ -19,7 +19,7 @@ earliest to latest and track the signer's hand shapes, orientation, location,
 facial cues, and motion sequence. When only one image is available, use only a
 clearly recognizable held posture or other static evidence; do not infer motion
 that is not visible. Identify the completed sign or short signed phrase and
-return only one concise user-facing sentence, for example "The signer is waving
+return only one concise spoken sentence for a blind or low-vision user, for example "The signer is waving
 hello." If the available evidence is insufficient or no sign is clear, return
 exactly "No clear sign detected." Do not return JSON, field names, analysis, or
 card-related information.

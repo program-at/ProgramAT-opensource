@@ -27,9 +27,11 @@ from collections import defaultdict
 TOOL_NAME = "empty_seat_detection"
 EXECUTION_MODE = "take_photo"
 TOOL_PROMPT = (
-    "Inspect the image for chairs, benches, couches, or other seating, determine which seats "
-    "are visibly unoccupied, select the nearest suitable option, and give concise spoken "
-    "guidance toward it. If no empty seat is visible, say so."
+    "For a blind or low-vision user, internally identify chairs, benches, couches, or other "
+    "seating, determine which are visibly unoccupied, and select the nearest suitable option. "
+    "Return only concise spoken guidance using clock direction or left/right, approximate "
+    "distance when supportable, nearby object types, and a short movement instruction; do not "
+    "rely on color-only or person-based landmarks. If no empty seat is visible, say so."
 )
 
 # Detection constants

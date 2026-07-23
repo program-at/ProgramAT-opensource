@@ -130,6 +130,13 @@ Author the shortest high-quality fused prompt that preserves those issue fields.
 Include an unavailable-information fallback and request only an accessible,
 concise, audio-friendly final answer.
 
+Generated tools serve blind and low-vision users. Ask for directly actionable
+information that does not depend only on visual landmarks the user may not
+identify (for example, a red sign or a person in blue). When spatial guidance
+is needed, prefer clock directions, left/right, approximate distance, relative
+position, named object types, and short movement instructions. Keep the final
+response concise and suitable for speech.
+
 - If the task can be achieved in one operation, write one direct instruction
   with no sequence or numbered steps. This includes simple recognition, OCR,
   classification, and identification.

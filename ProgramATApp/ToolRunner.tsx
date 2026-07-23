@@ -50,6 +50,7 @@ interface Tool {
   gpt_query?: string;
   system_instruction?: string;
   query_interval?: number;
+  source?: string;
 }
 
 interface ToolRunnerProps {
@@ -945,6 +946,7 @@ export default function ToolRunner({
       tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
+      tool_source: selectedTool.source,
       input: '',
       task: selectedTool.description || selectedTool.name,
       frame: {
@@ -997,6 +999,7 @@ export default function ToolRunner({
       tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
+      tool_source: selectedTool.source,
       input: '',
       task: selectedTool.description || selectedTool.name,
       throttle_ms: 1000, // Process 1 frame per second
