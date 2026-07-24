@@ -22,7 +22,7 @@ async def on_stream_start(runtime, input_data):
 async def on_frame(runtime, frame):
     await runtime.emit(
         f"frame {frame.frame_id}", partial=True,
-        metadata={"width": frame.width},
+        metadata={"width": frame.width, "model": "explicit/test-model"},
     )
 
 async def on_stream_stop(runtime):
@@ -84,6 +84,8 @@ class TestGeneratedToolServerIntegration(unittest.IsolatedAsyncioTestCase):
         result = next(payload for payload in payloads if payload["type"] == "tool_progress_result")
         self.assertEqual(result["text"], "frame 1")
         self.assertEqual(result["metadata"]["width"], 20)
+        self.assertEqual(result["metadata"]["model"], "explicit/test-model")
+        self.assertEqual(result["model"], "explicit/test-model")
 
     async def test_replaced_stream_rejects_stale_emit(self):
         websocket = AsyncMock()
@@ -102,6 +104,31 @@ class TestGeneratedToolServerIntegration(unittest.IsolatedAsyncioTestCase):
 
         accepted = await config["generated_runtime"].emit("stale", final=True)
 
+        self.assertFalse(accepted)
+        websocket.send.assert_not_awaited()
+
+    async def test_stop_cancels_frame_tasks_and_rejects_late_emit(self):
+        websocket = AsyncMock()
+        config = {
+            "tool": {
+                "name": "integration_tool",
+                "code": STREAM_TOOL,
+                "input": {},
+            }
+        }
+        stream_server.active_streaming_tools["client"] = config
+        await stream_server._initialize_executable_streaming_tool(
+            websocket, "client", config
+        )
+        pending = asyncio.create_task(asyncio.Event().wait())
+        config["generated_tasks"].add(pending)
+
+        stream_server.active_streaming_tools.pop("client")
+        await stream_server._stop_executable_streaming_tool(config)
+        accepted = await config["generated_runtime"].emit("late", final=True)
+
+        self.assertTrue(config["cancelled"])
+        self.assertTrue(pending.cancelled())
         self.assertFalse(accepted)
         websocket.send.assert_not_awaited()
 

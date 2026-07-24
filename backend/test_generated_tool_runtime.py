@@ -174,6 +174,7 @@ class TestExecutableEmptySeatTool(unittest.IsolatedAsyncioTestCase):
         image = np.full((32, 32, 3), 80, dtype=np.uint8)
         frame1 = ToolFrame(1, 1.0, image, 32, 32)
         frame2 = ToolFrame(2, 2.0, image.copy(), 32, 32)
+        frame3 = ToolFrame(3, 3.0, image.copy(), 32, 32)
 
         with patch.object(
             empty_seat_detection,
@@ -186,8 +187,17 @@ class TestExecutableEmptySeatTool(unittest.IsolatedAsyncioTestCase):
         ):
             await empty_seat_detection.on_frame(runtime, frame1)
             await empty_seat_detection.on_frame(runtime, frame2)
+            await empty_seat_detection.on_frame(runtime, frame3)
 
         self.assertEqual(calls.call_count, 3)
+        self.assertCountEqual(
+            [call.args[0] for call in calls.call_args_list],
+            [model for model, _provider in empty_seat_detection.PROGRESSIVE_MODELS],
+        )
+        self.assertEqual(
+            [call.args[0] for call in calls.call_args_list].count("gpt-5"),
+            1,
+        )
         self.assertEqual(len([event for event in emitted if event["partial"]]), 3)
         self.assertEqual(len([event for event in emitted if event["final"]]), 1)
 

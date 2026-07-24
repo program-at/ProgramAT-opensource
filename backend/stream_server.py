@@ -628,6 +628,8 @@ def _generated_emit_callback(websocket, client_id: str, owner: Dict[str, Any], m
             "final": event["final"],
             "replace": event["replace"],
             "metadata": event["metadata"],
+            "model": event["metadata"].get("model"),
+            "error": event["metadata"].get("error"),
             "mode": mode,
             "timestamp": datetime.now().isoformat(),
         }
@@ -742,12 +744,12 @@ async def _stop_executable_streaming_tool(tool_config: Dict[str, Any]) -> None:
     tool_config["cancelled"] = True
     runtime = tool_config.get("generated_runtime")
     namespace = tool_config.get("generated_namespace") or {}
+    await cancel_generated_tool_tasks(tool_config.get("generated_tasks") or ())
     if runtime is not None:
         try:
             await invoke_tool_hook(namespace, "on_stream_stop", runtime)
         except Exception:
             logger.exception("[GeneratedTool] on_stream_stop failed tool=%s", runtime.tool_name)
-    await cancel_generated_tool_tasks(tool_config.get("generated_tasks") or ())
     if runtime is not None:
         runtime.clear_state()
         runtime._frames.clear()
@@ -7889,21 +7891,22 @@ async def handle_client(websocket):
                         if not old_task.done():
                             old_task.cancel()
                     if client_id in active_streaming_tools:
-                        stopping_config = active_streaming_tools[client_id]
+                        # Remove the registration first so frame dispatch and emit
+                        # callbacks reject this session while cleanup is in flight.
+                        stopping_config = active_streaming_tools.pop(client_id)
                         tool_name = stopping_config['tool']['name']
-                        await _stop_executable_streaming_tool(stopping_config)
-                        _obsolete_progressive_invocation(client_id, tool_name)
                         cascade_task = stopping_config.get('cascade_task')
                         if cascade_task is not None and not cascade_task.done():
                             cascade_task.cancel()
                         debounce_task = stopping_config.get('debounce_task')
                         if debounce_task is not None and not debounce_task.done():
                             debounce_task.cancel()
+                        _obsolete_progressive_invocation(client_id, tool_name)
+                        await _stop_executable_streaming_tool(stopping_config)
                         # Clean up Gemini Live session if active
-                        if active_streaming_tools[client_id].get('gemini_live') and gemini_live_manager:
+                        if stopping_config.get('gemini_live') and gemini_live_manager:
                             await gemini_live_manager.stop_session(client_id)
                             logger.info(f"Stopped Gemini Live session for {client_id}")
-                        del active_streaming_tools[client_id]
                         
                         await websocket.send(json.dumps({
                             'type': 'streaming_stopped',
