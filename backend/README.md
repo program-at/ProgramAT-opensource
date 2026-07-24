@@ -52,25 +52,18 @@ The server uses environment variables for configuration:
 
 ### LLM Interfaces
 
-ProgramAT separates fixed infrastructure LLM calls from take-photo capability execution.
-
-For take-photo tools, the system LLM extracts issue fields and the coding agent
-authors one fused `TOOL_PROMPT` and an explicit literal `TOOL_POLICY`. The
-generated tool makes exactly one call to the shared generic executor and does
-not execute task stages, routers, or specialist calls. A missing or invalid
-policy uses the single-model Gemini policy only as a compatibility fallback.
+ProgramAT separates fixed infrastructure LLM calls from executable generated
+tools. New tools implement lifecycle hooks and directly choose their models,
+prompts, frames, orchestration, and output timing. The backend supplies bounded
+frame history, isolated state, cancellation, validation, and result transport.
 
 Infrastructure/system work should call `system_llm_call(...)` from `tool_policy_runtime.py`.
 
-Generated tools call `execute_tool_policy(...)` from `model_execution.py` with
-an explicit policy. A minimal policy is:
-
-```json
-{"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
-```
-
-Models and strategy schemas live in `model_registry.py` and
-`strategy_registry.py`. The runtime does not infer or generate policies.
+Generated tools call `call_model(...)`, `extract_text(...)`, or, where needed,
+`call_openai_responses_model(...)` from `litellm_utils.py`. Models are written
+explicitly into the tool source. `model_registry.py` is advisory authoring
+information and is still used by the temporary declarative-tool compatibility
+path; new executable hooks do not use backend model selection.
 
 ### Optional
 

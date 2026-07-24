@@ -1,260 +1,186 @@
 # ProgramAT Copilot instructions
 
-ProgramAT tools are Python files in `tools/`. The backend executes them with a
-camera image and speaks the returned value.
+ProgramAT tools are executable Python modules in `tools/`. Generated code owns
+the actual assistive behavior: model selection, prompts, call timing, frame
+selection, temporal comparison, concurrency, progressive output, and
+tool-specific state. The backend only supplies frames, isolated state,
+cancellation, credentials inside approved model functions, and WebSocket
+transport.
 
-Each take-photo tool must expose `main(image, input_data)` with exactly two parameters.
-`image` is an OpenCV BGR array and `input_data` is a dictionary. Return a concise,
-audio-friendly string (or the established `audio`/`text` dictionary shape). Do
-not print results, connect to the backend, or use WebSockets.
+## Public execution contract
 
-## Take-photo tools
-
-ProgramAT has two visual-context contracts:
-
-- **Static** tools answer from the current frame alone. Use
-  `EXECUTION_MODE = "take_photo"`. Static tools may run once in Take Photo or
-  repeatedly in Streaming; every streaming invocation receives one selected
-  current frame and must be independent. Never add `VIDEO_CONFIG`, a rolling
-  window, or cross-frame state to a static tool.
-- **Temporal** tools require evidence across multiple moments: recent history,
-  sequence, duration, an early/late or before/after comparison, a state change,
-  or “what just happened.” Use
-  `EXECUTION_MODE = "hosted_video_streaming"` to select their Streaming behavior.
-  They must declare literal `VIDEO_CONFIG` settings for `window_seconds`,
-  `interval_seconds`, `minimum_span_seconds`, and `minimum_unique_frames`.
-
-Take Photo is available for every tool and always supplies exactly one current
-image with the tool's normal `TOOL_PROMPT`. For a temporal tool, author that
-prompt to work safely with either input shape:
-
-- With multiple chronological frames, use motion, sequence, duration, and state
-  changes as relevant to the task.
-- With one image, use only recognizable static evidence. Never invent unseen
-  movement, earlier state, or later state.
-- When one frame is insufficient, return the task-specific concise uncertainty
-  response requested by the prompt.
-
-Do not classify a tool as temporal unless the user's requested answer clearly
-depends on multiple moments. Recognition, identification, OCR, description,
-classification, and other questions answerable from one frame are static even
-when the user may choose to run them continuously.
-
-The issue `Mode` value is a parser suggestion, not an instruction to ignore the
-request semantics. Read the preserved `ORIGINAL_PROMPTS` and Task/Expected output
-before deciding the contract. Correct the suggested mode when they conflict.
-If a request permits both static and dynamic examples, choose temporal whenever
-correct interpretation may require recent movement or several ordered frames.
-For sign language specifically, a current held posture is static; recent hand
-movements, a sign lasting seconds, or the sign/phrase just made are temporal.
-
-Define exactly one `TOOL_PROMPT` and use this shape:
+Declare:
 
 ```python
-from model_execution import execute_tool_policy
-
-TOOL_NAME = "tool_name"
+TOOL_NAME = "concise_snake_case_name"
 EXECUTION_MODE = "take_photo"
-TOOL_PROMPT = "One task-specific instruction."
-TOOL_POLICY = {
-    "strategy": "single",
-    "models": ["gemini-3.1-flash-lite"],
-}
+```
 
+Implement whichever lifecycle hooks the tool needs:
 
-def main(image, input_data):
-    if image is None:
-        return "No camera image is available."
-    return execute_tool_policy(
-        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
+```python
+async def on_take_photo(runtime, image, input_data): ...
+async def on_stream_start(runtime, input_data): ...
+async def on_frame(runtime, frame): ...
+async def on_stream_stop(runtime): ...
+```
+
+Take Photo calls `on_take_photo`. Streaming calls `on_stream_start` once,
+`on_frame` for collected frames, and `on_stream_stop` during cleanup. These
+functions and every local helper in the tool file are actually executed.
+
+`frame` provides `frame_id`, `timestamp`, `image`, `width`, `height`, and
+`image_base64`. Available infrastructure is:
+
+```python
+runtime.current_request_id
+runtime.current_frame
+runtime.get_latest_frame()
+runtime.get_recent_frames(count=None, seconds=None)
+runtime.get_state(key, default=None)
+runtime.set_state(key, value)
+runtime.clear_state()
+runtime.is_cancelled()
+await runtime.emit(text, partial=False, final=False, replace=False, metadata=None)
+```
+
+State is isolated by client, tool source version, and streaming session. Keep
+scene anchors, prior outputs, analysis generations, and temporary tasks in
+runtime state rather than module globals.
+
+## Model calls
+
+For most models:
+
+```python
+from litellm_utils import call_model, extract_text
+
+response = await asyncio.to_thread(
+    call_model,
+    "gemini/gemini-3.1-flash-lite-preview",
+    [{"role": "user", "content": prompt}],
+    [image],
+    {"timeout": 60},
+)
+text = extract_text(response)
+```
+
+Use `call_openai_responses_model()` only when the selected model requires the
+OpenAI Responses API. Inspect `backend/model_registry.py` before selecting a
+model. The registry is advisory; the backend will not replace the model written
+in the tool. Default to Gemini 3.1 Flash Lite for ordinary general visual work.
+
+Tools may explicitly call multiple models, branch on prior results, retry when
+appropriate, or use `asyncio.create_task`, `gather`, or `as_completed`.
+
+## Examples
+
+### One-frame, one-model Take Photo
+
+```python
+async def on_take_photo(runtime, image, input_data):
+    del runtime, input_data
+    response = await asyncio.to_thread(
+        call_model, "gemini/gemini-3.1-flash-lite-preview",
+        [{"role": "user", "content": TOOL_PROMPT}], [image],
+    )
+    return extract_text(response)
+```
+
+### Tool-written streaming similarity
+
+```python
+def similarity(a, b):
+    return float(np.dot(a, b))
+
+async def on_frame(runtime, frame):
+    current = await asyncio.to_thread(embed_frame, frame.image)
+    anchor = runtime.get_state("anchor")
+    if anchor is not None and similarity(anchor, current) >= 0.985:
+        return
+    runtime.set_state("anchor", current)
+    # The tool decides what to call and emit here.
+```
+
+### Several frames from recent history
+
+```python
+async def on_frame(runtime, frame):
+    recent = runtime.get_recent_frames(count=8, seconds=4)
+    selected = recent[::2]
+    if len(selected) < 2:
+        return
+    response = await asyncio.to_thread(
+        call_model, MODEL, [{"role": "user", "content": TEMPORAL_PROMPT}],
+        [item.image for item in selected],
     )
 ```
 
-Copilot is responsible for choosing and emitting a literal `TOOL_POLICY`.
-Inspect `backend/model_registry.py` and `backend/strategy_registry.py`, then
-choose the simplest policy that satisfies the request. For ordinary requests
-without a meaningful execution preference or specialized-model need, emit the
-single Gemini 3.1 Flash Lite policy shown above. The backend only validates and
-executes this data; it never infers difficulty, chooses models, or expands it.
-
-- For speed, prefer one fast suitable model: YOLO only for supported object
-  detection, Moondream only for very simple low-risk tasks where reduced
-  accuracy is acceptable, and otherwise Gemini 3.1 Flash Lite.
-- For accuracy when substantially higher latency is acceptable, prefer GPT-5.
-- For "usually fast, but more accurate when needed," use `conditional` or
-  `cascade`, starting with Gemini 3.1 Flash Lite and escalating to GPT-5 only
-  under an explicit sufficiency condition.
-- Use `cascade` only for an explicit fast-first, stronger-fallback request.
-- Use `parallel_first` only when multiple models should start together and the
-  first acceptable result should win.
-- Use `parallel_aggregate` only to compare or combine several outputs.
-- Use `parallel_progressive` only when the user explicitly wants every model
-  result delivered separately as each model completes.
-- Use `conditional` only for a clearly defined fast-default/stronger condition.
-- Gemini 3.1 Flash Lite is the default general VLM. YOLO is object detection
-  only. Moondream is for simple, low-risk tasks where lower accuracy is
-  acceptable. GPT-5 is for accuracy/strong reasoning despite latency and cost.
-  GPT-4o-mini is mainly an evaluator or aggregator.
-
-Policies are static data, never custom routing code. Pass the declaration to
-`execute_tool_policy` as `policy=TOOL_POLICY`. Never implement model orchestration outside
-`TOOL_POLICY`, and never add cascade, evaluation, parallelism, or aggregation
-without a user-driven reason.
-
-Do not claim progressive output unless the strategy is `parallel_progressive`.
-Use `parallel_first` when only the first acceptable result is wanted and
-`parallel_aggregate` when all results should be combined. Generated tools must
-not implement concurrency, callbacks, cancellation, WebSocket/event transport,
-or provider calls. For an individual tool creation or update, modify only that
-tool file; do not modify backend or frontend files.
-
-When progressive delivery is explicitly requested, declare it only through:
+### Progressive parallel output
 
 ```python
-TOOL_POLICY = {
-    "strategy": "parallel_progressive",
-    "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
-}
+async def on_frame(runtime, frame):
+    generation = runtime.get_state("generation", 0) + 1
+    runtime.set_state("generation", generation)
+
+    async def run(model):
+        response = await asyncio.to_thread(
+            call_model, model, [{"role": "user", "content": TOOL_PROMPT}],
+            [frame.image],
+        )
+        if not runtime.is_cancelled() and runtime.get_state("generation") == generation:
+            await runtime.emit(extract_text(response), partial=True,
+                               metadata={"model": model})
+
+    await asyncio.gather(*(run(model) for model in MODELS), return_exceptions=True)
+    if not runtime.is_cancelled() and runtime.get_state("generation") == generation:
+        await runtime.emit("", final=True)
 ```
+
+### Different Take Photo and Streaming behavior
 
 ```python
-TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
+async def on_take_photo(runtime, image, input_data):
+    return await analyze_once(image)
+
+async def on_stream_start(runtime, input_data):
+    runtime.set_state("last_processed_id", 0)
+
+async def on_frame(runtime, frame):
+    if frame.frame_id - runtime.get_state("last_processed_id", 0) < 5:
+        return
+    runtime.set_state("last_processed_id", frame.frame_id)
+    await runtime.emit(await analyze_once(frame.image), final=True)
 ```
 
-```python
-TOOL_POLICY = {
-    "strategy": "cascade",
-    "models": ["moondream", "gemini-3.1-flash-lite", "gpt-5"],
-    "evaluator": "gpt-4o-mini",
-}
-```
+## Output and accessibility
 
-```python
-TOOL_POLICY = {
-    "strategy": "parallel_aggregate",
-    "models": ["gemini-3.1-flash-lite", "gpt-5"],
-    "aggregator": "gpt-4o-mini",
-}
-```
+Emit concise, speech-ready results for blind and low-vision users. Say when
+visual evidence is insufficient. Navigation guidance must use body-relative
+directions or stable nonvisual/structural cues, never color or another
+visual-only landmark as the sole cue.
 
-Before writing `TOOL_PROMPT`, analyze whether the requested task is achievable
-as one operation or contains genuinely dependent visual or reasoning
-subproblems. Default to the simpler prompt. A task that can be completed in one
-operation does not need steps, even if the issue description is long or contains
-several output-format requirements. Do not create steps merely to restate Task,
-Expected output, and Constraints / examples.
+The tool decides whether output appends, replaces, is partial, or is final. Do
+not access the WebSocket directly.
 
-Author the shortest high-quality fused prompt that preserves those issue fields.
-Include an unavailable-information fallback and request only an accessible,
-concise, audio-friendly final answer.
+## Safety and validation
 
-Generated tools serve blind and low-vision users. Ask for directly actionable
-information that does not depend only on visual landmarks the user may not
-identify (for example, a red sign or a person in blue). When spatial guidance
-is needed, prefer clock directions, left/right, approximate distance, relative
-position, named object types, and short movement instructions. Keep the final
-response concise and suitable for speech.
+Allowed:
 
-- If the task can be achieved in one operation, write one direct instruction
-  with no sequence or numbered steps. This includes simple recognition, OCR,
-  classification, and identification.
-- For a complex task, when a later conclusion depends on earlier visual
-  findings, put one concise ordered sequence of sub-tasks inside the single
-  fused prompt. The sequence may use numbered instructions when that improves
-  reliability. Ask the VLM to return only the final user-facing answer, not its
-  intermediate reasoning.
+- `litellm_utils.call_model`, `extract_text`, and
+  `call_openai_responses_model`;
+- OpenCV, NumPy, PIL, CLIP, and local helper functions;
+- normal Python control flow and asyncio orchestration;
+- runtime frame history, state, cancellation, and emission.
 
-These are prompt-level instructions for one shared helper call. Never turn them
-into runtime stages, multiple model calls, or custom routing. Any requested
-multi-model behavior belongs only in the literal `TOOL_POLICY`.
+Forbidden:
 
-### Prompt examples
+- raw API keys or environment-variable access;
+- direct provider SDKs or arbitrary networking;
+- WebSockets and backend transport internals;
+- subprocesses or unrestricted filesystem writes;
+- other clients, sessions, or shared backend globals.
 
-Simple task—use one direct instruction with no steps:
-
-```text
-Identify the visible hand gesture. Return only the gesture name; if no gesture
-is clear, say "No clear gesture."
-```
-
-Complex task—use one fused prompt with dependent ordered sub-tasks:
-
-```python
-from model_execution import execute_tool_policy
-
-TOOL_NAME = "empty_chair"
-EXECUTION_MODE = "take_photo"
-TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
-TOOL_PROMPT = """Follow this sequence using the same image:
-1. Identify chairs, benches, or other seating.
-2. Determine which visible seats are unoccupied.
-3. Select the nearest suitable option.
-4. Give concise spoken guidance toward it.
-If none is visible, say so. Return only the final guidance."""
-
-def main(image, input_data):
-    if image is None:
-        return "No camera image is available."
-    return execute_tool_policy(
-        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
-    )
-```
-
-The empty-chair example uses the default visible policy above: strategy
-`single`, model `gemini-3.1-flash-lite`. Make exactly one executor call. Do not add planner, router, specialist,
-verification, or provider calls. The shared policy executor owns model execution.
-
-## Streaming tools
-
-All streaming tools use hosted NVIDIA video through the shared runtime. Keep generated
-tools declarative and put event/scene behavior entirely in `TOOL_PROMPT`.
-
-### Hosted-video streaming tools
-
-Use `EXECUTION_MODE = "hosted_video_streaming"` only when the requested result
-requires recent history or comparison across time. Generate only `TOOL_NAME`,
-that execution mode, explicit literal `TOOL_POLICY`, required literal
-`VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`, and a task-specific
-`TOOL_PROMPT`. The runtime reads and validates the same policy for take-photo
-and independently scheduled streaming execution. The prompt must explain the
-chronological, early/late, before/after, duration, sequence, or state-change
-evidence the VLM should inspect. The shared
-runtime supplies the rolling buffer, MP4 encoding, hosted request, event filtering,
-deduplication, and output. Never implement RTSP/FFmpeg, frame buffering, async
-loops, provider calls, card parsing, before/after state, or take-photo imports.
-
-Temporal describes the **input context**: several ordered recent frames. It does
-not imply that every temporal tool has before/after fields or persistent state.
-Choose the output contract independently from the task:
-
-- Prefer concise plain text for recognition tasks such as a recent sign-language
-  gesture. Ask for only the final sentence or phrase and omit `OUTPUT_CONFIG`
-  unless filtering settings are needed.
-- Use a task-specific structured schema only when the runtime supports and the
-  task genuinely needs structured fields. The prompt must name those fields and
-  still yield a concise user-facing result through the runtime adapter.
-- Use explicit state-change fields only when the requested output depends on
-  comparing states.
-
-Never copy an unrelated tool's output schema. In particular,
-`OUTPUT_CONFIG = {"schema": "played_card_event"}` is exclusively for played-card
-detection. Only that explicit declaration may request card JSON or fields such
-as `before_cards`, `after_cards`, and `played_card`. Sign-language and other
-generic temporal tools must not mention or declare card fields.
-
-Although hosted-video declarations contain no `main` function, the shared Take
-Photo runtime reads the same `TOOL_PROMPT` and performs one single-image call.
-
-Supported explicit modes are `take_photo` and `hosted_video_streaming`.
-Never infer execution mode from the filename. Do not generate a `main` function for a hosted-video
-streaming tool. Never add FFmpeg, frame buffers, HTTP/provider calls, async loops,
-or inference logic to generated tools.
-
-## General conventions
-
-- Tools never import other tool modules. Shared utilities such as
-  `litellm_utils` are allowed.
-- Guard a missing image and catch errors with an audio-friendly error response.
-- Avoid GPU-only dependencies unless the issue explicitly requires one.
-- Reuse existing non-model utility patterns where appropriate.
-- Keep changes scoped to the requested tool and add a focused backend test.
+Use the simplest implementation satisfying the request. Old declarative
+`TOOL_POLICY` tools are compatibility-only; new code must not rely on the
+backend to choose models, compare frames, or orchestrate cascades.

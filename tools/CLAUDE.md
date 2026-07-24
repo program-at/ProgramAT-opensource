@@ -1,66 +1,49 @@
-# tools/ — ProgramAT vision tools
+# tools/ — executable assistive tools
 
-Each Python file is one assistive tool. The backend executes it with a camera
-image and speaks the returned value. Tools do not use WebSockets or import one
-another.
+Generated tools own their model choices, prompts, frame selection, temporal
+logic, orchestration, and output timing. The backend supplies decoded frames,
+isolated state, cancellation, and result transport.
 
-Expose `main(image, input_data)` with exactly two parameters. `image` is an
-OpenCV BGR array and `input_data` is a dictionary. Return concise,
-audio-friendly text; do not print.
-
-For a take-photo tool, use this shape:
+New and updated tools should declare `TOOL_NAME` and
+`EXECUTION_MODE = "take_photo"` and may implement:
 
 ```python
-from model_execution import execute_tool_policy
-
-TOOL_NAME = "tool_name"
-EXECUTION_MODE = "take_photo"
-TOOL_PROMPT = "One concise task-specific fused prompt."
-TOOL_POLICY = {"strategy": "single", "models": ["gemini-3.1-flash-lite"]}
-
-
-def main(image, input_data):
-    if image is None:
-        return "No camera image is available."
-    return execute_tool_policy(
-        image=image, prompt=TOOL_PROMPT, policy=TOOL_POLICY, tool_name=TOOL_NAME
-    )
+async def on_take_photo(runtime, image, input_data): ...
+async def on_stream_start(runtime, input_data): ...
+async def on_frame(runtime, frame): ...
+async def on_stream_stop(runtime): ...
 ```
 
-Tools must normally declare a literal `TOOL_POLICY` using the schema in
-`backend/strategy_registry.py` and pass it as `policy=TOOL_POLICY`. The runtime
-uses one `gemini-3.1-flash-lite` call only as a compatibility fallback for a
-missing or invalid policy. Do not implement custom model orchestration.
+`frame` has `frame_id`, `timestamp`, `image`, `width`, `height`, and
+`image_base64`. The minimal runtime exposes:
 
-`parallel_progressive` is opt-in and only for requests that explicitly want
-every model result as it completes. Use `parallel_first` for one winning result
-and `parallel_aggregate` for one combined result. A tool must never implement
-threads, async tasks, callbacks, cancellation, WebSockets, or output transport;
-the shared runtime owns that lifecycle.
+```python
+runtime.current_request_id
+runtime.current_frame
+runtime.get_recent_frames(count=None, seconds=None)
+runtime.get_state(key, default=None)
+runtime.set_state(key, value)
+runtime.clear_state()
+runtime.is_cancelled()
+await runtime.emit(text, partial=False, final=False, replace=False, metadata=None)
+```
 
-Make exactly one helper call and return it directly. Do not add another model or
-specialist call, verification pass, fallback model, model name, or provider SDK.
-Author one concise fused prompt following the detailed guidance in
-`.github/copilot-instructions.md`.
+Use `call_model()` from `litellm_utils` directly for configured LiteLLM models.
+Use `call_openai_responses_model()` only for models requiring the Responses API,
+and use `extract_text()` to normalize LiteLLM output. Model names must be
+explicit in tool code. Inspect `backend/model_registry.py` while authoring;
+default to `gemini/gemini-3.1-flash-lite-preview` for ordinary visual tasks.
 
-Static `take_photo` tools may also stream; each selected frame is processed
-independently through the same one-image prompt. Static tools must not declare
-`VIDEO_CONFIG` or keep temporal state.
+Tool helpers may use approved libraries such as OpenCV, NumPy, PIL, CLIP, and
+ordinary asyncio control flow. Tools decide how to compare frames, buffer
+history, suppress unchanged scenes, run models sequentially or concurrently,
+and emit one or many results. Check `runtime.is_cancelled()` and tool-owned
+scene/version state before emitting work that may have become stale.
 
-For `hosted_video_streaming`, declare `TOOL_NAME`, `EXECUTION_MODE`,
-`TOOL_PROMPT`, required literal `VIDEO_CONFIG`, and optional literal
-`OUTPUT_CONFIG` only. The prompt must describe the chronological evidence to
-compare. The shared runtime owns the continuous video
-session and output filtering. Do not import take-photo helpers or implement
-buffering, FFmpeg, model calls, asynchronous loops, or before/after state.
+Do not access environment variables or API keys, provider SDKs, WebSockets,
+arbitrary networks, subprocesses, other sessions, or the filesystem. Do not
+modify backend globals. Never provide visual-only navigation landmarks; use
+body-relative, tactile, auditory, or stable structural directions.
 
-Temporal input and output schema are separate decisions. Generic temporal
-recognition tools should request one concise plain-text result. Declare
-`OUTPUT_CONFIG = {"schema": "played_card_event"}` only for played-card detection;
-never use card fields for sign language or another unrelated task.
-
-Take Photo works for temporal tools through the shared runtime and supplies one
-current image to the same `TOOL_PROMPT`. Write temporal prompts to use ordered
-motion evidence when multiple frames exist, use only visible static evidence
-with one frame, and return a task-specific uncertainty response rather than
-inventing unseen motion.
+Old `main(image, input_data)` plus literal `TOOL_POLICY` tools remain supported
+temporarily, but do not use that contract for new or updated tools.

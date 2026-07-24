@@ -103,8 +103,19 @@ import tempfile
 import shutil
 import secrets
 import traceback
+import hashlib
 from difflib import SequenceMatcher
 from concurrent.futures import ThreadPoolExecutor
+from generated_tool_runtime import (
+    FrameStore,
+    ToolFrame,
+    ToolRuntime,
+    cancel_tasks as cancel_generated_tool_tasks,
+    has_executable_lifecycle,
+    invoke_tool_hook,
+    load_generated_tool,
+)
+from validate_generated_tools import validate_generated_tool_source
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / 'tools'
 if str(TOOLS_DIR) not in sys.path:
@@ -567,6 +578,210 @@ active_streaming_tools = {}
 # Cancelled on stop or when a new tool starts to prevent stale results arriving
 # after the tool has been swapped out.
 active_streaming_tasks: dict = {}
+
+
+def _tool_source_version(tool_code: str) -> str:
+    return hashlib.sha256((tool_code or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _generated_input_data(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"value": value}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+    return {}
+
+
+def _tool_frame(
+    frame_id: int, image, image_base64: str = "", timestamp: Optional[float] = None
+) -> ToolFrame:
+    height, width = image.shape[:2] if image is not None else (0, 0)
+    return ToolFrame(
+        frame_id=frame_id,
+        timestamp=float(timestamp if timestamp is not None else time.time()),
+        image=image,
+        width=int(width),
+        height=int(height),
+        image_base64=image_base64 or "",
+    )
+
+
+def _generated_emit_callback(websocket, client_id: str, owner: Dict[str, Any], mode: str):
+    async def emit(event: Dict[str, Any]) -> bool:
+        if owner.get("cancelled"):
+            return False
+        if mode == "streaming" and active_streaming_tools.get(client_id) is not owner:
+            return False
+        payload = {
+            "type": "tool_progress_result",
+            "invocation_id": event["invocation_id"],
+            "request_id": event["request_id"],
+            "tool_name": event["tool_name"],
+            "result_index": event["result_index"],
+            "text": event["text"],
+            "result": event["text"],
+            "partial": event["partial"],
+            "final": event["final"],
+            "replace": event["replace"],
+            "metadata": event["metadata"],
+            "mode": mode,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if event["result_index"] == 1:
+            await websocket.send(json.dumps({
+                "type": "tool_progress_started",
+                "invocation_id": event["invocation_id"],
+                "tool_name": event["tool_name"],
+                "mode": mode,
+                "timestamp": datetime.now().isoformat(),
+            }))
+        await websocket.send(json.dumps(payload))
+        return True
+
+    return emit
+
+
+def _build_generated_runtime(
+    websocket,
+    client_id: str,
+    owner: Dict[str, Any],
+    *,
+    tool_name: str,
+    tool_code: str,
+    mode: str,
+    request_id: Optional[str] = None,
+) -> ToolRuntime:
+    return ToolRuntime(
+        client_id=client_id,
+        tool_name=tool_name,
+        tool_version=_tool_source_version(tool_code),
+        session_id=owner.setdefault("generated_session_id", secrets.token_hex(16)),
+        request_id=request_id,
+        frame_store=owner.setdefault("frame_store", FrameStore()),
+        emit_callback=_generated_emit_callback(websocket, client_id, owner, mode),
+        cancelled=lambda: bool(owner.get("cancelled")) or (
+            mode == "streaming" and active_streaming_tools.get(client_id) is not owner
+        ),
+    )
+
+
+def _validated_generated_namespace(tool_name: str, tool_code: str) -> Dict[str, Any]:
+    rel_path = Path("tools") / f"{tool_name}.py"
+    failures = validate_generated_tool_source(tool_code, rel_path)
+    if failures:
+        raise ValueError("Unsafe generated tool source: " + "; ".join(failures))
+    return load_generated_tool(
+        tool_code,
+        filename=str(Path(__file__).parent.parent / rel_path),
+    )
+
+
+async def _initialize_executable_streaming_tool(
+    websocket, client_id: str, tool_config: Dict[str, Any]
+) -> None:
+    tool = tool_config["tool"]
+    tool_code = tool["code"]
+    runtime = _build_generated_runtime(
+        websocket,
+        client_id,
+        tool_config,
+        tool_name=tool["name"],
+        tool_code=tool_code,
+        mode="streaming",
+    )
+    namespace = _validated_generated_namespace(tool["name"], tool_code)
+    tool_config.update({
+        "executable_lifecycle": True,
+        "generated_runtime": runtime,
+        "generated_namespace": namespace,
+        "generated_tasks": set(),
+        "generated_frame_sequence": 0,
+    })
+    await invoke_tool_hook(
+        namespace, "on_stream_start", runtime, _generated_input_data(tool.get("input"))
+    )
+
+
+async def _dispatch_executable_tool_frame(
+    client_id: str,
+    tool_config: Dict[str, Any],
+    image,
+    image_base64: str,
+    timestamp: float,
+) -> None:
+    if active_streaming_tools.get(client_id) is not tool_config:
+        return
+    if len(tool_config.get("generated_tasks") or ()) >= 8:
+        logger.info(
+            "[GeneratedTool] frame dropped client=%s tool=%s reason=pending_hook_limit",
+            client_id,
+            tool_config["tool"]["name"],
+        )
+        return
+    sequence = int(tool_config.get("generated_frame_sequence", 0)) + 1
+    tool_config["generated_frame_sequence"] = sequence
+    frame = _tool_frame(sequence, image, image_base64, timestamp)
+    runtime = tool_config["generated_runtime"]
+    runtime._frames.add(frame)
+    task = asyncio.create_task(
+        invoke_tool_hook(tool_config["generated_namespace"], "on_frame", runtime, frame)
+    )
+    tasks = tool_config["generated_tasks"]
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    task.add_done_callback(_log_streaming_task_error)
+
+
+async def _stop_executable_streaming_tool(tool_config: Dict[str, Any]) -> None:
+    if not tool_config.get("executable_lifecycle"):
+        return
+    tool_config["cancelled"] = True
+    runtime = tool_config.get("generated_runtime")
+    namespace = tool_config.get("generated_namespace") or {}
+    if runtime is not None:
+        try:
+            await invoke_tool_hook(namespace, "on_stream_stop", runtime)
+        except Exception:
+            logger.exception("[GeneratedTool] on_stream_stop failed tool=%s", runtime.tool_name)
+    await cancel_generated_tool_tasks(tool_config.get("generated_tasks") or ())
+    if runtime is not None:
+        runtime.clear_state()
+        runtime._frames.clear()
+
+
+async def _run_executable_take_photo(
+    websocket,
+    client_id: str,
+    tool_name: str,
+    tool_code: str,
+    image,
+    image_base64: str,
+    input_data: Any,
+) -> tuple[Any, int]:
+    owner: Dict[str, Any] = {"cancelled": False}
+    runtime = _build_generated_runtime(
+        websocket,
+        client_id,
+        owner,
+        tool_name=tool_name,
+        tool_code=tool_code,
+        mode="take-photo",
+    )
+    runtime._frames.add(_tool_frame(1, image, image_base64))
+    namespace = _validated_generated_namespace(tool_name, tool_code)
+    try:
+        result = await invoke_tool_hook(
+            namespace, "on_take_photo", runtime, image, input_data
+        )
+        return result, runtime._emit_index
+    finally:
+        owner["cancelled"] = True
+        runtime.clear_state()
+        runtime._frames.clear()
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -1099,6 +1314,7 @@ async def _cleanup_policy_streaming_registration(client_id: str) -> None:
     config = active_streaming_tools.pop(client_id, None)
     if config is None:
         return
+    await _stop_executable_streaming_tool(config)
     for key in ('cascade_task', 'debounce_task'):
         pending = config.get(key)
         if pending is not None and not pending.done():
@@ -7494,6 +7710,8 @@ async def handle_client(websocket):
                     tool_path = data.get('tool_path', '')
                     
                     previous_config = active_streaming_tools.get(client_id)
+                    if previous_config is not None:
+                        await _stop_executable_streaming_tool(previous_config)
                     previous_task = previous_config.get('cascade_task') if previous_config else None
                     if previous_task is not None and not previous_task.done():
                         previous_task.cancel()
@@ -7538,6 +7756,32 @@ async def handle_client(websocket):
                         active_streaming_tools[client_id]['forced_key_frame_interval_seconds'],
                         active_streaming_tools[client_id]['min_stable_confirmations'],
                     )
+                    if has_executable_lifecycle(tool_code):
+                        try:
+                            await _initialize_executable_streaming_tool(
+                                websocket, client_id, active_streaming_tools[client_id]
+                            )
+                            logger.info(
+                                "[GeneratedTool] executable streaming lifecycle active "
+                                "client=%s tool=%s",
+                                client_id,
+                                tool_name,
+                            )
+                        except Exception as exc:
+                            active_streaming_tools[client_id]["cancelled"] = True
+                            del active_streaming_tools[client_id]
+                            logger.exception(
+                                "[GeneratedTool] stream initialization failed tool=%s",
+                                tool_name,
+                            )
+                            await websocket.send(json.dumps({
+                                "type": "tool_stream_result",
+                                "tool_name": tool_name,
+                                "status": "error",
+                                "result": f"Unable to start generated tool: {exc}",
+                                "timestamp": datetime.now().isoformat(),
+                            }))
+                            continue
                     
                     # Custom GPT mode: use Gemini Live instead of code execution
                     if custom_gpt and gpt_query and gemini_live_manager:
@@ -7647,6 +7891,7 @@ async def handle_client(websocket):
                     if client_id in active_streaming_tools:
                         stopping_config = active_streaming_tools[client_id]
                         tool_name = stopping_config['tool']['name']
+                        await _stop_executable_streaming_tool(stopping_config)
                         _obsolete_progressive_invocation(client_id, tool_name)
                         cascade_task = stopping_config.get('cascade_task')
                         if cascade_task is not None and not cascade_task.done():
@@ -8148,14 +8393,24 @@ async def handle_client(websocket):
                         last_frame['image'] is not None
                         and client_id in active_streaming_tools
                     ):
-                        logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
-                        await _dispatch_active_streaming_frame(
-                            websocket,
-                            client_id,
-                            last_frame['image'],
-                            data_field['base64Image'],
-                            frame_timestamp,
-                        )
+                        tool_config = active_streaming_tools[client_id]
+                        if tool_config.get("executable_lifecycle"):
+                            await _dispatch_executable_tool_frame(
+                                client_id,
+                                tool_config,
+                                last_frame["image"],
+                                data_field["base64Image"],
+                                frame_timestamp,
+                            )
+                        else:
+                            logger.debug("[Streaming] frame received; scheduling client=%s", client_id)
+                            await _dispatch_active_streaming_frame(
+                                websocket,
+                                client_id,
+                                last_frame['image'],
+                                data_field['base64Image'],
+                                frame_timestamp,
+                            )
                     elif last_frame['image'] is None:
                         logger.debug(f"No image available for {client_id}")
                     elif client_id not in active_streaming_tools:
@@ -8382,6 +8637,27 @@ async def handle_client(websocket):
                                 frame_image = last_frame['image']
                                 frame_base64 = last_frame['base64']
 
+                            if has_executable_lifecycle(resolved_tool_code):
+                                lifecycle_result, emitted_count = await _run_executable_take_photo(
+                                    websocket,
+                                    client_id,
+                                    tool_name,
+                                    resolved_tool_code,
+                                    frame_image,
+                                    frame_base64 or "",
+                                    parsed_input,
+                                )
+                                if lifecycle_result is not None and emitted_count == 0:
+                                    response_data = _build_mobile_tool_response(
+                                        'tool_result',
+                                        tool_name,
+                                        lifecycle_result,
+                                        datetime.now(),
+                                    )
+                                    _log_final_tool_response(tool_name, response_data)
+                                    await websocket.send(json.dumps(response_data))
+                                continue
+
                             if _is_progressive_tool_policy(resolved_tool_code):
                                 await _start_progressive_invocation(
                                     websocket,
@@ -8605,6 +8881,7 @@ async def handle_client(websocket):
         # Clean up streaming tools for this client
         if client_id in active_streaming_tools:
             logger.info(f"Stopping streaming tool for disconnected client {client_id}")
+            await _stop_executable_streaming_tool(active_streaming_tools[client_id])
             # Clean up Gemini Live session if active
             if active_streaming_tools[client_id].get('gemini_live') and gemini_live_manager:
                 await gemini_live_manager.stop_session(client_id)

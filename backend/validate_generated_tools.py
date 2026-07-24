@@ -27,13 +27,17 @@ FORBIDDEN_PATTERNS = [
     ("DEFAULT_MODEL constant", re.compile(r"\bDEFAULT_MODEL\b")),
     ("local ModelRouter class", re.compile(r"\bclass\s+ModelRouter\b")),
     ("COCO class list", re.compile(r"\bCOCO_CLASSES\b")),
-    ("model registry", re.compile(r"\b(?:MODEL_REGISTRY|model_registry|available_models|provider_registry)\b")),
     ("provider fallback logic", re.compile(r"\b(?:fallback_models|fallback_model|provider_fallback|fallback_provider)\b")),
-    ("custom model orchestration", re.compile(r"\b(?:execute_resolved_tool_policy|call_model|ThreadPoolExecutor|as_completed)\b")),
-    ("custom concurrency import", re.compile(r"^\s*(?:import|from)\s+(?:asyncio|threading|concurrent(?:\.futures)?|multiprocessing|queue|subprocess)\b", re.MULTILINE)),
-    ("custom concurrency call", re.compile(r"\b(?:create_task|ensure_future|gather|to_thread|start_new_thread|ProcessPoolExecutor|submit)\s*\(")),
-    ("custom output transport import", re.compile(r"^\s*(?:import|from)\s+(?:websockets?|aiohttp|requests)\b", re.MULTILINE)),
-    ("custom output transport", re.compile(r"\b(?:websocket|event_emitter|result_callback|response_callback|on_progress|is_cancelled)\b", re.IGNORECASE)),
+    ("backend policy orchestration", re.compile(r"\bexecute_resolved_tool_policy\b")),
+    ("unsafe process import", re.compile(r"^\s*(?:import|from)\s+(?:subprocess|multiprocessing)\b", re.MULTILINE)),
+    ("unsafe environment access", re.compile(r"^\s*(?:import|from)\s+(?:os|dotenv)\b|\bos\s*\.\s*(?:environ|getenv)\b", re.MULTILINE)),
+    ("unsafe dynamic import", re.compile(r"\b(?:__import__|import_module)\s*\(")),
+    ("unsafe backend import", re.compile(r"^\s*(?:import|from)\s+(?:stream_server|generated_tool_runtime|tool_policy_runtime)\b", re.MULTILINE)),
+    ("unsafe socket import", re.compile(r"^\s*(?:import|from)\s+socket\b", re.MULTILINE)),
+    ("custom output transport import", re.compile(r"^\s*(?:import|from)\s+(?:websockets?|aiohttp|requests|httpx|urllib|http\.client)\b", re.MULTILINE)),
+    ("custom output transport", re.compile(r"\b(?:websocket|event_emitter|result_callback|response_callback|on_progress)\b", re.IGNORECASE)),
+    ("raw credential access", re.compile(r"\b(?:api_key|explicit_api_key|GEMINI_API_KEY|OPENAI_API_KEY|ANTHROPIC_API_KEY)\b")),
+    ("filesystem access", re.compile(r"\b(?:open|Path)\s*\(|\.(?:write_text|write_bytes|unlink|mkdir|rename|replace)\s*\(")),
     ("model file reference", re.compile(r"\.pt\b|['\"][^'\"]+\.pt['\"]")),
     ("model file discovery", re.compile(r"\b(?:glob|rglob)\s*\([^)]*\.pt[^)]*\)|os\.walk\s*\(")),
 ]
@@ -160,7 +164,7 @@ def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> L
 
 
 def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
-    """Enforce the unified single-call take-photo generation contract."""
+    """Validate executable lifecycle tools and the temporary declarative fallback."""
     try:
         tree = ast.parse(tool_text)
     except SyntaxError:
@@ -168,6 +172,49 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
     constants = _extract_literal_constants(tree)
     if constants.get('EXECUTION_MODE') != 'take_photo':
         return []
+    lifecycle = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in {"on_take_photo", "on_stream_start", "on_frame", "on_stream_stop"}
+    }
+    if lifecycle:
+        failures = []
+        if "on_take_photo" not in lifecycle and "on_frame" not in lifecycle:
+            failures.append(
+                f"{rel_path}: executable tools require on_take_photo() or on_frame()."
+            )
+        if not isinstance(constants.get("TOOL_NAME"), str):
+            failures.append(f"{rel_path}: executable tools require one string TOOL_NAME.")
+        if "VIDEO_CONFIG" in constants:
+            failures.append(
+                f"{rel_path}: executable tools select recent frames in code and must not declare VIDEO_CONFIG."
+            )
+        imported_names = {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.Import, ast.ImportFrom))
+            for alias in node.names
+        }
+        if any(name in {"litellm", "openai", "anthropic"} for name in imported_names):
+            failures.append(
+                f"{rel_path}: tools must use litellm_utils instead of provider SDKs."
+            )
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else ""
+            )
+            if call_name not in {"call_model", "call_openai_responses_model"}:
+                continue
+            if not node.args and not any(keyword.arg == "model_name" for keyword in node.keywords):
+                failures.append(
+                    f"{rel_path}:{node.lineno}: model calls require an explicit model name."
+                )
+        return failures
 
     policy_calls = [
         node for node in ast.walk(tree)
@@ -424,6 +471,24 @@ def validate_files(paths: Iterable[Path], issue_text: Optional[str] = None) -> L
             failures.extend(validate_take_photo_tool(text, issue_text, rel_path))
             failures.extend(validate_rtvi_streaming_tool(text, issue_text, rel_path))
 
+    return failures
+
+
+def validate_generated_tool_source(
+    tool_text: str, rel_path: Path = Path("tools/generated_tool.py")
+) -> List[str]:
+    """Validate executable source immediately before the backend loads it."""
+    failures: List[str] = []
+    for label, pattern in FORBIDDEN_PATTERNS:
+        match = pattern.search(tool_text)
+        if match:
+            line_number = tool_text.count("\n", 0, match.start()) + 1
+            failures.append(
+                f"{rel_path}:{line_number}: forbidden generated-tool pattern: {label}"
+            )
+    failures.extend(validate_no_stringified_copilot_results(tool_text, rel_path))
+    failures.extend(validate_take_photo_tool(tool_text, "runtime", rel_path))
+    failures.extend(validate_rtvi_streaming_tool(tool_text, "runtime", rel_path))
     return failures
 
 

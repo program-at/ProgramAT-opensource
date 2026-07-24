@@ -54,7 +54,7 @@ def load_stream_server_function(name: str):
 class TestIssueTemplateGuidance(unittest.TestCase):
     """Test Copilot-facing issue template guidance."""
 
-    def test_visual_at_template_uses_explicit_tool_policy(self):
+    def test_visual_at_template_uses_executable_tool_lifecycle(self):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
@@ -62,40 +62,30 @@ class TestIssueTemplateGuidance(unittest.TestCase):
             self.assertIn(f"## {heading}", template)
             self.assertIn(f"## {heading}\n\n<!--", template)
         self.assertNotIn("call_take_photo_vlm", template)
-        self.assertIn("execute_tool_policy", template)
-        self.assertIn("TOOL_POLICY", template)
+        self.assertNotIn("execute_tool_policy", template)
+        self.assertNotIn("TOOL_POLICY", template)
         self.assertIn("TOOL_PROMPT", template)
         self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
+        self.assertIn("call_model()", template)
+        self.assertIn("on_take_photo", template)
+        self.assertIn("on_frame", template)
+        self.assertIn("runtime.emit", template)
 
         instructions_path = template_path.parent.parent / "copilot-instructions.md"
         instructions = instructions_path.read_text(encoding="utf-8")
         self.assertTrue(instructions.startswith("# ProgramAT Copilot instructions\n"))
-        self.assertIn("### Prompt examples", instructions)
-        self.assertIn("Simple task—use one direct instruction with no steps", instructions)
-        self.assertIn("Complex task—use one fused prompt", instructions)
-        self.assertEqual(instructions.count("```text"), 1)
-        self.assertIn('TOOL_NAME = "empty_chair"', instructions)
-        self.assertIn('"models": ["gemini-3.1-flash-lite"]', instructions)
-        self.assertIn("requested task is achievable", instructions)
-        self.assertIn("as one operation", instructions)
-        self.assertIn("Default to the simpler prompt", instructions)
-        self.assertIn("does not need steps", instructions)
-        self.assertIn("Do not create steps merely to restate", instructions)
-        self.assertIn("one direct instruction", instructions)
-        self.assertIn("ordered sequence of sub-tasks inside the single", instructions)
-        self.assertIn("may use numbered instructions", instructions)
-        self.assertIn("Never turn them", instructions)
-        self.assertIn("into runtime stages, multiple model calls", instructions)
-        self.assertIn("parallel_progressive", instructions)
-        self.assertIn("modify only that", instructions)
-        self.assertIn("tool file; do not modify backend or frontend files", instructions)
-        self.assertIn("Generated tools must", instructions)
-        self.assertIn("not implement concurrency, callbacks, cancellation", instructions)
+        self.assertIn("call_model", instructions)
+        self.assertIn("call_openai_responses_model", instructions)
+        self.assertIn("get_recent_frames", instructions)
+        self.assertIn("get_state", instructions)
+        self.assertIn("asyncio.gather", instructions)
+        self.assertIn("Progressive parallel output", instructions)
+        self.assertIn("Different Take Photo and Streaming behavior", instructions)
         self.assertIn("blind and low-vision users", instructions)
-        self.assertIn("clock directions, left/right, approximate distance", instructions)
-        self.assertIn("does not depend only on visual landmarks", instructions)
+        self.assertIn("never color", instructions)
+        self.assertIn("Old declarative", instructions)
 
         self.assertIn("### Take-photo implementation guidance", template)
         self.assertIn("Default to no steps", template)
@@ -103,13 +93,8 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("Do not create steps merely to restate", template)
         self.assertIn("numbered instructions", template)
         self.assertIn("are optional when they improve reliability", template)
-        self.assertIn("Never turn", template)
-        self.assertIn("multiple model calls", template)
-        self.assertIn("hosted_video_streaming", template)
         self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("runtime owns FFmpeg clip encoding", template)
-        self.assertIn("Hosted-video streaming tools", instructions)
-        self.assertIn("Never infer execution mode from the filename", instructions)
+        self.assertIn("get_recent_frames", template)
 
     def test_temporal_sign_language_request_cannot_be_downgraded_to_take_photo(self):
         request = """Problem:

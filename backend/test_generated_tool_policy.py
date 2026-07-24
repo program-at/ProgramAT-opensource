@@ -77,7 +77,7 @@ class GeneratedToolPolicyValidationTests(unittest.TestCase):
         )
         self.assertTrue(any("custom routing loop" in failure for failure in self.validate(looped)))
 
-    def test_guardrails_forbid_tool_owned_concurrency_and_transport(self):
+    def test_guardrails_allow_asyncio_but_forbid_processes_and_transport(self):
         forbidden_source = (
             "import asyncio\nimport multiprocessing\nimport websockets\n"
             "result_callback = object()\n"
@@ -88,8 +88,9 @@ class GeneratedToolPolicyValidationTests(unittest.TestCase):
             label for label, pattern in FORBIDDEN_PATTERNS
             if pattern.search(forbidden_source)
         ]
-        self.assertIn("custom concurrency import", matched)
-        self.assertIn("custom concurrency call", matched)
+        self.assertNotIn("custom concurrency import", matched)
+        self.assertNotIn("custom concurrency call", matched)
+        self.assertIn("unsafe process import", matched)
         self.assertIn("custom output transport import", matched)
         self.assertIn("custom output transport", matched)
 
