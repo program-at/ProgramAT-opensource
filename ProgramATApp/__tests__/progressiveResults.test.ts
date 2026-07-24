@@ -1,10 +1,10 @@
 import {
-  appendProgressiveResult,
   acceptsProgressiveResult,
   acceptsStreamingProgressEvent,
   formatProgressiveResult,
   progressiveInvocationIsRunning,
   progressiveResultModel,
+  progressiveResultModelLabel,
 } from '../progressiveResults';
 
 describe('progressive result lifecycle', () => {
@@ -42,28 +42,28 @@ describe('progressive result lifecycle', () => {
     expect(progressiveResultModel({
       metadata: {model: 'gemini/gemini-3.1-flash-lite-preview'},
     })).toBe('gemini/gemini-3.1-flash-lite-preview');
+    expect(progressiveResultModelLabel({
+      model: 'moondream/moondream3-preview',
+    })).toBe('Moondream');
+    expect(progressiveResultModelLabel({
+      model: 'gemini/gemini-3.1-flash-lite-preview',
+    })).toBe('Gemini');
+    expect(progressiveResultModelLabel({model: 'gpt-5'})).toBe('GPT');
   });
 
-  it('accumulates results and leaves them intact on the final marker', () => {
-    let displayed: string[] = [];
-    displayed = appendProgressiveResult(displayed, {
-      model: 'moondream',
-      text: 'First answer',
-      final: false,
-    });
-    displayed = appendProgressiveResult(displayed, {
-      metadata: {model: 'gemini'},
-      text: 'Second answer',
-      final: false,
-    });
-    const beforeFinal = displayed;
-    displayed = appendProgressiveResult(displayed, {final: true, text: ''});
-
-    expect(displayed).toEqual([
-      'moondream: First answer',
-      'gemini: Second answer',
-    ]);
-    expect(displayed).toBe(beforeFinal);
+  it('formats each result for replacement with exactly one short prefix', () => {
+    expect(formatProgressiveResult({
+      model: 'moondream/moondream3-preview',
+      text: 'Moondream: First answer',
+    })).toBe('Moondream: First answer');
+    expect(formatProgressiveResult({
+      model: 'gemini/gemini-3.1-flash-lite-preview',
+      text: 'Gemini: Second answer',
+    })).toBe('Gemini: Second answer');
+    expect(formatProgressiveResult({
+      model: 'gpt-5',
+      text: 'GPT: Third answer',
+    })).toBe('GPT: Third answer');
     expect(formatProgressiveResult({final: true, text: ''})).toBeNull();
   });
 });

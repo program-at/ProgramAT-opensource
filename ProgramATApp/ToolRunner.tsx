@@ -29,7 +29,6 @@ import Voice, {
   SpeechErrorEvent,
 } from '@react-native-voice/voice';
 import {
-  appendProgressiveResult,
   acceptsProgressiveResult,
   acceptsStreamingProgressEvent,
   formatProgressiveResult,
@@ -79,7 +78,7 @@ export default function ToolRunner({
   const [toolOutput, setToolOutput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [isStreamProcessing, setIsStreamProcessing] = useState(false);
+  const [, setIsStreamProcessing] = useState(false);
   const isStreamingRef = useRef(false); // Ref to avoid stale closures in cleanup effects
   const [audioEnabled, setAudioEnabled] = useState(true); // Toggle audio output
   const [conversationMode, setConversationMode] = useState(false); // Toggle conversation mode
@@ -92,7 +91,6 @@ export default function ToolRunner({
   const lastStreamingExecutionRef = useRef(0);
   const activeProgressiveInvocationRef = useRef<string | null>(null);
   const lastProgressiveResultIndexRef = useRef(0);
-  const progressiveResultsRef = useRef<string[]>([]);
   
   // Custom GPT follow-up state
   const [isCustomGptStreaming, setIsCustomGptStreaming] = useState(false);
@@ -599,7 +597,6 @@ export default function ToolRunner({
           );
           activeProgressiveInvocationRef.current = message.invocation_id;
           lastProgressiveResultIndexRef.current = 0;
-          progressiveResultsRef.current = [];
           if (message.mode === 'streaming') {
             setIsStreamProcessing(true);
           } else {
@@ -640,11 +637,7 @@ export default function ToolRunner({
           }
           const labeledText = formatProgressiveResult(message);
           if (labeledText) {
-            progressiveResultsRef.current = appendProgressiveResult(
-              progressiveResultsRef.current,
-              message,
-            );
-            setToolOutput(progressiveResultsRef.current.join('\n\n'));
+            setToolOutput(labeledText);
             if (audioEnabled) {
               AudioOutputService.play({
                 type: 'speech',
@@ -1041,7 +1034,6 @@ export default function ToolRunner({
     setToolOutput('Running tool...');
     activeProgressiveInvocationRef.current = null;
     lastProgressiveResultIndexRef.current = 0;
-    progressiveResultsRef.current = [];
 
     // Generate conversation ID if this is a conversation run
     const conversationId = isConversation ? `conv_${Date.now()}` : undefined;
@@ -1109,7 +1101,6 @@ export default function ToolRunner({
     setIsRunning(false);
     activeProgressiveInvocationRef.current = null;
     lastProgressiveResultIndexRef.current = 0;
-    progressiveResultsRef.current = [];
     lastStreamingExecutionRef.current = 0;
     BeepService.stopLoadingSound();
     setToolOutput('Starting stream...');
@@ -1172,7 +1163,6 @@ export default function ToolRunner({
     isStreamingRef.current = false;
     activeProgressiveInvocationRef.current = null;
     lastProgressiveResultIndexRef.current = 0;
-    progressiveResultsRef.current = [];
     lastStreamingExecutionRef.current = 0;
     setIsStreamProcessing(false);
     setIsRunning(false);
@@ -1344,12 +1334,6 @@ export default function ToolRunner({
                   </Text>
                 </TouchableOpacity>
               </View>
-              {isStreaming && isStreamProcessing && (
-                <Text style={styles.streamProcessingStatus} accessibilityLiveRegion="polite">
-                  Analyzing current scene…
-                </Text>
-              )}
-
               {/* Follow-up mic button - shown during custom GPT streaming */}
               {isCustomGptStreaming && isStreaming && (
                 <View style={styles.followupSection}>
@@ -1728,12 +1712,6 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: {
     opacity: 0.5,
-  },
-  streamProcessingStatus: {
-    color: '#666',
-    fontSize: 12,
-    marginTop: 4,
-    textAlign: 'center',
   },
   runButton: {
     backgroundColor: '#4CAF50',

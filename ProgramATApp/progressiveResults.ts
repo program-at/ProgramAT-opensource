@@ -44,21 +44,38 @@ export function progressiveResultModel(
   return typeof model === 'string' && model.trim() ? model.trim() : null;
 }
 
+export function progressiveResultModelLabel(
+  event: ProgressiveResultEvent,
+): string | null {
+  const model = progressiveResultModel(event)?.toLowerCase();
+  if (!model) {
+    return null;
+  }
+  if (model.includes('moondream')) {
+    return 'Moondream';
+  }
+  if (model.includes('gemini')) {
+    return 'Gemini';
+  }
+  if (model.includes('gpt') || model.includes('openai')) {
+    return 'GPT';
+  }
+  return null;
+}
+
 export function formatProgressiveResult(
   event: ProgressiveResultEvent,
 ): string | null {
   if (event.final || typeof event.text !== 'string' || !event.text.trim()) {
     return null;
   }
-  const text = event.text.trim();
+  let text = event.text.trim();
   const model = progressiveResultModel(event);
-  return model ? `${model}: ${text}` : text;
-}
-
-export function appendProgressiveResult(
-  existing: string[],
-  event: ProgressiveResultEvent,
-): string[] {
-  const formatted = formatProgressiveResult(event);
-  return formatted ? [...existing, formatted] : existing;
+  const label = progressiveResultModelLabel(event);
+  const prefixes = [model, 'Moondream', 'Gemini', 'GPT'].filter(Boolean) as string[];
+  for (const prefix of prefixes) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    text = text.replace(new RegExp(`^${escaped}\\s*:\\s*`, 'i'), '').trim();
+  }
+  return label ? `${label}: ${text}` : text;
 }
