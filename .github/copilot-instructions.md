@@ -29,11 +29,33 @@ Every visual tool should support Take Photo unless a single image is genuinely m
 
 ## One shared prompt
 
-Build one `TOOL_PROMPT` from the task, expected output, constraints, and examples, and use it in both Take Photo and Streaming. Do not create mode-specific prompts unless the user explicitly requires different instructions and sharing is genuinely impossible.
+Build one `TOOL_PROMPT` from the task, expected output, constraints, and examples, and use it in both Take Photo and Streaming.
 
-Default to one direct instruction. Add a concise ordered sequence only when a later conclusion depends on earlier visual findings; do not turn issue fields into artificial steps. The prompt should preserve the requested output, be concise and speech-ready for blind and low-vision users, normalize a stable format when useful, and state when evidence is insufficient. It must work with one image or several chronological frames: never invent motion from one image, and use chronological order when several frames are supplied.
+Before writing it, briefly decide whether one direct instruction is enough or whether the task has dependent parts that benefit from a few ordered steps:
 
-Take Photo and Streaming may still use different models, frames, timing, orchestration, state, and output behavior while sharing this prompt.
+- If one instruction is enough, keep it direct and do not add steps.
+- If later conclusions depend on earlier findings, put a short numbered sequence such as 1, 2, 3 inside the same `TOOL_PROMPT`.
+- Do not create separate prompts, planner stages, or model calls for individual steps.
+- Do not add steps merely to restate the issue fields.
+
+```python
+TOOL_PROMPT = (
+    "Assist a blind user in finding an indoor exit. "
+    "1. Find visible doors, doorways, or exit signs. "
+    "2. Decide which one is the most likely exit. "
+    "3. Report its clock-face direction and give concise guidance toward it."
+)
+```
+
+A simple task should stay simple:
+
+```python
+TOOL_PROMPT = "Read the medication label and report the text concisely."
+```
+
+The prompt should preserve the requested output, be concise and speech-ready for blind and low-vision users, normalize a stable format when useful, and state when evidence is insufficient. It must work with one image or several chronological frames: never invent motion from one image, and use chronological order when several frames are supplied.
+
+Take Photo and Streaming may use different models, frames, timing, orchestration, state, and output behavior while sharing this prompt.
 
 ## Runtime API
 
@@ -72,7 +94,7 @@ response = await asyncio.to_thread(
 text = extract_text(response)
 ```
 
-Use `call_openai_responses_model()` only for a configured model that requires the Responses API. Tools may call one or several models, branch on results, retry appropriately, or use normal asyncio concurrency.
+Use `call_openai_responses_model()` only for a configured model that requires the Responses API. Do not split prompt steps into separate model calls. Take Photo and Streaming may each choose the model appropriate to their entry point.
 
 ## Entry-point behavior
 
@@ -125,4 +147,4 @@ Use body-relative directions or stable nonvisual and structural cues for navigat
 
 - Exit Finder: Take Photo analyzes one image; Streaming analyzes a changed latest frame. Both use the same prompt and no unnecessary temporal window.
 - Hand Gesture Identifier: Take Photo reports a visible static posture and uncertainty about motion; Streaming may pass several chronological frames to the same prompt.
-- Uber Finder: Take Photo may use an accuracy-oriented model or cascade; Streaming may use a faster model and update only on scene changes, still using the same task prompt.
+- Uber Finder: Take Photo may use an accuracy-oriented model; Streaming may use a faster model and update only on scene changes, still using the same task prompt.
