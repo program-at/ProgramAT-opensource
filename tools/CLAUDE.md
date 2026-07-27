@@ -1,11 +1,6 @@
 # tools/ — executable assistive tools
 
-Generated tools own their model choices, prompts, frame selection, temporal
-logic, orchestration, and output timing. The backend supplies decoded frames,
-isolated state, cancellation, and result transport.
-
-New and updated tools should declare `TOOL_NAME` and
-`EXECUTION_MODE = "take_photo"` and may implement:
+Follow `.github/copilot-instructions.md` as the generated-tool contract. New and updated tools normally define `TOOL_NAME`, one shared `TOOL_PROMPT`, and both Take Photo and Streaming lifecycle hooks:
 
 ```python
 async def on_take_photo(runtime, image, input_data): ...
@@ -14,36 +9,8 @@ async def on_frame(runtime, frame): ...
 async def on_stream_stop(runtime): ...
 ```
 
-`frame` has `frame_id`, `timestamp`, `image`, `width`, `height`, and
-`image_base64`. The minimal runtime exposes:
+The tool owns model choices, frame selection, temporal logic, orchestration, state, and output timing. Use approved model helpers and runtime frames, state, cancellation, and emission. Keep output concise and accessible.
 
-```python
-runtime.current_request_id
-runtime.current_frame
-runtime.get_recent_frames(count=None, seconds=None)
-runtime.get_state(key, default=None)
-runtime.set_state(key, value)
-runtime.clear_state()
-runtime.is_cancelled()
-await runtime.emit(text, partial=False, final=False, replace=False, metadata=None)
-```
+Do not access credentials, environment variables, provider SDKs, arbitrary networks, WebSockets, subprocesses, unrestricted filesystem writes, other sessions, or backend-private globals.
 
-Use `call_model()` from `litellm_utils` directly for configured LiteLLM models.
-Use `call_openai_responses_model()` only for models requiring the Responses API,
-and use `extract_text()` to normalize LiteLLM output. Model names must be
-explicit in tool code. Inspect `backend/model_registry.py` while authoring;
-default to `gemini/gemini-3.1-flash-lite-preview` for ordinary visual tasks.
-
-Tool helpers may use approved libraries such as OpenCV, NumPy, PIL, CLIP, and
-ordinary asyncio control flow. Tools decide how to compare frames, buffer
-history, suppress unchanged scenes, run models sequentially or concurrently,
-and emit one or many results. Check `runtime.is_cancelled()` and tool-owned
-scene/version state before emitting work that may have become stale.
-
-Do not access environment variables or API keys, provider SDKs, WebSockets,
-arbitrary networks, subprocesses, other sessions, or the filesystem. Do not
-modify backend globals. Never provide visual-only navigation landmarks; use
-body-relative, tactile, auditory, or stable structural directions.
-
-Old `main(image, input_data)` plus literal `TOOL_POLICY` tools remain supported
-temporarily, but do not use that contract for new or updated tools.
+Old `main(image, input_data)` and declarative `EXECUTION_MODE`/`TOOL_POLICY` tools remain supported for compatibility, but do not use those contracts for new or updated tools.

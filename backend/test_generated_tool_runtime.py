@@ -209,13 +209,13 @@ import asyncio
 import numpy as np
 from litellm_utils import call_model, extract_text
 TOOL_NAME = "example"
-EXECUTION_MODE = "take_photo"
+TOOL_PROMPT = "Describe the requested visual information."
 def similarity(a, b):
     return float(np.dot(a, b))
 async def on_take_photo(runtime, image, input_data):
     response = await asyncio.to_thread(
         call_model, "gemini/gemini-3.1-flash-lite-preview",
-        [{"role": "user", "content": "Describe it."}], [image]
+        [{"role": "user", "content": TOOL_PROMPT}], [image]
     )
     return extract_text(response)
 '''

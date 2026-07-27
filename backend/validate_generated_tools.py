@@ -164,14 +164,12 @@ def validate_no_stringified_copilot_results(tool_text: str, rel_path: Path) -> L
 
 
 def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) -> List[str]:
-    """Validate executable lifecycle tools and the temporary declarative fallback."""
+    """Validate the executable lifecycle contract and legacy take-photo fallback."""
     try:
         tree = ast.parse(tool_text)
     except SyntaxError:
         return []
     constants = _extract_literal_constants(tree)
-    if constants.get('EXECUTION_MODE') != 'take_photo':
-        return []
     lifecycle = {
         node.name: node
         for node in tree.body
@@ -186,9 +184,20 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
             )
         if not isinstance(constants.get("TOOL_NAME"), str):
             failures.append(f"{rel_path}: executable tools require one string TOOL_NAME.")
-        if "VIDEO_CONFIG" in constants:
+        if not isinstance(constants.get("TOOL_PROMPT"), str) or not str(
+            constants.get("TOOL_PROMPT") or ""
+        ).strip():
             failures.append(
-                f"{rel_path}: executable tools select recent frames in code and must not declare VIDEO_CONFIG."
+                f"{rel_path}: executable tools require one non-empty string TOOL_PROMPT."
+            )
+        mode_prompt_names = {
+            "TAKE_PHOTO_PROMPT", "STREAMING_PROMPT", "TEMPORAL_PROMPT"
+        }
+        found_mode_prompts = sorted(mode_prompt_names & set(constants))
+        if found_mode_prompts:
+            failures.append(
+                f"{rel_path}: use one shared TOOL_PROMPT instead of mode-specific prompts: "
+                + ", ".join(found_mode_prompts)
             )
         imported_names = {
             alias.name
@@ -215,6 +224,9 @@ def validate_take_photo_tool(tool_text: str, issue_text: str, rel_path: Path) ->
                     f"{rel_path}:{node.lineno}: model calls require an explicit model name."
                 )
         return failures
+
+    if constants.get('EXECUTION_MODE') != 'take_photo':
+        return []
 
     policy_calls = [
         node for node in ast.walk(tree)
@@ -330,6 +342,12 @@ def validate_rtvi_streaming_tool(
     except SyntaxError:
         return []
     constants = _extract_literal_constants(tree)
+    if any(
+        isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name in {"on_take_photo", "on_stream_start", "on_frame", "on_stream_stop"}
+        for node in tree.body
+    ):
+        return []
     if constants.get('EXECUTION_MODE') != 'hosted_video_streaming':
         return []
     failures = []

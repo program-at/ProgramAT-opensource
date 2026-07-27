@@ -912,6 +912,12 @@ def _literal_tool_metadata(tool_code: str, name: str) -> Any:
 
 
 def _tool_execution_mode(tool_code: str) -> str:
+    # Executable lifecycle hooks are the current contract and can support both
+    # Take Photo and Streaming. Ignore a stale legacy mode declaration when
+    # hooks are present so it cannot route the whole tool into a restrictive
+    # declarative executor.
+    if has_executable_lifecycle(tool_code):
+        return ''
     value = _literal_tool_metadata(tool_code, 'EXECUTION_MODE')
     return str(value or '').strip().lower().replace('-', '_')
 
@@ -6038,23 +6044,17 @@ Extract only these user-facing fields:
 - description: the task the tool performs
 - example_usage: expected output
 - additional: constraints and examples
-- execution_mode: exactly "take_photo", "hosted_video_streaming", or empty when unstated
+- streaming_context: "latest_frame", "recent_history", or empty when unstated
 - missing_fields: only missing important fields
 
 Only block creation when the core task is genuinely unclear.
 - Tool name, task, and expected output are the core fields.
-- Constraints/examples and execution_mode may be empty when unstated.
-- Classify a task as "hosted_video_streaming" only when its answer explicitly
-  requires evidence across multiple moments: recent history, sequence, duration,
-  before/after comparison, state change, or what just happened.
-- A task answerable from the current frame is "take_photo", even when the user
-  may run it continuously. Static identification, recognition, OCR, description,
-  and classification do not become temporal merely because Streaming is available.
-- If correct interpretation may require several recent frames, classify the
-  whole tool as temporal even when some examples can be recognized statically.
-  In particular, a sign-language request involving recent hand movement, a sign
-  lasting several seconds, or the sign/phrase just made is temporal. A request
-  to identify only the current held hand posture is static.
+- Constraints/examples and streaming_context may be empty when unstated.
+- Use "recent_history" only when Streaming needs evidence across multiple
+  moments: sequence, duration, before/after comparison, state change, or what
+  just happened. Otherwise use "latest_frame".
+- This field describes Streaming frame needs, not the modes supported by the
+  whole tool. New tools normally support both Take Photo and Streaming.
 - Do not generate or improve a VLM prompt.
 - Do not return stages, subtasks, reasoning steps, capabilities, routes, or models.
 
@@ -6065,7 +6065,7 @@ Return ONLY this JSON object:
   "description": "...",
   "example_usage": "...",
   "additional": "...",
-  "execution_mode": "...",
+  "streaming_context": "...",
   "missing_fields": []
 }}
 {context_info}
@@ -6087,14 +6087,18 @@ def _request_explicitly_requires_temporal_context(text: str) -> bool:
     return any(re.search(pattern, normalized) for pattern in temporal_patterns)
 
 
-def _select_visual_execution_mode(suggested_mode: Any, original_request: str) -> str:
-    """Normalize the parser suggestion while preventing explicit temporal downgrades."""
+def _select_streaming_context(suggested_context: Any, original_request: str) -> str:
+    """Normalize the frame context needed by Streaming."""
     if _request_explicitly_requires_temporal_context(original_request):
-        return 'hosted_video_streaming'
-    normalized = str(suggested_mode or '').strip().lower()
-    aliases = {'take-photo': 'take_photo', 'streaming': 'hosted_video_streaming'}
+        return 'recent_history'
+    normalized = str(suggested_context or '').strip().lower().replace('-', '_')
+    aliases = {
+        'take_photo': 'latest_frame',
+        'hosted_video_streaming': 'recent_history',
+        'streaming': 'recent_history',
+    }
     normalized = aliases.get(normalized, normalized)
-    return normalized if normalized in {'take_photo', 'hosted_video_streaming'} else 'take_photo'
+    return normalized if normalized in {'latest_frame', 'recent_history'} else 'latest_frame'
 
 
 def _normalize_issue_creation_requirements(
@@ -6103,9 +6107,12 @@ def _normalize_issue_creation_requirements(
 ) -> Dict[str, Any]:
     normalized = dict(parsed_data)
     explicit_custom_gpt = _explicit_custom_gpt_value(transcript)
-    execution_mode = str(normalized.get('execution_mode') or '').strip().lower()
-    mode_custom_gpt = 'no' if execution_mode in {
-        'take_photo', 'hosted_video_streaming', 'take-photo', 'streaming'
+    streaming_context = str(
+        normalized.get('streaming_context') or normalized.get('execution_mode') or ''
+    ).strip().lower()
+    mode_custom_gpt = 'no' if streaming_context in {
+        'latest_frame', 'recent_history', 'take_photo',
+        'hosted_video_streaming', 'take-photo', 'streaming'
     } else ''
     parsed_custom_gpt = mode_custom_gpt or _normalize_custom_gpt_value(
         normalized.get('custom_gpt') or normalized.get('live_mode')
@@ -6157,9 +6164,11 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
         parsed_data = _normalize_issue_creation_requirements(issue_data, transcript)
         prior_requests = (existing_data or {}).get('original_prompts', [])
         mode_semantics = '\n'.join([*(str(item) for item in prior_requests), transcript])
-        parsed_data['execution_mode'] = _select_visual_execution_mode(
-            issue_data.get('execution_mode'), mode_semantics
+        parsed_data['streaming_context'] = _select_streaming_context(
+            issue_data.get('streaming_context') or issue_data.get('execution_mode'),
+            mode_semantics,
         )
+        parsed_data.pop('execution_mode', None)
         parsed_data['stages'] = []
         
         # Preserve the original transcript for bookkeeping
@@ -6196,7 +6205,7 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             'gpt_query': '',
             'alternatives': '',
             'additional': '',
-            'execution_mode': _select_visual_execution_mode('', transcript),
+            'streaming_context': _select_streaming_context('', transcript),
             'parser_failed': True,
             'parser_error': str(e),
             'missing_fields': fallback_missing_fields,
@@ -6233,8 +6242,13 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
                             ensure_string(parsed_data.get('example_usage', '')))
     filled = filled.replace('<!-- Important constraints, edge cases, and example inputs or answers. -->',
                             ensure_string(parsed_data.get('additional', '')))
-    filled = filled.replace('<!-- Enter exactly: take_photo or hosted_video_streaming. -->',
-                            ensure_string(parsed_data.get('execution_mode', '')))
+    filled = filled.replace(
+        '<!-- Describe whether Streaming can use a changed latest frame or needs recent chronological frames. -->',
+        ensure_string(
+            parsed_data.get('streaming_context')
+            or parsed_data.get('execution_mode', '')
+        ),
+    )
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])

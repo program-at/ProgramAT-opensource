@@ -36,7 +36,7 @@ jobs:
           script: |
             const issue = context.payload.issue;
             const implementationNote =
-              "\n\nImplementation note: Write this Python tool inside `tools/`. Treat Mode as a parser suggestion and make the final static-versus-temporal decision from the request semantics and preserved ORIGINAL_PROMPTS. Use take_photo for static Streaming behavior and hosted_video_streaming when Streaming needs multiple ordered moments. Take Photo works for every tool with one current image; temporal prompts must use motion with multiple frames, static evidence with one image, and task-specific uncertainty when one frame is insufficient. Temporal input does not imply before/after output fields: prefer concise plain text for recognition and never reuse `played_card_event` outside played-card detection. Copilot must choose and emit a literal `TOOL_POLICY`, defaulting ordinary requests to strategy `single` with model `gemini-3.1-flash-lite`. For take_photo, declare `EXECUTION_MODE = \"take_photo\"`, use one `execute_tool_policy` call with the declared policy, and omit `VIDEO_CONFIG`. For hosted_video_streaming, generate only `TOOL_NAME`, `EXECUTION_MODE`, required literal `VIDEO_CONFIG`, optional literal `OUTPUT_CONFIG`, `TOOL_POLICY`, and a prompt describing chronological evidence; the shared runtime owns video and sessions. Do not create custom video processing, provider calls, routing loops, or extra model calls. Open a PR rather than pushing to main.";
+              "\n\nImplementation note: Read `.github/copilot-instructions.md`, then modify only the requested Python tool in `tools/` unless the public runtime is genuinely insufficient. Normally implement both Take Photo and Streaming lifecycle hooks and define one concise `TOOL_PROMPT` shared by both. Default the prompt to one direct instruction; add ordered steps only for genuinely dependent visual reasoning. Explicitly choose each entry point's models, frame selection, call timing, orchestration, state, and output behavior. Take Photo uses one current image. Streaming decides whether a changed latest frame or selected chronological history is appropriate. Use runtime frames, state, cancellation, and emission APIs. Keep output concise and audio-friendly for blind and low-vision users, state uncertainty when evidence is insufficient, and restrict clock-face navigation to 9–12 and 1–3. Open a pull request rather than pushing to main.";
             if (!issue.body.includes("Write the code for this tool inside the tools folder")) {
               await github.rest.issues.update({
                 owner: context.repo.owner,
@@ -65,13 +65,11 @@ jobs:
             Issue body: ${{ github.event.issue.body }}
             Requirements:
             - Write the code for this tool inside the tools folder.
-            - For take-photo mode, declare `EXECUTION_MODE = "take_photo"` and author one concise fused `TOOL_PROMPT` from the issue fields. Do not declare `VIDEO_CONFIG`.
-            - Import `execute_tool_policy` from `model_execution`.
-            - Emit a literal `TOOL_POLICY` and pass it as `policy=TOOL_POLICY`.
-            - Call that helper exactly once with the supplied image and prompt, then return its answer directly.
-            - For hosted_video_streaming, do not import that helper; declare required literal `VIDEO_CONFIG` and a prompt describing chronological evidence.
-            - Do not create runtime stages or call a planner/router/evaluator.
-            - Do not make any other model or specialist calls.
+            - Normally implement both Take Photo and Streaming lifecycle hooks.
+            - Define one concise `TOOL_PROMPT` shared by both entry points.
+            - Choose models, frames, timing, orchestration, and output behavior explicitly in the tool.
+            - Use one current image for Take Photo and select only the Streaming history the task needs.
+            - Use runtime state, cancellation, and emission APIs where appropriate.
             - Follow the existing repository structure and style.
             - Make the smallest reasonable implementation.
             - Do not modify unrelated files.

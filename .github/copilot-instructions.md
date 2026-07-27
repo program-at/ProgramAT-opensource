@@ -1,36 +1,43 @@
-# ProgramAT Copilot instructions
+# ProgramAT code-agent instructions
 
-ProgramAT tools are executable Python modules in `tools/`. Generated code owns
-the actual assistive behavior: model selection, prompts, call timing, frame
-selection, temporal comparison, concurrency, progressive output, and
-tool-specific state. The backend only supplies frames, isolated state,
-cancellation, credentials inside approved model functions, and WebSocket
-transport.
+ProgramAT tools are executable Python modules in `tools/`. New tools own their model selection, prompts, frame selection, temporal logic, call timing, concurrency, state, and output behavior. The backend supplies decoded frames, isolated runtime state, cancellation, approved model-call helpers, and result transport.
 
-## Public execution contract
+## Generated-tool contract
 
-Declare:
+Normally implement both entry points of the same tool:
 
 ```python
 TOOL_NAME = "concise_snake_case_name"
-EXECUTION_MODE = "take_photo"
+TOOL_PROMPT = "One concise task instruction shared by Take Photo and Streaming."
+
+async def on_take_photo(runtime, image, input_data):
+    ...
+
+async def on_stream_start(runtime, input_data):
+    ...
+
+async def on_frame(runtime, frame):
+    ...
+
+async def on_stream_stop(runtime):
+    ...
 ```
 
-Implement whichever lifecycle hooks the tool needs:
+Infer supported behavior from the hooks. Do not declare `EXECUTION_MODE`, `TOOL_POLICY`, or call `execute_tool_policy()` in new tools. Those declarative contracts remain only for compatibility with older tools.
 
-```python
-async def on_take_photo(runtime, image, input_data): ...
-async def on_stream_start(runtime, input_data): ...
-async def on_frame(runtime, frame): ...
-async def on_stream_stop(runtime): ...
-```
+Every visual tool should support Take Photo unless a single image is genuinely meaningless. Implement meaningful Streaming behavior when possible. A static task can process one changed latest frame; a temporal task can select recent chronological frames. Do not force multiple frames when one is enough.
 
-Take Photo calls `on_take_photo`. Streaming calls `on_stream_start` once,
-`on_frame` for collected frames, and `on_stream_stop` during cleanup. These
-functions and every local helper in the tool file are actually executed.
+## One shared prompt
 
-`frame` provides `frame_id`, `timestamp`, `image`, `width`, `height`, and
-`image_base64`. Available infrastructure is:
+Build one `TOOL_PROMPT` from the task, expected output, constraints, and examples, and use it in both Take Photo and Streaming. Do not create mode-specific prompts unless the user explicitly requires different instructions and sharing is genuinely impossible.
+
+Default to one direct instruction. Add a concise ordered sequence only when a later conclusion depends on earlier visual findings; do not turn issue fields into artificial steps. The prompt should preserve the requested output, be concise and speech-ready for blind and low-vision users, normalize a stable format when useful, and state when evidence is insufficient. It must work with one image or several chronological frames: never invent motion from one image, and use chronological order when several frames are supplied.
+
+Take Photo and Streaming may still use different models, frames, timing, orchestration, state, and output behavior while sharing this prompt.
+
+## Runtime API
+
+`frame` provides `frame_id`, `timestamp`, `image`, `width`, `height`, and `image_base64`.
 
 ```python
 runtime.current_request_id
@@ -44,143 +51,78 @@ runtime.is_cancelled()
 await runtime.emit(text, partial=False, final=False, replace=False, metadata=None)
 ```
 
-State is isolated by client, tool source version, and streaming session. Keep
-scene anchors, prior outputs, analysis generations, and temporary tasks in
-runtime state rather than module globals.
+State is isolated by client, tool source version, and streaming session. Keep scene anchors, prior results, generations, and temporary tasks in runtime state rather than module globals. Check cancellation and a tool-owned generation or scene identifier before emitting work that may be stale.
+
+The tool may define a small literal frame configuration when the backend needs settings before delivering frames. Do not use configuration as a substitute for executable frame selection. Prefer runtime selection for latest-frame, changed-scene, sparse-history, or dense chronological behavior.
 
 ## Model calls
 
-For most models:
+Select models explicitly in tool code. Default ordinary visual tasks to Gemini 3.1 Flash Lite, but choose a faster, stronger, or specialized configured model when justified. The registry in `backend/model_registry.py` is advisory; the backend does not replace the selected model.
 
 ```python
+import asyncio
 from litellm_utils import call_model, extract_text
 
 response = await asyncio.to_thread(
     call_model,
     "gemini/gemini-3.1-flash-lite-preview",
-    [{"role": "user", "content": prompt}],
+    [{"role": "user", "content": TOOL_PROMPT}],
     [image],
-    {"timeout": 60},
 )
 text = extract_text(response)
 ```
 
-Use `call_openai_responses_model()` only when the selected model requires the
-OpenAI Responses API. Inspect `backend/model_registry.py` before selecting a
-model. The registry is advisory; the backend will not replace the model written
-in the tool. Default to Gemini 3.1 Flash Lite for ordinary general visual work.
+Use `call_openai_responses_model()` only for a configured model that requires the Responses API. Tools may call one or several models, branch on results, retry appropriately, or use normal asyncio concurrency.
 
-Tools may explicitly call multiple models, branch on prior results, retry when
-appropriate, or use `asyncio.create_task`, `gather`, or `as_completed`.
+## Entry-point behavior
 
-## Examples
+Take Photo receives one current image. It should use `TOOL_PROMPT`, explicitly call its chosen model or models, and return or emit concise results. If motion or history is essential, report that it cannot be determined from one image.
 
-### One-frame, one-model Take Photo
+Streaming decides when and what to analyze. It may inspect the latest frame, skip similar frames, process confirmed scene changes, select recent frames, maintain state, or emit progressive results. Static tasks should generally avoid unnecessary temporal windows. Temporal tasks may pass selected frames in chronological order to the same `TOOL_PROMPT`.
 
-```python
-async def on_take_photo(runtime, image, input_data):
-    del runtime, input_data
-    response = await asyncio.to_thread(
-        call_model, "gemini/gemini-3.1-flash-lite-preview",
-        [{"role": "user", "content": TOOL_PROMPT}], [image],
-    )
-    return extract_text(response)
-```
+Each hook independently decides whether to return once or emit results that append, replace, remain partial, or finalize. The backend only transports accepted results and rejects stale or cancelled work.
 
-### Tool-written streaming similarity
+## Tool quality and accessibility conventions
+
+Write each generated tool as Python in `tools/`, alongside `backend/` and `ProgramATApp/`. Tools run on the backend, receive camera data through the lifecycle runtime, and return or emit results for the app; they must not connect to the backend or use WebSockets. Assume one user-facing task per tool and make it runnable from the app's camera feed.
+
+All user-facing results must be concise, descriptive, action-oriented, and natural when spoken by text-to-speech. Return or emit plain language, not JSON, code, cryptic abbreviations, debugging text, raw model metadata, stack traces, or internal structures. Do not return `None` or an empty string as the final result.
 
 ```python
-def similarity(a, b):
-    return float(np.dot(a, b))
-
-async def on_frame(runtime, frame):
-    current = await asyncio.to_thread(embed_frame, frame.image)
-    anchor = runtime.get_state("anchor")
-    if anchor is not None and similarity(anchor, current) >= 0.985:
-        return
-    runtime.set_state("anchor", current)
-    # The tool decides what to call and emit here.
+return "No objects detected"
+return "Found 5 people in the frame"
+await runtime.emit("Text says: Welcome to the building", final=True)
+await runtime.emit("Warning: Low light conditions", final=True)
 ```
 
-### Several frames from recent history
+An empty, failed, or low-confidence model result does not prove the requested target is absent. State uncertainty when evidence is insufficient.
 
-```python
-async def on_frame(runtime, frame):
-    recent = runtime.get_recent_frames(count=8, seconds=4)
-    selected = recent[::2]
-    if len(selected) < 2:
-        return
-    response = await asyncio.to_thread(
-        call_model, MODEL, [{"role": "user", "content": TEMPORAL_PROMPT}],
-        [item.image for item in selected],
-    )
-```
+For navigation, use body-relative or clock-face directions, approximate distance, or stable structural cues. Restrict camera-based clock directions to 9–12 and 1–3; directions behind the camera are not observable. Never use color or another purely visual landmark as the only cue.
 
-### Progressive parallel output
+Avoid GPU-heavy packages unless strictly necessary. Reuse approved shared backend helpers and useful patterns, but do not import one tool module from another or duplicate infrastructure. Prefer changing only the requested tool file unless the public runtime genuinely lacks a required capability. After the code works and is tested, avoid unnecessary documentation and finish promptly.
 
-```python
-async def on_frame(runtime, frame):
-    generation = runtime.get_state("generation", 0) + 1
-    runtime.set_state("generation", generation)
-
-    async def run(model):
-        response = await asyncio.to_thread(
-            call_model, model, [{"role": "user", "content": TOOL_PROMPT}],
-            [frame.image],
-        )
-        if not runtime.is_cancelled() and runtime.get_state("generation") == generation:
-            await runtime.emit(extract_text(response), partial=True,
-                               metadata={"model": model})
-
-    await asyncio.gather(*(run(model) for model in MODELS), return_exceptions=True)
-    if not runtime.is_cancelled() and runtime.get_state("generation") == generation:
-        await runtime.emit("", final=True)
-```
-
-### Different Take Photo and Streaming behavior
-
-```python
-async def on_take_photo(runtime, image, input_data):
-    return await analyze_once(image)
-
-async def on_stream_start(runtime, input_data):
-    runtime.set_state("last_processed_id", 0)
-
-async def on_frame(runtime, frame):
-    if frame.frame_id - runtime.get_state("last_processed_id", 0) < 5:
-        return
-    runtime.set_state("last_processed_id", frame.frame_id)
-    await runtime.emit(await analyze_once(frame.image), final=True)
-```
-
-## Output and accessibility
-
-Emit concise, speech-ready results for blind and low-vision users. Say when
-visual evidence is insufficient. Navigation guidance must use body-relative
-directions or stable nonvisual/structural cues, never color or another
-visual-only landmark as the sole cue.
-
-The tool decides whether output appends, replaces, is partial, or is final. Do
-not access the WebSocket directly.
-
-## Safety and validation
+## Safety and accessibility
 
 Allowed:
 
-- `litellm_utils.call_model`, `extract_text`, and
-  `call_openai_responses_model`;
-- OpenCV, NumPy, PIL, CLIP, and local helper functions;
-- normal Python control flow and asyncio orchestration;
-- runtime frame history, state, cancellation, and emission.
+- approved model-call helpers;
+- current and recent runtime frames;
+- runtime state, cancellation, and emission;
+- local helper functions and normal asyncio control flow;
+- OpenCV, NumPy, PIL, and CLIP when appropriate.
 
 Forbidden:
 
-- raw API keys or environment-variable access;
+- API keys or environment-variable access;
 - direct provider SDKs or arbitrary networking;
-- WebSockets and backend transport internals;
+- raw WebSockets or backend transport internals;
 - subprocesses or unrestricted filesystem writes;
-- other clients, sessions, or shared backend globals.
+- other clients, sessions, or backend-private globals.
 
-Use the simplest implementation satisfying the request. Old declarative
-`TOOL_POLICY` tools are compatibility-only; new code must not rely on the
-backend to choose models, compare frames, or orchestrate cascades.
+Use body-relative directions or stable nonvisual and structural cues for navigation. Never use color or another visual-only landmark as the sole cue.
+
+## Examples the contract must support
+
+- Exit Finder: Take Photo analyzes one image; Streaming analyzes a changed latest frame. Both use the same prompt and no unnecessary temporal window.
+- Hand Gesture Identifier: Take Photo reports a visible static posture and uncertainty about motion; Streaming may pass several chronological frames to the same prompt.
+- Uber Finder: Take Photo may use an accuracy-oriented model or cascade; Streaming may use a faster model and update only on scene changes, still using the same task prompt.

@@ -23,12 +23,14 @@ def load_stream_server_function(name: str):
     )
     namespace = {
         "Any": Any,
+        "ast": ast,
         "Dict": Dict,
         "List": List,
         "Optional": Optional,
         "json": json,
         "re": re,
         "ToolPlanningContext": Any,
+        "has_executable_lifecycle": lambda text: "async def on_frame(" in text,
     }
     dependency_names = {
         "_normalize_issue_creation_requirements": {
@@ -36,9 +38,10 @@ def load_stream_server_function(name: str):
             "_explicit_custom_gpt_value",
         },
         "_append_task_stages_to_issue_body": {"_build_task_stages_markdown"},
-        "_select_visual_execution_mode": {
+        "_select_streaming_context": {
             "_request_explicitly_requires_temporal_context",
         },
+        "_tool_execution_mode": {"_literal_tool_metadata"},
     }.get(name, set())
     dependencies = [
         node for node in tree.body
@@ -58,43 +61,58 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         template_path = Path(__file__).resolve().parent.parent / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
         template = template_path.read_text(encoding="utf-8")
 
-        for heading in ("Tool name", "Task", "Expected output", "Constraints / examples", "Mode"):
+        for heading in (
+            "Tool name", "Task", "Expected output",
+            "Constraints / examples", "Streaming context",
+        ):
             self.assertIn(f"## {heading}", template)
             self.assertIn(f"## {heading}\n\n<!--", template)
         self.assertNotIn("call_take_photo_vlm", template)
         self.assertNotIn("execute_tool_policy", template)
         self.assertNotIn("TOOL_POLICY", template)
         self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("author one concise, task-specific `TOOL_PROMPT`", template)
+        self.assertIn("one concise, task-specific `TOOL_PROMPT`", template)
         self.assertNotIn("Task Stages", template)
         self.assertNotIn("copilot_llm_call", template)
-        self.assertIn("call_model()", template)
+        self.assertIn("Choose models", template)
         self.assertIn("on_take_photo", template)
         self.assertIn("on_frame", template)
         self.assertIn("runtime.emit", template)
 
         instructions_path = template_path.parent.parent / "copilot-instructions.md"
         instructions = instructions_path.read_text(encoding="utf-8")
-        self.assertTrue(instructions.startswith("# ProgramAT Copilot instructions\n"))
+        self.assertTrue(instructions.startswith("# ProgramAT code-agent instructions\n"))
         self.assertIn("call_model", instructions)
         self.assertIn("call_openai_responses_model", instructions)
         self.assertIn("get_recent_frames", instructions)
         self.assertIn("get_state", instructions)
-        self.assertIn("asyncio.gather", instructions)
-        self.assertIn("Progressive parallel output", instructions)
-        self.assertIn("Different Take Photo and Streaming behavior", instructions)
+        self.assertIn("normal asyncio concurrency", instructions)
+        self.assertIn("Each hook independently decides", instructions)
+        self.assertIn("Take Photo and Streaming may still use different", instructions)
         self.assertIn("blind and low-vision users", instructions)
-        self.assertIn("never color", instructions)
-        self.assertIn("Old declarative", instructions)
+        self.assertIn("never use color", instructions.casefold())
+        self.assertIn("compatibility with older tools", instructions)
+        self.assertIn("## Tool quality and accessibility conventions", instructions)
+        self.assertIn("Python in `tools/`", instructions)
+        self.assertIn("must not connect to the backend or use WebSockets", instructions)
+        self.assertIn("plain language, not JSON", instructions)
+        self.assertIn("does not prove the requested target is absent", instructions)
+        self.assertIn("9–12 and 1–3", instructions)
+        self.assertIn("Avoid GPU-heavy packages", instructions)
+        self.assertIn("do not import one tool module from another", instructions)
+        self.assertIn("approved shared backend helpers", instructions)
+        self.assertIn("avoid unnecessary documentation", instructions)
 
-        self.assertIn("### Take-photo implementation guidance", template)
-        self.assertIn("Default to no steps", template)
-        self.assertIn("one operation is sufficient", template)
-        self.assertIn("Do not create steps merely to restate", template)
-        self.assertIn("numbered instructions", template)
-        self.assertIn("are optional when they improve reliability", template)
+        self.assertIn("Default to one direct instruction", template)
+        self.assertIn("genuinely depends on earlier visual findings", template)
         self.assertIn("TOOL_PROMPT", template)
-        self.assertIn("get_recent_frames", template)
+        self.assertIn("runtime frame APIs", template)
+        self.assertNotIn("EXECUTION_MODE", template)
+        self.assertNotIn("hosted_video_streaming", template)
+        self.assertIn("Tools belong in `tools/` and use Python", template)
+        self.assertIn("audio-friendly for blind and low-vision users", template)
+        self.assertIn("state uncertainty when evidence is insufficient", template)
+        self.assertIn("9–12 and 1–3", template)
 
     def test_temporal_sign_language_request_cannot_be_downgraded_to_take_photo(self):
         request = """Problem:
@@ -105,17 +123,17 @@ Observe the signer’s recent hand movements and identify the sign or short sign
 
 Custom GPT:
 No"""
-        select_mode = load_stream_server_function("_select_visual_execution_mode")
+        select_context = load_stream_server_function("_select_streaming_context")
 
         # Regression: even a mistaken Llama suggestion must not erase the
         # request's explicit recent-motion and just-made semantics.
         self.assertEqual(
-            select_mode("take_photo", request),
-            "hosted_video_streaming",
+            select_context("latest_frame", request),
+            "recent_history",
         )
         self.assertEqual(
-            select_mode("", request),
-            "hosted_video_streaming",
+            select_context("", request),
+            "recent_history",
         )
 
         fill_issue = load_stream_server_function("fill_template")
@@ -128,16 +146,27 @@ No"""
             "description": "Understand a temporal short sign language gesture.",
             "example_usage": "Observe recent hand movements and identify the phrase just made.",
             "additional": "The sign may last for a few seconds.",
-            "execution_mode": select_mode("take_photo", request),
+            "streaming_context": select_context("latest_frame", request),
             "original_prompts": [request],
         })
-        self.assertIn("## Mode\n\nhosted_video_streaming", issue)
+        self.assertIn("## Streaming context\n\nrecent_history", issue)
         self.assertIn("signer’s recent hand movements", issue)
 
     def test_current_held_sign_posture_remains_static(self):
-        select_mode = load_stream_server_function("_select_visual_execution_mode")
+        select_context = load_stream_server_function("_select_streaming_context")
         request = "Identify the sign shown by the signer’s current held hand posture."
-        self.assertEqual(select_mode("take_photo", request), "take_photo")
+        self.assertEqual(select_context("latest_frame", request), "latest_frame")
+
+    def test_lifecycle_hooks_override_legacy_execution_mode(self):
+        execution_mode = load_stream_server_function("_tool_execution_mode")
+        lifecycle_tool = '''
+EXECUTION_MODE = "hosted_video_streaming"
+async def on_frame(runtime, frame):
+    return None
+'''
+        declarative_tool = 'EXECUTION_MODE = "hosted_video_streaming"\n'
+        self.assertEqual(execution_mode(lifecycle_tool), "")
+        self.assertEqual(execution_mode(declarative_tool), "hosted_video_streaming")
 
 
 class TestSentenceDetectionLogic(unittest.TestCase):

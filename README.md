@@ -281,10 +281,10 @@ Since you are working from a fork of this repository, GitHub-related features ma
 ## Meta Ray-Ban Integration (iOS)
 
 ProgramAT can use **Meta Ray-Ban** glasses as a camera source instead of the phone
-camera. Streaming tools use the glasses' live frames and take-photo tools use a
-captured frame; results are spoken back through the same audio path as the phone
-camera. This integration is **iOS-only** and built on Meta's Device Access Toolkit
-(DAT).
+camera. A tool's Streaming entry point uses the glasses' live frames, while its
+Take Photo entry point receives one captured frame; results are spoken back
+through the same audio path as the phone camera. This integration is **iOS-only**
+and built on Meta's Device Access Toolkit (DAT).
 
 ### Setup (developers)
 

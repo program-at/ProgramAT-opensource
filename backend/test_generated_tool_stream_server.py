@@ -14,7 +14,7 @@ import litellm_utils
 
 STREAM_TOOL = '''
 TOOL_NAME = "integration_tool"
-EXECUTION_MODE = "take_photo"
+TOOL_PROMPT = "Report the requested visual information concisely."
 
 async def on_stream_start(runtime, input_data):
     runtime.set_state("started", True)
@@ -31,7 +31,7 @@ async def on_stream_stop(runtime):
 
 TAKE_PHOTO_TOOL = '''
 TOOL_NAME = "take_tool"
-EXECUTION_MODE = "take_photo"
+TOOL_PROMPT = "Report the requested visual information concisely."
 
 async def on_take_photo(runtime, image, input_data):
     return f"selected:{input_data['value']}:{image.shape[1]}"
@@ -40,12 +40,12 @@ async def on_take_photo(runtime, image, input_data):
 DIRECT_MODEL_TOOL = '''
 from litellm_utils import call_model
 TOOL_NAME = "direct_model"
-EXECUTION_MODE = "take_photo"
+TOOL_PROMPT = "Use exactly this model for the requested visual task."
 
 async def on_take_photo(runtime, image, input_data):
     return call_model(
         "provider/explicit-model",
-        [{"role": "user", "content": "Use exactly this model."}],
+        [{"role": "user", "content": TOOL_PROMPT}],
         [image],
     )
 '''

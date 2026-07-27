@@ -15,55 +15,26 @@ assignees: ''
 
 ## Task
 
-<!-- What should the tool determine from the camera image? -->
+<!-- What should the tool determine from the camera image or recent frames? -->
 
 ## Expected output
 
-<!-- What should the spoken answer contain? -->
+<!-- What should the concise spoken answer contain? -->
 
 ## Constraints / examples
 
 <!-- Important constraints, edge cases, and example inputs or answers. -->
 
-## Mode
+## Streaming context
 
-<!-- Enter exactly: take_photo or hosted_video_streaming. -->
-<!-- This is a parser suggestion. Copilot must correct it if the preserved
-original request clearly requires a different visual context. -->
+<!-- Describe whether Streaming can use a changed latest frame or needs recent chronological frames. -->
 
-<!-- Use take_photo for a static current-frame task, even if it may be run
-continuously. Use hosted_video_streaming only when the answer requires recent
-history, sequence, duration, before/after comparison, or what just happened. -->
+## Implementation guidance
 
-### Take-photo implementation guidance
+Implement the requested behavior in one Python file in `tools/`. Normally support both Take Photo and Streaming with `on_take_photo`, `on_stream_start`, `on_frame`, and `on_stream_stop`. Define one concise, task-specific `TOOL_PROMPT` shared by both entry points. Default to one direct instruction; add ordered steps only when a later conclusion genuinely depends on earlier visual findings.
 
-For a take-photo tool, author one concise, task-specific `TOOL_PROMPT` from
-Task, Expected output, and Constraints / examples. Preserve the requested
-behavior and output format, make the final answer accessible and audio-friendly,
-and include a clear fallback when the requested visual information is unavailable.
-Before writing the prompt, determine whether the task can be completed as one
-operation or contains genuinely dependent subproblems. Default to no steps. If
-one operation is sufficient, use one direct instruction even when the issue has
-multiple output constraints. Do not create steps merely to restate the issue
-fields. Only when a later conclusion depends on earlier visual findings should
-the single fused prompt contain a concise ordered sequence; numbered instructions
-are optional when they improve reliability.
+Choose models, frame selection, call timing, orchestration, and output behavior explicitly in the tool. Take Photo receives one current image. Streaming should decide whether to process a changed latest frame or selected chronological history through the runtime frame APIs. Use runtime state, cancellation, and `runtime.emit` as needed. Keep results concise, speech-ready, accessible to blind and low-vision users, and honest about unavailable or uncertain visual evidence.
 
-Copilot must implement the requested behavior in the generated tool file.
-Declare `TOOL_NAME`, `EXECUTION_MODE = "take_photo"`, and lifecycle hooks such
-as `on_take_photo`, `on_stream_start`, `on_frame`, and `on_stream_stop`.
-Use `call_model()` directly with an explicit model name; default to
-`gemini/gemini-3.1-flash-lite-preview` for ordinary visual tasks. The tool owns
-frame selection, comparison, model orchestration, and output timing.
+Tools belong in `tools/` and use Python. Keep output concise and audio-friendly for blind and low-vision users, state uncertainty when evidence is insufficient, and restrict clock-face navigation to 9–12 and 1–3. Modify only the requested tool file unless the public runtime is genuinely insufficient.
 
-### Hosted-video streaming implementation guidance
-
-For streaming, write `on_frame(runtime, frame)` and select any needed history
-with `runtime.get_recent_frames(...)`. Implement task-specific similarity,
-buffering, and temporal reasoning in the tool. Use `runtime.emit(...)` for one
-or multiple results, and check cancellation or a tool-owned generation before
-emitting stale work.
-
-Tools belong in `tools/` and must be Python. Do not access API keys,
-environment variables, arbitrary networks, subprocesses, filesystem writes,
-the backend server, or WebSockets.
+Do not access credentials, environment variables, arbitrary networks, subprocesses, unrestricted filesystem writes, backend-private state, or WebSockets. Detailed APIs and examples are in `.github/copilot-instructions.md`.
