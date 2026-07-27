@@ -7,12 +7,14 @@ name: Claude VAT Implementation
 #    a. Install the app on your repo: https://github.com/apps/claude
 #    b. Connect it to your Anthropic account: https://claude.ai/settings → GitHub
 #    Both steps are required — doing only one will cause OIDC token exchange to fail.
-# 3. Trigger: Add the label 'ready-for-claude' to an issue that contains 'Template: VAT'
-#    in its body. The action will not run without both conditions being true.
+# 3. Trigger: Opening an issue that contains 'Template: VAT' starts Claude.
+#    Later @claude comments on that issue or its PR continue the work.
 
 on:
   issues:
-    types: [labeled]
+    types: [opened]
+  issue_comment:
+    types: [created]
 
 permissions:
   contents: write
@@ -23,14 +25,19 @@ permissions:
 jobs:
   claude-vat:
     if: >
-      contains(github.event.issue.labels.*.name, 'ready-for-claude') &&
-      contains(github.event.issue.body, 'Template: VAT')
+      (github.event_name == 'issues' &&
+       contains(github.event.issue.body, 'Template: VAT')) ||
+      (github.event_name == 'issue_comment' &&
+       contains(github.event.comment.body, '@claude'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Add implementation note and assign issue creator
+        if: github.event_name == 'issues'
         uses: actions/github-script@v7
         with:
           script: |
@@ -52,28 +59,71 @@ jobs:
               assignees: [issue.user.login]
             });
 
+      - name: Read current issue or PR body
+        id: issue-body
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string
+          script: |
+            const response = await github.rest.issues.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.issue.number
+            });
+            return response.data.body || "";
+
       - name: Ask Claude to implement the VAT issue
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          base_branch: main
+          branch_prefix: claude/issue-${{ github.event.issue.number }}-
+          track_progress: true
           prompt: |
-            Before starting, read the file `.github/copilot-instructions.md` for project conventions and follow them strictly.
-
-            Implement the request described in GitHub issue #${{ github.event.issue.number }}.
             Repository: ${{ github.repository }}
-            Issue title: ${{ github.event.issue.title }}
-            Issue body: ${{ github.event.issue.body }}
-            Requirements:
-            - Write the code for this tool inside the tools folder.
-            - Normally implement both Take Photo and Streaming lifecycle hooks.
-            - Define one concise `TOOL_PROMPT` shared by both entry points.
-            - Choose models, frames, timing, orchestration, and output behavior explicitly in the tool.
-            - Use one current image for Take Photo and select only the Streaming history the task needs.
-            - Use runtime state, cancellation, and emission APIs where appropriate.
-            - Follow the existing repository structure and style.
-            - Make the smallest reasonable implementation.
-            - Do not modify unrelated files.
-            - Do not push to main.
-            - Commit changes to a new branch.
-            - Create or prepare a pull request for human review.
-          claude_args: '--allowedTools "Bash(git:*),Bash(find:*),Bash(ls:*),View,GlobTool,GrepTool,Write,Edit" --max-turns 16 --model claude-sonnet-4-5'
+            Issue or PR number: #${{ github.event.issue.number }}
+            Title: ${{ github.event.issue.title }}
+            Body:
+            ${{ steps.issue-body.outputs.result }}
+            Latest request comment:
+            ${{ github.event.comment.body }}
+
+            Read the issue or PR title, body, and latest request comment. Then read
+            `.github/copilot-instructions.md` and follow it exactly. The issue body,
+            that instruction file, and the implementation note appended to a new
+            issue are the authoritative requirements.
+
+            Modify only the requested Python tool in `tools/` unless the public
+            runtime is genuinely insufficient. Do not edit unrelated files and
+            never push directly to `main`. Work on the action-created branch,
+            commit the result, push it, and create a pull request for human review
+            with `Fixes #${{ github.event.issue.number }}` in its title or body.
+            When this run was triggered from an open PR comment, update that
+            existing PR branch instead of creating another PR.
+          claude_args: '--allowedTools "Bash(git:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(find:*),Bash(ls:*),Read,View,Glob,GlobTool,Grep,GrepTool,Write,Edit" --max-turns 16 --model claude-sonnet-4-5'
+
+      - name: Verify a tool PR was produced
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_NUMBER: ${{ github.event.issue.number }}
+          IS_PULL_REQUEST: ${{ github.event.issue.pull_request != null }}
+        run: |
+          if [ "$IS_PULL_REQUEST" = "true" ]; then
+            pr_number="$TARGET_NUMBER"
+          else
+            pr_number="$(gh pr list --state open --limit 100 --json number,title,body \
+              --jq ".[] | select(((.title // \"\") + \" \" + (.body // \"\")) | contains(\"#$TARGET_NUMBER\")) | .number" \
+              | head -n 1)"
+          fi
+          if [ -z "$pr_number" ]; then
+            echo "::error::Claude did not create an open PR referencing issue #$TARGET_NUMBER."
+            exit 1
+          fi
+          tool_files="$(gh pr view "$pr_number" --json files \
+            --jq '.files[].path | select(startswith("tools/") and endswith(".py"))')"
+          if [ -z "$tool_files" ]; then
+            echo "::error::PR #$pr_number does not create or modify a Python tool in tools/."
+            exit 1
+          fi
+          echo "Verified PR #$pr_number tool changes:"
+          echo "$tool_files"

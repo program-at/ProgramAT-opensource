@@ -134,6 +134,7 @@ logger = logging.getLogger(__name__)
 BRAINSTORMING_ENABLED = os.environ.get(
     'BRAINSTORMING_ENABLED', 'false'
 ).strip().lower() in {'1', 'true', 'yes', 'on'}
+CODE_AGENT = 'claude'
 
 
 def _normalize_custom_gpt_value(value) -> str:
@@ -4603,8 +4604,9 @@ async def poll_for_copilot_session_on_pr(pr_number: int, websocket, client_id: s
 
 async def poll_for_copilot_session(issue_number: int, websocket, client_id: str):
     """
-    Poll for a Copilot agent task associated with a newly created issue.
-    Watches for PR creation and then streams the agent task logs using gh agent-task view.
+    Poll for a code-agent PR associated with a newly created issue.
+    Copilot sessions additionally stream through gh agent-task; Claude stops at
+    PR discovery because GitHub Actions is its authoritative execution log.
     
     Args:
         issue_number: The GitHub issue number to monitor
@@ -4613,7 +4615,8 @@ async def poll_for_copilot_session(issue_number: int, websocket, client_id: str)
     """
     global pending_copilot_issues
     
-    logger.info(f"Starting to poll for Copilot agent task for issue #{issue_number}")
+    agent_name = 'Claude' if CODE_AGENT == 'claude' else 'Copilot'
+    logger.info(f"Starting to poll for {agent_name} work for issue #{issue_number}")
     
     max_poll_duration = 600  # Poll for up to 10 minutes
     poll_interval = 15  # Check every 15 seconds
@@ -4637,11 +4640,11 @@ async def poll_for_copilot_session(issue_number: int, websocket, client_id: str)
             return False
     
     try:
-        # Notify client we're watching for Copilot
+        # Preserve the existing event name for frontend compatibility.
         await _safe_send({
             'type': 'copilot_watching',
             'issue_number': issue_number,
-            'message': f'Watching for Copilot to create a PR for issue #{issue_number}...',
+            'message': f'Watching for {agent_name} to create a PR for issue #{issue_number}...',
             'timestamp': datetime.now().isoformat()
         })
         
@@ -4675,7 +4678,11 @@ async def poll_for_copilot_session(issue_number: int, websocket, client_id: str)
                                 'pr_number': pr.number,
                                 'pr_title': pr.title,
                                 'pr_url': pr.html_url,
-                                'message': f'Copilot created PR #{pr.number}: {pr.title}. Waiting for agent session to start...',
+                                'message': (
+                                    f'{agent_name} created PR #{pr.number}: {pr.title}.'
+                                    if CODE_AGENT == 'claude'
+                                    else f'Copilot created PR #{pr.number}: {pr.title}. Waiting for agent session to start...'
+                                ),
                                 'timestamp': datetime.now().isoformat()
                             })
                             break
@@ -4683,6 +4690,13 @@ async def poll_for_copilot_session(issue_number: int, websocket, client_id: str)
                 # If we found a PR, try to stream its session
                 # The stream function will use gh agent-task list to find the session ID
                 if found_pr:
+                    if CODE_AGENT == 'claude':
+                        logger.info(
+                            f"Claude PR #{found_pr.number} found; detailed logs remain in GitHub Actions"
+                        )
+                        pending_copilot_issues.pop(issue_number, None)
+                        return
+
                     logger.info(f"Found PR #{found_pr.number}, attempting to stream session")
                     
                     # Refresh websocket from pending info (client may have reconnected)
@@ -4731,7 +4745,7 @@ async def poll_for_copilot_session(issue_number: int, websocket, client_id: str)
         await _safe_send({
             'type': 'copilot_watch_timeout',
             'issue_number': issue_number,
-            'message': f'Timed out waiting for Copilot to create a PR for issue #{issue_number}',
+            'message': f'Timed out waiting for {agent_name} to create a PR for issue #{issue_number}',
             'timestamp': datetime.now().isoformat()
         })
         
@@ -5907,15 +5921,18 @@ def should_mention_copilot(text: str) -> bool:
         if keyword in text_lower:
             return True
     
-    # Default: always mention @copilot so it stays aware of issue updates.
+    # Default: keep the active code agent aware of issue updates.
     return True
 
 
 def build_copilot_comment(comment_text: str, trigger_required: bool) -> tuple[str, bool]:
-    """Build a comment, adding one leading Copilot mention when required."""
-    if not trigger_required or re.search(r'(?i)(?<![\w-])@copilot\b', comment_text):
+    """Build an agent-triggering comment while preserving the legacy helper name."""
+    mention = '@claude' if CODE_AGENT == 'claude' else '@copilot'
+    if not trigger_required or re.search(
+        rf'(?i)(?<![\w-]){re.escape(mention)}\b', comment_text
+    ):
         return comment_text, False
-    return f"@copilot\n\n{comment_text}", True
+    return f"{mention}\n\n{comment_text}", True
 
 
 def is_copilot_target(issue) -> bool:
@@ -5929,12 +5946,13 @@ def is_copilot_target(issue) -> bool:
 async def update_github_issue(issue_number: int, comment_text: str, mention_copilot: bool = True):
     """
     Add a comment to an existing GitHub issue or PR.
-    Optionally mentions @copilot in the comment to get Copilot's attention.
+    Optionally mention the active code agent to trigger implementation work.
     
     Args:
         issue_number: The issue or PR number to update
         comment_text: The comment to add
-        mention_copilot: Whether to add @copilot mention (True for code changes, False for status updates)
+        mention_copilot: Whether to trigger the agent (True for code changes,
+            False for status updates). The name is retained for compatibility.
     """
     _log_to_all_sessions("INFO", f"update_github_issue called: issue/PR #{issue_number}, comment: {comment_text}, mention_copilot: {mention_copilot}")
     
@@ -5950,12 +5968,35 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
 
         is_pr = issue.pull_request is not None
         target_kind = "PR" if is_pr else "issue"
-        trigger_required = mention_copilot and is_copilot_target(issue)
-        final_comment, mention_added = build_copilot_comment(comment_text, trigger_required)
+        trigger_required = mention_copilot and (
+            CODE_AGENT == 'claude' or is_copilot_target(issue)
+        )
+
+        # Claude should continue an existing PR, not start a second issue run.
+        pr_number = issue_number if is_pr else None
+        pr_url = issue.html_url if is_pr else None
+        associated_pr = None
+        if not is_pr:
+            try:
+                pulls = repo.get_pulls(state='open')
+                for pr in pulls:
+                    if f"#{issue_number}" in f"{pr.title} {pr.body or ''}":
+                        associated_pr = pr
+                        pr_number = pr.number
+                        pr_url = pr.html_url
+                        break
+            except Exception as e:
+                _log_to_all_sessions("WARNING", f"Could not find PR for issue #{issue_number}: {e}")
+                logger.warning(f"Could not find PR for issue #{issue_number}: {e}")
+
+        issue_trigger_required = trigger_required and associated_pr is None
+        final_comment, mention_added = build_copilot_comment(
+            comment_text, issue_trigger_required if not is_pr else trigger_required
+        )
         preview = ' '.join(final_comment.split())[:240]
         decision_log = (
             f"GitHub comment decision: target={target_kind} #{issue_number}, "
-            f"copilot_trigger_required={trigger_required}, "
+            f"agent={CODE_AGENT}, trigger_required={trigger_required}, "
             f"mention_added_automatically={mention_added}, preview={preview!r}"
         )
         _log_to_all_sessions("INFO", decision_log)
@@ -5963,27 +6004,18 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         
         # Add comment to the issue/PR
         issue.create_comment(final_comment)
-        _log_to_all_sessions("INFO", f"GitHub API: Added comment to #{issue_number}" + (" with @copilot mention" if trigger_required else ""))
-        logger.info(f"Added comment to #{issue_number}" + (" with @copilot mention" if trigger_required else ""))
+        trigger_note = " with code-agent mention" if mention_added else ""
+        _log_to_all_sessions("INFO", f"GitHub API: Added comment to #{issue_number}{trigger_note}")
+        logger.info(f"Added comment to #{issue_number}{trigger_note}")
         
-        # Check if this is a PR (pull_request attribute exists) or an issue
-        pr_number = issue_number if is_pr else None
-        pr_url = issue.html_url if is_pr else None
-        
-        # If it's an issue (not a PR), try to find an associated PR
-        if not is_pr:
+        # Also preserve the update on the associated PR. For Claude, this is the
+        # sole triggering mention so the same request cannot start two runs.
+        if associated_pr is not None:
             try:
-                # Search for PR that references this issue
-                pulls = repo.get_pulls(state='open')
-                for pr in pulls:
-                    # Check if PR body or title references this issue
-                    if pr.body and f"#{issue_number}" in pr.body:
-                        pr_number = pr.number
-                        pr.create_issue_comment(final_comment)
-                        pr_url = pr.html_url
-                        _log_to_all_sessions("INFO", f"GitHub API: Added comment to associated PR #{pr_number}" + (" with @copilot mention" if trigger_required else ""))
-                        logger.info(f"Added comment to associated PR #{pr_number}" + (" with @copilot mention" if trigger_required else ""))
-                        break
+                pr_comment, _ = build_copilot_comment(comment_text, trigger_required)
+                associated_pr.create_issue_comment(pr_comment)
+                _log_to_all_sessions("INFO", f"GitHub API: Added comment to associated PR #{pr_number}")
+                logger.info(f"Added comment to associated PR #{pr_number}")
             except Exception as e:
                 _log_to_all_sessions("WARNING", f"Could not add comment to PR for issue #{issue_number}: {e}")
                 logger.warning(f"Could not add comment to PR for issue #{issue_number}: {e}")
@@ -5999,8 +6031,7 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                 'pr_url': pr_url
             }
             await _broadcast_ws(success_data)
-            # @copilot was mentioned in the comment — no automatic log streaming.
-            # Copilot session logs are only streamed when the user explicitly requests them.
+            # Detailed Claude logs remain authoritative in GitHub Actions.
         
     except Exception as e:
         import traceback
@@ -6514,9 +6545,9 @@ async def create_github_issue(text: str):
         
         if selected_issue['mode'] == 'update' and selected_issue['number']:
             logger.info(f"Already in update mode for issue #{selected_issue['number']}, adding comment")
-            # Determine if we should mention @copilot based on the comment content
+            # Determine if this is an agent-triggering code update.
             mention_copilot = should_mention_copilot(text.strip())
-            logger.info(f"Comment mentions copilot: {mention_copilot}")
+            logger.info(f"Comment triggers code agent: {mention_copilot}")
             await update_github_issue(selected_issue['number'], text.strip(), mention_copilot)
             return
         
@@ -6753,7 +6784,8 @@ async def create_github_issue(text: str):
             }
             await _broadcast_ws(success_data)
             
-            # Start polling for Copilot session for each connected client
+            # Keep the existing PR discovery events, but Claude has no gh
+            # agent-task session for the backend to stream.
             for ws in connected_clients:
                 try:
                     ws_client_id = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
@@ -6770,7 +6802,7 @@ async def create_github_issue(text: str):
                     asyncio.create_task(
                         poll_for_copilot_session(issue.number, ws, ws_client_id)
                     )
-                    logger.info(f"Started Copilot session polling for issue #{issue.number}")
+                    logger.info(f"Started code-agent PR polling for issue #{issue.number}")
                 except Exception as e:
                     logger.error(f"Error starting Copilot poll for client: {e}")
         
@@ -7366,17 +7398,17 @@ async def handle_update_submit(request: web.Request) -> web.Response:
 
     # --- Post to GitHub ---
     try:
-        # Always @copilot on updates so it stays aware of new context/video summaries.
-        final_comment = f"{comment}\n\n@copilot"
+        # Reuse the normal update path so Claude is triggered on an associated
+        # open PR (when present) instead of starting duplicate issue work.
+        await update_github_issue(int(issue_number), comment, mention_copilot=True)
 
-        def _post_comment():
+        def _get_issue_url():
             g = Github(GITHUB_TOKEN)
             repo = g.get_repo(GITHUB_REPO)
             issue = repo.get_issue(int(issue_number))
-            issue.create_comment(final_comment)
             return issue.html_url
 
-        issue_url = await asyncio.to_thread(_post_comment)
+        issue_url = await asyncio.to_thread(_get_issue_url)
         logger.info("Posted comment to issue #%s via /submit-update", issue_number)
 
         await _broadcast_ws({

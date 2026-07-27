@@ -2,10 +2,13 @@ name: Auto-assign to Copilot
 
 on:
   issues:
-    types: [opened]
+    types: [labeled]
 
 jobs:
   assign-to-copilot:
+    if: >
+      github.event.label.name == 'ready-for-copilot' &&
+      contains(github.event.issue.body, 'Template: VAT')
     runs-on: ubuntu-latest
     permissions:
       issues: write
