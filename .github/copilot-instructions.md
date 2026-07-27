@@ -96,6 +96,14 @@ text = extract_text(response)
 
 Use `call_openai_responses_model()` only for a configured model that requires the Responses API. Do not split prompt steps into separate model calls. Take Photo and Streaming may each choose the model appropriate to their entry point.
 
+Choose model strategy from the requested output behavior:
+
+- Use one model when the user does not request escalation or multiple results. Use one faster model if the user wants it to be faster, and use one more accurate model if the user wants it to be more accurate.
+- Use a conditional cascade when the user wants normal cases to be fast but difficult, uncertain, empty, or insufficient cases to receive additional accuracy. Call the fast model first, inspect its result, and call the stronger model only when escalation is needed; deliver one final answer.
+- Use parallel progressive only when the user explicitly wants multiple model results delivered as they complete. Do not infer progressive output merely from requests for speed, accuracy, multiple models, or better handling of difficult cases.
+
+Model strategy remains tool-controlled. The backend must not turn a multi-model tool into parallel progressive execution.
+
 ## Entry-point behavior
 
 Take Photo receives one current image. It should use `TOOL_PROMPT`, explicitly call its chosen model or models, and return or emit concise results. If motion or history is essential, report that it cannot be determined from one image.

@@ -6150,14 +6150,16 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
     """
     try:
         issue_prompt = _build_issue_extraction_prompt(transcript, existing_data)
+        logger.info("Issue extraction transcript=%s", transcript)
         issue_response = system_llm_call(
             messages=[{'role': 'user', 'content': issue_prompt}],
             metadata={'response_format': {'type': 'json_object'}},
         )
         issue_raw = extract_text(issue_response)
+        logger.info("Issue extraction raw output=%s", issue_raw)
         issue_data = _parse_llm_json_object(issue_raw)
         logger.info(
-            "Issue extraction output=%s",
+            "Issue extraction parsed output=%s",
             json.dumps(issue_data, ensure_ascii=False),
         )
 
@@ -6184,15 +6186,13 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
     except Exception as e:
         logger.exception("Failed to complete issue extraction")
         _log_to_all_sessions("ERROR", f"Issue parser workflow failed: {e}")
-        # Fallback to simple parsing
+        # Preserve the complete request when structured extraction fails. This
+        # is intentionally redundant across Task and Expected output: losing
+        # user intent is worse than asking the code agent to interpret the
+        # original wording in both required sections.
         existing_prompts = existing_data.get('original_prompts', []) if existing_data else []
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         fallback_custom_gpt = _normalize_custom_gpt_value(transcript)
-        fallback_missing_fields = []
-        if not fallback_custom_gpt:
-            fallback_missing_fields = ['custom_gpt']
-        elif fallback_custom_gpt == 'yes' and not (existing_data or {}).get('gpt_query'):
-            fallback_missing_fields = ['gpt_query']
         return {
             'type': 'visual AT',
             'title': transcript[:100],
@@ -6200,17 +6200,47 @@ def parse_transcript_with_ai(transcript: str, existing_data: dict = None) -> dic
             'problem': '',
             'solution': '',
             'implementation_details': '',
-            'example_usage': '',
+            'example_usage': transcript,
             'custom_gpt': fallback_custom_gpt,
             'gpt_query': '',
             'alternatives': '',
             'additional': '',
             'streaming_context': _select_streaming_context('', transcript),
-            'parser_failed': True,
+            'parser_fallback': True,
             'parser_error': str(e),
-            'missing_fields': fallback_missing_fields,
+            'missing_fields': [],
             'original_prompts': existing_prompts + [f"[{timestamp}] {transcript}"]
         }
+
+
+def _original_request_fallback(parsed_data: dict) -> str:
+    """Return preserved user wording suitable for a required issue field."""
+    prompts = parsed_data.get('original_prompts') or []
+    cleaned = []
+    for prompt in prompts:
+        text = re.sub(r'^\[[^\]]+\]\s*', '', str(prompt or '')).strip()
+        if text:
+            cleaned.append(text)
+    return '\n'.join(cleaned).strip()
+
+
+def _replace_issue_section(body: str, heading: str, value: str) -> str:
+    """Fill one issue field by heading instead of a fragile comment key."""
+    pattern = rf'(^## {re.escape(heading)}\s*\n\n).*?(?=^## |\Z)'
+    replacement = lambda match: f"{match.group(1)}{value.strip()}\n\n"
+    return re.sub(pattern, replacement, body, count=1, flags=re.MULTILINE | re.DOTALL)
+
+
+def _issue_section_content(body: str, heading: str) -> str:
+    """Read visible content from one generated issue section."""
+    match = re.search(
+        rf'^## {re.escape(heading)}\s*\n\n(.*?)(?=^## |\Z)',
+        body,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not match:
+        return ''
+    return re.sub(r'<!--.*?-->', '', match.group(1), flags=re.DOTALL).strip()
 
 
 def fill_template(template_content: str, parsed_data: dict) -> str:
@@ -6234,21 +6264,23 @@ def fill_template(template_content: str, parsed_data: dict) -> str:
             return ''
         return str(value)
 
-    filled = filled.replace('<!-- A short Python-friendly name for the tool. -->',
-                            ensure_string(parsed_data.get('title', '')))
-    filled = filled.replace('<!-- What should the tool determine from the camera image? -->',
-                            ensure_string(parsed_data.get('description', '')))
-    filled = filled.replace('<!-- What should the spoken answer contain? -->',
-                            ensure_string(parsed_data.get('example_usage', '')))
-    filled = filled.replace('<!-- Important constraints, edge cases, and example inputs or answers. -->',
-                            ensure_string(parsed_data.get('additional', '')))
-    filled = filled.replace(
-        '<!-- Describe whether Streaming can use a changed latest frame or needs recent chronological frames. -->',
-        ensure_string(
+    fallback = _original_request_fallback(parsed_data)
+    task = ensure_string(parsed_data.get('description', '')).strip() or fallback
+    expected_output = (
+        ensure_string(parsed_data.get('example_usage', '')).strip() or fallback
+    )
+    fields = {
+        'Tool name': ensure_string(parsed_data.get('title', '')).strip(),
+        'Task': task,
+        'Expected output': expected_output,
+        'Constraints / examples': ensure_string(parsed_data.get('additional', '')).strip(),
+        'Streaming context': ensure_string(
             parsed_data.get('streaming_context')
             or parsed_data.get('execution_mode', '')
-        ),
-    )
+        ).strip(),
+    }
+    for heading, value in fields.items():
+        filled = _replace_issue_section(filled, heading, value)
     
     # Inject original prompts into the ORIGINAL_PROMPTS comment block
     original_prompts = parsed_data.get('original_prompts', [])
@@ -6662,6 +6694,16 @@ async def create_github_issue(text: str):
         else:
             # Fallback if template doesn't exist
             body = f"**Transcript:**\n{text}\n\n**Parsed Data:**\n{json.dumps(parsed_data, indent=2)}"
+
+        empty_required_sections = [
+            heading for heading in ('Task', 'Expected output')
+            if not _issue_section_content(body, heading)
+        ]
+        if empty_required_sections:
+            raise ValueError(
+                "Refusing to create issue with empty required sections: "
+                + ", ".join(empty_required_sections)
+            )
 
         # Create GitHub client
         g = Github(GITHUB_TOKEN)

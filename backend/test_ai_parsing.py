@@ -42,6 +42,10 @@ def load_stream_server_function(name: str):
             "_request_explicitly_requires_temporal_context",
         },
         "_tool_execution_mode": {"_literal_tool_metadata"},
+        "fill_template": {
+            "_original_request_fallback",
+            "_replace_issue_section",
+        },
     }.get(name, set())
     dependencies = [
         node for node in tree.body
@@ -108,6 +112,14 @@ class TestIssueTemplateGuidance(unittest.TestCase):
         self.assertIn("Do not add steps merely to restate the issue fields", instructions)
         self.assertIn("Assist a blind user in finding an indoor exit", instructions)
         self.assertIn("Read the medication label and report the text concisely", instructions)
+        self.assertIn("Use one model when", instructions)
+        self.assertIn("Use a conditional cascade when", instructions)
+        self.assertIn("call the stronger model only when escalation is needed", instructions)
+        self.assertIn("deliver one final answer", instructions)
+        self.assertIn("Use parallel progressive only when", instructions)
+        self.assertIn("multiple model results delivered as they complete", instructions)
+        self.assertIn("Do not infer progressive output", instructions)
+        self.assertIn("Model strategy remains tool-controlled", instructions)
 
         self.assertIn("Default to one direct instruction", template)
         self.assertIn("genuinely depends on earlier visual findings", template)
@@ -157,6 +169,56 @@ No"""
         })
         self.assertIn("## Streaming context\n\nrecent_history", issue)
         self.assertIn("signer’s recent hand movements", issue)
+
+    def test_current_template_maps_task_and_expected_output_by_heading(self):
+        fill_issue = load_stream_server_function("fill_template")
+        template = (
+            Path(__file__).resolve().parent.parent
+            / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
+        ).read_text(encoding="utf-8")
+        original = (
+            "Problem: I need help understanding a recent hand gesture. "
+            "Example Usage: Identify the gesture or short meaning."
+        )
+        issue = fill_issue(template, {
+            "title": "Hand Gesture Detector",
+            "description": "Identify a recent hand gesture from visible motion.",
+            "example_usage": "Report the gesture or short meaning just expressed.",
+            "additional": "Use the full motion sequence.",
+            "streaming_context": "recent_history",
+            "original_prompts": [f"[2026-07-27 15:49] {original}"],
+        })
+
+        self.assertIn(
+            "## Task\n\nIdentify a recent hand gesture from visible motion.",
+            issue,
+        )
+        self.assertIn(
+            "## Expected output\n\nReport the gesture or short meaning just expressed.",
+            issue,
+        )
+        self.assertNotIn(
+            "<!-- What should the tool determine from the camera image or recent frames? -->",
+            issue,
+        )
+
+    def test_required_issue_fields_fall_back_to_original_request(self):
+        fill_issue = load_stream_server_function("fill_template")
+        template = (
+            Path(__file__).resolve().parent.parent
+            / ".github" / "ISSUE_TEMPLATE" / "visual_at.md"
+        ).read_text(encoding="utf-8")
+        original = "Find the nearest exit and tell me how to reach it."
+        issue = fill_issue(template, {
+            "title": "Exit Finder",
+            "description": "",
+            "example_usage": "",
+            "streaming_context": "latest_frame",
+            "original_prompts": [f"[2026-07-27 16:00] {original}"],
+        })
+
+        self.assertIn(f"## Task\n\n{original}", issue)
+        self.assertIn(f"## Expected output\n\n{original}", issue)
 
     def test_current_held_sign_posture_remains_static(self):
         select_context = load_stream_server_function("_select_streaming_context")
