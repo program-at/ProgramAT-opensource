@@ -69,7 +69,6 @@ from model_router import (
     TOOL_EXECUTION_IMAGES,
     load_capability_profiles,
     load_global_execution_config,
-    single_stage_llm_call,
     system_llm_call,
 )
 from litellm_utils import (
@@ -858,22 +857,99 @@ def _log_final_tool_response(_tool_name: str, response_data: Dict[str, Any]) -> 
 
 
 def _single_stage_tool_result(
-    tool_name: str, task: str, image, streaming: bool = False,
+    tool_name: str, tool_code: str, task: str, image, streaming: bool = False,
     metadata: Optional[Dict[str, Any]] = None,
 ):
     """Return a direct default-model result when planning is disabled."""
     config = load_global_execution_config()
     if config['planner_enabled']:
         return None
-    request_text = str(task or '').strip() or str(tool_name).replace('_', ' ')
-    logger.info("[Execution Policy] planner disabled -> single-stage execution")
+    tool_prompt = _resolve_tool_prompt(tool_code)
+    if tool_prompt:
+        prompt_source = 'tool_prompt'
+    else:
+        prompt_source = 'generic_fallback'
+        tool_prompt = str(task or '').strip() or str(tool_name).replace('_', ' ')
+        logger.warning(
+            "[Execution Policy] tool=%s has no statically resolvable prompt; using generic fallback",
+            tool_name,
+        )
+    logger.info(
+        "[Execution Policy] planner_enabled=%s routing_enabled=%s selected_model=%s "
+        "prompt_source=%s prompt_preview=%r",
+        str(config['planner_enabled']).lower(),
+        str(config['routing_enabled']).lower(),
+        config['default_llm_when_routing_disabled'],
+        prompt_source,
+        tool_prompt[:160],
+    )
     call_metadata = dict(metadata or {})
     call_metadata.update({'streaming': streaming, 'tool_name': tool_name})
-    return single_stage_llm_call(
-        task=request_text,
+    return tool_copilot_llm_call(
+        messages=[{'role': 'user', 'content': tool_prompt}],
         images=[image],
         metadata=call_metadata,
     )
+
+
+def _resolve_tool_prompt(tool_code: str) -> Optional[str]:
+    """Resolve the prompt already declared by a generated tool without executing it."""
+    try:
+        tree = ast.parse(tool_code or '')
+    except SyntaxError:
+        return None
+
+    string_values: Dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Constant) or not isinstance(value.value, str):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                string_values[target.id] = value.value
+
+    declared_prompt = string_values.get('TOOL_PROMPT')
+    if declared_prompt and declared_prompt.strip():
+        return declared_prompt.strip()
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        is_copilot_call = (
+            isinstance(node.func, ast.Name) and node.func.id == 'copilot_llm_call'
+        ) or (
+            isinstance(node.func, ast.Attribute) and node.func.attr == 'copilot_llm_call'
+        )
+        if not is_copilot_call:
+            continue
+        messages_kw = next((kw.value for kw in node.keywords if kw.arg == 'messages'), None)
+        if not isinstance(messages_kw, (ast.List, ast.Tuple)):
+            continue
+        for message_node in messages_kw.elts:
+            if not isinstance(message_node, ast.Dict):
+                continue
+            message = {
+                key.value: value
+                for key, value in zip(message_node.keys, message_node.values)
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            role_node = message.get('role')
+            if not (
+                isinstance(role_node, ast.Constant)
+                and role_node.value == 'user'
+            ):
+                continue
+            content_node = message.get('content')
+            if isinstance(content_node, ast.Constant) and isinstance(content_node.value, str):
+                return content_node.value.strip() or None
+            if isinstance(content_node, ast.Name):
+                prompt = string_values.get(content_node.id, '').strip()
+                if prompt:
+                    return prompt
+    return None
 
 
 def _streaming_embedding_similarity(
@@ -1648,6 +1724,7 @@ async def _execute_streaming_tools_unlocked(websocket, client_id: str, image, im
         single_stage_result = await asyncio.to_thread(
             _single_stage_tool_result,
             tool_name,
+            tool_code,
             tool.get('task', ''),
             image,
             True,
@@ -6844,6 +6921,7 @@ async def handle_client(websocket):
                             single_stage_result = await asyncio.to_thread(
                                 _single_stage_tool_result,
                                 tool_name,
+                                tool_code,
                                 data.get('task', ''),
                                 frame_image,
                                 False,
