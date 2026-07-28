@@ -116,6 +116,8 @@ from generated_tool_runtime import (
     load_generated_tool,
 )
 from validate_generated_tools import validate_generated_tool_source
+from codex_agent import cancel_run as cancel_codex_run
+from codex_agent import run_issue as run_codex_issue
 
 TOOLS_DIR = Path(__file__).resolve().parent.parent / 'tools'
 if str(TOOLS_DIR) not in sys.path:
@@ -134,7 +136,7 @@ logger = logging.getLogger(__name__)
 BRAINSTORMING_ENABLED = os.environ.get(
     'BRAINSTORMING_ENABLED', 'false'
 ).strip().lower() in {'1', 'true', 'yes', 'on'}
-CODE_AGENT = 'claude'
+CODE_AGENT = os.environ.get('CODE_AGENT', 'codex').strip().lower()
 
 
 def _normalize_custom_gpt_value(value) -> str:
@@ -508,6 +510,14 @@ SERVER_CAPABILITIES = _validate_config()
 GITHUB_TOKEN = _fetch_github_token()
 GITHUB_REPO = os.environ.get('GITHUB_REPO', '')  # Format: owner/repo
 PAUSE_DURATION = float(os.environ.get('PAUSE_DURATION', '5.0'))  # seconds to wait before creating issue
+CODEX_BINARY = os.environ.get('CODEX_BINARY', shutil.which('codex') or 'codex')
+CODEX_HOME = Path(os.environ['CODEX_HOME']) if os.environ.get('CODEX_HOME') else None
+CODEX_MODEL = os.environ.get('CODEX_MODEL', '')
+CODEX_BASE_BRANCH = os.environ.get('CODEX_BASE_BRANCH', 'main')
+CODEX_WORKTREE_ROOT = Path(
+    os.environ.get('CODEX_WORKTREE_ROOT', '/tmp/programat-codex-worktrees')
+)
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # LiteLLM / Gemini Configuration
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
@@ -4226,6 +4236,10 @@ async def stop_copilot_session_stream(client_id: str):
         client_id: Client identifier
     """
     global active_copilot_streams
+
+    if CODE_AGENT == 'codex' and await cancel_codex_run():
+        logger.info("Cancelled active Codex run at the client's request")
+        return
     
     if client_id not in active_copilot_streams:
         logger.warning(f"No active Copilot stream for {client_id}")
@@ -5925,9 +5939,14 @@ def should_mention_copilot(text: str) -> bool:
     return True
 
 
-def build_copilot_comment(comment_text: str, trigger_required: bool) -> tuple[str, bool]:
+def build_copilot_comment(
+    comment_text: str,
+    trigger_required: bool,
+    provider: Optional[str] = None,
+) -> tuple[str, bool]:
     """Build an agent-triggering comment while preserving the legacy helper name."""
-    mention = '@claude' if CODE_AGENT == 'claude' else '@copilot'
+    selected_provider = provider or CODE_AGENT
+    mention = '@claude' if selected_provider == 'claude' else '@copilot'
     if not trigger_required or re.search(
         rf'(?i)(?<![\w-]){re.escape(mention)}\b', comment_text
     ):
@@ -5941,6 +5960,18 @@ def is_copilot_target(issue) -> bool:
     identities.extend(getattr(assignee, 'login', '') for assignee in (getattr(issue, 'assignees', None) or []))
     labels = [getattr(label, 'name', '') for label in (getattr(issue, 'labels', None) or [])]
     return any('copilot' in str(value).lower() for value in (*identities, *labels))
+
+
+def _manual_agent_label(issue) -> str:
+    labels = {
+        str(getattr(label, 'name', '')).lower()
+        for label in (getattr(issue, 'labels', None) or [])
+    }
+    if 'ready-for-copilot' in labels:
+        return 'copilot'
+    if 'ready-for-claude' in labels:
+        return 'claude'
+    return ''
 
 
 async def update_github_issue(issue_number: int, comment_text: str, mention_copilot: bool = True):
@@ -5968,9 +5999,20 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
 
         is_pr = issue.pull_request is not None
         target_kind = "PR" if is_pr else "issue"
-        trigger_required = mention_copilot and (
-            CODE_AGENT == 'claude' or is_copilot_target(issue)
-        )
+        provider = _manual_agent_label(issue) or CODE_AGENT
+        pull_target = None
+        if is_pr and provider == 'codex':
+            try:
+                pull_target = repo.get_pull(issue_number)
+                head_ref = pull_target.head.ref
+                if head_ref.startswith('claude/'):
+                    provider = 'claude'
+                elif head_ref.startswith('copilot/'):
+                    provider = 'copilot'
+                elif head_ref.startswith('codex/'):
+                    provider = 'codex'
+            except Exception as e:
+                logger.warning("Could not inspect PR #%s provider: %s", issue_number, e)
 
         # Claude should continue an existing PR, not start a second issue run.
         pr_number = issue_number if is_pr else None
@@ -5989,14 +6031,31 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
                 _log_to_all_sessions("WARNING", f"Could not find PR for issue #{issue_number}: {e}")
                 logger.warning(f"Could not find PR for issue #{issue_number}: {e}")
 
+        if associated_pr is not None:
+            provider = _manual_agent_label(associated_pr) or (
+                'codex' if str(getattr(getattr(associated_pr, 'head', None), 'ref', '')).startswith('codex/')
+                else provider
+            )
+        trigger_required = mention_copilot and (
+            provider == 'claude'
+            or (
+                provider == 'copilot'
+                and (
+                    is_copilot_target(issue)
+                    or str(getattr(getattr(pull_target, 'head', None), 'ref', '')).startswith('copilot/')
+                )
+            )
+        )
         issue_trigger_required = trigger_required and associated_pr is None
         final_comment, mention_added = build_copilot_comment(
-            comment_text, issue_trigger_required if not is_pr else trigger_required
+            comment_text,
+            issue_trigger_required if not is_pr else trigger_required,
+            provider,
         )
         preview = ' '.join(final_comment.split())[:240]
         decision_log = (
             f"GitHub comment decision: target={target_kind} #{issue_number}, "
-            f"agent={CODE_AGENT}, trigger_required={trigger_required}, "
+            f"agent={provider}, trigger_required={trigger_required}, "
             f"mention_added_automatically={mention_added}, preview={preview!r}"
         )
         _log_to_all_sessions("INFO", decision_log)
@@ -6012,13 +6071,35 @@ async def update_github_issue(issue_number: int, comment_text: str, mention_copi
         # sole triggering mention so the same request cannot start two runs.
         if associated_pr is not None:
             try:
-                pr_comment, _ = build_copilot_comment(comment_text, trigger_required)
+                pr_comment, _ = build_copilot_comment(comment_text, trigger_required, provider)
                 associated_pr.create_issue_comment(pr_comment)
                 _log_to_all_sessions("INFO", f"GitHub API: Added comment to associated PR #{pr_number}")
                 logger.info(f"Added comment to associated PR #{pr_number}")
             except Exception as e:
                 _log_to_all_sessions("WARNING", f"Could not add comment to PR for issue #{issue_number}: {e}")
                 logger.warning(f"Could not add comment to PR for issue #{issue_number}: {e}")
+
+        if provider == 'codex' and mention_copilot:
+            source_issue = issue
+            source_issue_number = issue_number
+            branch = str(getattr(getattr(associated_pr, 'head', None), 'ref', ''))
+            codex_pr_number = getattr(associated_pr, 'number', None)
+            if is_pr:
+                pull = pull_target or repo.get_pull(issue_number)
+                branch = pull.head.ref
+                codex_pr_number = pull.number
+                match = re.search(r'(?i)(?:fixes|closes)\s+#(\d+)', f"{pull.title} {pull.body or ''}")
+                if match:
+                    source_issue_number = int(match.group(1))
+                    source_issue = repo.get_issue(source_issue_number)
+            _launch_codex(
+                issue_number=source_issue_number,
+                title=source_issue.title,
+                body=source_issue.body or '',
+                update_text=comment_text,
+                existing_branch=branch,
+                existing_pr_number=codex_pr_number,
+            )
         
         # Send success notification to client
         if connected_clients:
@@ -6513,6 +6594,104 @@ async def _broadcast_ws(data: dict) -> None:
                 logger.warning(f"Failed to broadcast to client: {result}")
 
 
+async def _broadcast_codex_event(payload: dict) -> None:
+    """Map local Codex events onto the existing frontend-compatible transport."""
+    event = payload.get('event')
+    run_id = payload.get('run_id')
+    if event == 'starting':
+        message = {
+            'type': 'copilot_session_stream_started',
+            'session_id': run_id,
+            'pr_or_session': run_id,
+            'provider': 'codex',
+            'timestamp': datetime.now().isoformat(),
+        }
+    elif event in {'jsonl', 'stderr', 'worktree_ready', 'changes_inspected', 'validation'}:
+        line = payload.get('line') or json.dumps(
+            payload.get('data') or {
+                key: value for key, value in payload.items()
+                if key not in {'event', 'run_id'}
+            },
+            ensure_ascii=False,
+        )
+        message = {
+            'type': 'copilot_session_log',
+            'pr_or_session': run_id,
+            'session_id': run_id,
+            'provider': 'codex',
+            'line': line,
+            'timestamp': datetime.now().isoformat(),
+        }
+    elif event == 'completed':
+        await _broadcast_ws({
+            'type': 'copilot_pr_found',
+            'provider': 'codex',
+            'issue_number': payload.get('issue_number'),
+            'pr_number': payload.get('pr_number'),
+            'pr_url': payload.get('pr_url'),
+            'message': f"Codex completed PR #{payload.get('pr_number')}.",
+            'timestamp': datetime.now().isoformat(),
+        })
+        message = {
+            'type': 'copilot_session_stream_ended',
+            'session_id': run_id,
+            'pr_or_session': run_id,
+            'provider': 'codex',
+            'exit_code': 0,
+            'timestamp': datetime.now().isoformat(),
+        }
+    elif event in {'failed', 'cancelled'}:
+        message = {
+            'type': 'copilot_session_error' if event == 'failed' else 'copilot_session_stream_ended',
+            'session_id': run_id,
+            'pr_or_session': run_id,
+            'provider': 'codex',
+            'exit_code': None if event == 'cancelled' else 1,
+            'error': payload.get('error'),
+            'cancelled': event == 'cancelled',
+            'timestamp': datetime.now().isoformat(),
+        }
+    else:
+        return
+    await _broadcast_ws(message)
+
+
+def _launch_codex(
+    *,
+    issue_number: int,
+    title: str,
+    body: str,
+    update_text: str = '',
+    existing_branch: str = '',
+    existing_pr_number: Optional[int] = None,
+) -> None:
+    """Start one isolated Codex run without blocking issue/comment handling."""
+    if CODE_AGENT != 'codex':
+        return
+
+    async def _run() -> None:
+        result = await run_codex_issue(
+            repo_root=REPO_ROOT,
+            issue_number=issue_number,
+            title=title,
+            body=body,
+            github_repo=GITHUB_REPO,
+            github_token=GITHUB_TOKEN,
+            codex_binary=CODEX_BINARY,
+            codex_home=CODEX_HOME,
+            model=CODEX_MODEL,
+            base_branch=CODEX_BASE_BRANCH,
+            worktree_root=CODEX_WORKTREE_ROOT,
+            update_text=update_text,
+            existing_branch=existing_branch,
+            existing_pr_number=existing_pr_number,
+            log_callback=_broadcast_codex_event,
+        )
+        logger.info("[Codex] Run for issue #%s finished: %s", issue_number, result)
+
+    asyncio.create_task(_run())
+
+
 async def create_github_issue(text: str):
     """
     Create a GitHub issue OR update an existing one based on selected mode.
@@ -6773,6 +6952,19 @@ async def create_github_issue(text: str):
         issue_cache['last_fetch'] = datetime.now()
         _log_to_all_sessions("INFO", f"GitHub API: Created issue #{issue.number}: {title} (url: {issue.html_url})")
         logger.info(f"Created GitHub issue #{issue.number}: {title[:50]}... (type: {issue_type})")
+
+        if CODE_AGENT == 'codex':
+            _launch_codex(
+                issue_number=issue.number,
+                title=issue.title,
+                body=body,
+            )
+        elif CODE_AGENT == 'claude':
+            issue.add_to_labels('ready-for-claude')
+        elif CODE_AGENT == 'copilot':
+            issue.add_to_labels('ready-for-copilot')
+        else:
+            logger.error("Unsupported CODE_AGENT=%r; issue created without an agent", CODE_AGENT)
         
         # Send success notification to client
         if connected_clients:
@@ -6784,9 +6976,9 @@ async def create_github_issue(text: str):
             }
             await _broadcast_ws(success_data)
             
-            # Keep the existing PR discovery events, but Claude has no gh
-            # agent-task session for the backend to stream.
-            for ws in connected_clients:
+            # Copilot retains its remote agent-task polling. Codex reports its
+            # local subprocess lifecycle directly, and Claude logs live in Actions.
+            for ws in connected_clients if CODE_AGENT == 'copilot' else []:
                 try:
                     ws_client_id = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
                     
@@ -9223,6 +9415,19 @@ async def main():
     logger.info(f"Starting backend server on {HOST}:{PORT}")
     logger.info(f"Frame saving: {'enabled' if SAVE_FRAMES else 'disabled'}")
     logger.info(f"GitHub issue creation: {'enabled' if GITHUB_TOKEN else 'disabled'}")
+    logger.info(
+        "Code agent: provider=%s codex_binary=%s codex_home=%s codex_model=%s base_branch=%s worktree_root=%s",
+        CODE_AGENT,
+        CODEX_BINARY,
+        CODEX_HOME or '<inherited>',
+        CODEX_MODEL or '<Codex profile default>',
+        CODEX_BASE_BRANCH,
+        CODEX_WORKTREE_ROOT,
+    )
+    if CODE_AGENT not in {'codex', 'claude', 'copilot'}:
+        logger.warning("Unsupported CODE_AGENT=%r", CODE_AGENT)
+    if CODE_AGENT == 'codex' and not shutil.which(CODEX_BINARY):
+        logger.warning("Codex executable is not available: %s", CODEX_BINARY)
 
     logger.info(
         "[Streaming] streaming_executor=%s nvidia_hosted_active=%s "
@@ -9261,6 +9466,8 @@ async def main():
     try:
         await asyncio.Future()  # Run forever
     finally:
+        while await cancel_codex_run():
+            pass
         for client_id in list(active_hosted_nvidia_sessions):
             await _cleanup_hosted_nvidia_session(client_id, reason='server_shutdown')
         await hosted_nvidia_client.close()

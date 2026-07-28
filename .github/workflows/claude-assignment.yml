@@ -7,12 +7,12 @@ name: Claude VAT Implementation
 #    a. Install the app on your repo: https://github.com/apps/claude
 #    b. Connect it to your Anthropic account: https://claude.ai/settings → GitHub
 #    Both steps are required — doing only one will cause OIDC token exchange to fail.
-# 3. Trigger: Opening an issue that contains 'Template: VAT' starts Claude.
-#    Later @claude comments on that issue or its PR continue the work.
+# 3. Trigger: Add 'ready-for-claude' to a VAT issue. Later @claude comments
+#    on that issue or its PR continue the work.
 
 on:
   issues:
-    types: [opened]
+    types: [labeled]
   issue_comment:
     types: [created]
 
@@ -26,6 +26,7 @@ jobs:
   claude-vat:
     if: >
       (github.event_name == 'issues' &&
+       github.event.label.name == 'ready-for-claude' &&
        contains(github.event.issue.body, 'Template: VAT')) ||
       (github.event_name == 'issue_comment' &&
        contains(github.event.comment.body, '@claude'))
