@@ -15,6 +15,49 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import stream_server
 
 
+class TestDisabledPlannerToolPrompt(unittest.TestCase):
+    def test_resolves_declared_tool_prompt(self):
+        tool_code = '''
+TOOL_PROMPT = "Identify the medicine label and read the dosage."
+
+def main(image):
+    return copilot_llm_call(
+        capability="ocr",
+        messages=[{"role": "user", "content": TOOL_PROMPT}],
+        images=[image],
+    )
+'''
+        self.assertEqual(
+            stream_server._resolve_tool_prompt(tool_code),
+            "Identify the medicine label and read the dosage.",
+        )
+
+    def test_disabled_planner_passes_tool_prompt_through_copilot_call(self):
+        config = {
+            "planner_enabled": False,
+            "routing_enabled": False,
+            "default_llm_when_routing_disabled": "gemini_flash_lite",
+        }
+        tool_code = 'TOOL_PROMPT = "Read only the nearest street sign."'
+        expected = {"response": "Main Street"}
+        with patch.object(stream_server, "load_global_execution_config", return_value=config), \
+             patch.object(stream_server, "tool_copilot_llm_call", return_value=expected) as call, \
+             self.assertLogs(stream_server.logger, level="INFO") as logs:
+            result = stream_server._single_stage_tool_result(
+                "street_sign", tool_code, "Describe the scene", b"image"
+            )
+
+        self.assertEqual(result, expected)
+        self.assertEqual(
+            call.call_args.kwargs["messages"],
+            [{"role": "user", "content": "Read only the nearest street sign."}],
+        )
+        output = "\n".join(logs.output)
+        self.assertIn("planner_enabled=false routing_enabled=false", output)
+        self.assertIn("selected_model=gemini_flash_lite", output)
+        self.assertIn("prompt_source=tool_prompt", output)
+
+
 class TestMobileResponseBoundary(unittest.TestCase):
     def test_extracts_response_from_dict_and_execution_object(self):
         expected = "Turn slightly right and walk forward to reach the exit."
