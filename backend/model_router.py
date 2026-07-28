@@ -447,6 +447,26 @@ def _simple_response(text: str) -> Any:
 def _model_executor(profile, messages, images, metadata) -> ImplementationResult:
     if not profile.model:
         raise ExecutionPolicyError(f"Model implementation {profile.name!r} has no model")
+    capability = (metadata or {}).get("capability", "unknown")
+    tool_name = (metadata or {}).get("tool_name", "")
+    has_images = bool(images)
+    header = (
+        f"[Model Prompt] model={profile.model} capability={capability}"
+        f" tool={tool_name} has_images={has_images}"
+    )
+    print(header, flush=True)
+    for msg in (messages or []):
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            content = " ".join(text_parts)
+        print(f"  [{role}] {content}", flush=True)
+    logger.info(header)
     return ImplementationResult(call_model(profile.model, messages, images=images, metadata=metadata))
 
 
@@ -1307,6 +1327,25 @@ def single_stage_llm_call(task=None, messages=None, images=None, metadata=None):
             call_metadata.get("streaming_original_image"),
         )
     model_started = time.perf_counter()
+    tool_name = call_metadata.get("tool_name", "")
+    has_images = bool(call_images)
+    header = (
+        f"[Model Prompt] model={profile.model} capability={DEFAULT_FALLBACK_CAPABILITY}"
+        f" tool={tool_name} has_images={has_images}"
+    )
+    print(header, flush=True)
+    for msg in call_messages:
+        role = msg.get("role", "?")
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "")
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            content = " ".join(text_parts)
+        print(f"  [{role}] {content}", flush=True)
+    logger.info(header)
     response = call_model(
         profile.model, call_messages, images=call_images, metadata=call_metadata
     )
@@ -1379,6 +1418,22 @@ def copilot_llm_call(
         logger.info("[Execution Policy] routing disabled -> using default model for all LLM stages")
         candidates = [global_config["default_llm_when_routing_disabled"]]
         evaluator_name = None
+        prompt = next((
+            str(message.get("content", "")).strip()
+            for message in (messages or [])
+            if isinstance(message, dict)
+            and message.get("role") == "user"
+            and str(message.get("content", "")).strip()
+        ), str(goal or task or "").strip())
+        logger.info(
+            "[Execution Policy] planner_enabled=%s routing_enabled=%s selected_model=%s "
+            "prompt_source=%s prompt_preview=%r",
+            str(global_config["planner_enabled"]).lower(),
+            str(global_config["routing_enabled"]).lower(),
+            global_config["default_llm_when_routing_disabled"],
+            "tool_prompt" if prompt else "generic_fallback",
+            prompt[:160],
+        )
 
     call_metadata = dict(metadata or {})
     call_metadata.setdefault("model_cache", _IMPLEMENTATION_MODEL_CACHE)
