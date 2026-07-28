@@ -27,6 +27,14 @@ class TestCodexAgent(unittest.TestCase):
         self.assertRegex(slug, r"^[a-z0-9-]+$")
         self.assertLessEqual(len(slug), 40)
 
+    def test_publish_url_uses_configured_issue_repository(self):
+        self.assertEqual(
+            codex_agent._github_repo_url("yushanwe/ProgramAT-opensource"),
+            "https://github.com/yushanwe/ProgramAT-opensource.git",
+        )
+        with self.assertRaises(ValueError):
+            codex_agent._github_repo_url("https://github.com/wrong/repo")
+
     def test_cancel_terminates_active_process(self):
         process = Mock()
         process.returncode = None

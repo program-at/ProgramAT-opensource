@@ -41,6 +41,12 @@ def _slug(value: str) -> str:
     return value[:40] or "tool"
 
 
+def _github_repo_url(repository: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
+        raise ValueError(f"Invalid GitHub repository name: {repository!r}")
+    return f"https://github.com/{repository}.git"
+
+
 async def _command(
     *args: str,
     cwd: Path,
@@ -164,6 +170,8 @@ async def run_issue(
         worktree_root.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["GH_TOKEN"] = github_token
+        publish_url = _github_repo_url(github_repo)
+        fetched_ref = f"refs/codex-agent/{run_id}"
         if codex_home is not None:
             env["CODEX_HOME"] = str(codex_home)
         temp_dir = Path(tempfile.mkdtemp(prefix=f"programat-codex-{issue_number}-"))
@@ -187,13 +195,15 @@ async def run_issue(
         last_message: Optional[Path] = None
         try:
             await emit("starting", branch=branch)
-            ref = f"origin/{existing_branch or base_branch}"
+            source_branch = existing_branch or base_branch
             await _checked(
-                "git", "fetch", "origin", existing_branch or base_branch,
+                "git", "fetch", publish_url,
+                f"refs/heads/{source_branch}:{fetched_ref}",
                 cwd=repo_root, env=env,
             )
             await _checked(
-                "git", "worktree", "add", "--force", "-B", branch, str(worktree), ref,
+                "git", "worktree", "add", "--force", "-B", branch,
+                str(worktree), fetched_ref,
                 cwd=repo_root,
             )
             await emit("worktree_ready", worktree=str(worktree))
@@ -308,7 +318,7 @@ async def run_issue(
                 cwd=worktree,
             )
             await _checked(
-                "git", "push", "-u", "origin", f"HEAD:{branch}",
+                "git", "push", publish_url, f"HEAD:refs/heads/{branch}",
                 cwd=worktree, env=env,
             )
 
@@ -366,6 +376,7 @@ async def run_issue(
                 await _command(
                     "git", "worktree", "remove", "--force", str(worktree), cwd=repo_root
                 )
+            await _command("git", "update-ref", "-d", fetched_ref, cwd=repo_root)
             await _command("git", "worktree", "prune", cwd=repo_root)
             shutil.rmtree(temp_dir, ignore_errors=True)
             if active_runs.get(issue_number) is run:
