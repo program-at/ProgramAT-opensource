@@ -26,6 +26,18 @@ import ModelPickerScreen from './ModelPickerScreen';
 import VideoSummaryTestScreen from './VideoSummaryTestScreen';
 
 const SERVER_URL_KEY = '@server_url';
+const BRAINSTORMING_ENABLED_KEY = '@brainstorming_enabled';
+
+export function isBrainstormingEnabled(): Promise<boolean> {
+  return (async () => {
+    try {
+      const saved = await AsyncStorage.getItem(BRAINSTORMING_ENABLED_KEY);
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  })();
+}
 
 interface SettingsProps {
   appMode: AppMode;
@@ -47,6 +59,9 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
   // Loading state for the Register Device button.
   const [isRegistering, setIsRegistering] = useState(false);
 
+  // Brainstorming setting
+  const [brainstormingEnabled, setBrainstormingEnabled] = useState(true);
+
   // Meta / Ray-Ban (DAT) native iOS bridge. Only one-time device registration
   // is exposed here; the live camera pipeline is driven from the Tools screen.
   const { MetaWearablesModule } = NativeModules as {
@@ -59,6 +74,7 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
     setIsConnected(WebSocketService.isConnected());
     setCurrentServerUrl(WebSocketService.getServerUrl());
     loadSavedServerUrl();
+    loadBrainstormingSetting();
     const checkConnection = setInterval(() => {
       setIsConnected(WebSocketService.isConnected());
       setCurrentServerUrl(WebSocketService.getServerUrl());
@@ -83,6 +99,22 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
     } catch (error) {
       console.error('[Settings] Error loading saved server URL:', error);
     }
+  };
+
+  const loadBrainstormingSetting = async () => {
+    try {
+      const saved = await AsyncStorage.getItem(BRAINSTORMING_ENABLED_KEY);
+      if (saved !== null) {
+        setBrainstormingEnabled(saved === 'true');
+      }
+    } catch (error) {
+      console.error('[Settings] Error loading brainstorming setting:', error);
+    }
+  };
+
+  const handleBrainstormingToggle = async (value: boolean) => {
+    setBrainstormingEnabled(value);
+    await AsyncStorage.setItem(BRAINSTORMING_ENABLED_KEY, value ? 'true' : 'false');
   };
 
   const handleSaveServerUrl = async () => {
@@ -288,6 +320,27 @@ export default function Settings({ appMode, onModeChange }: SettingsProps) {
                 accessibilityRole="switch"
                 accessibilityLabel="Dark mode toggle"
                 accessibilityHint="Double tap to toggle between light and dark themes"
+              />
+            </View>
+          </View>
+
+          <View style={[styles.settingCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingInfo}>
+                <Text style={[styles.settingLabel, { color: theme.text }]}>Brainstorming</Text>
+                <Text style={[styles.settingDescription, { color: theme.textSecondary }]}>
+                  {brainstormingEnabled ? 'Ask follow-up questions' : 'Direct issue creation'}
+                </Text>
+              </View>
+              <Switch
+                value={brainstormingEnabled}
+                onValueChange={handleBrainstormingToggle}
+                trackColor={{ false: theme.border, true: theme.primary }}
+                thumbColor={brainstormingEnabled ? '#ffffff' : '#f4f3f4'}
+                accessible={true}
+                accessibilityRole="switch"
+                accessibilityLabel="Brainstorming toggle"
+                accessibilityHint="Double tap to toggle brainstorming questions"
               />
             </View>
           </View>
