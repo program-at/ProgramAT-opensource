@@ -48,7 +48,7 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
     def test_skips_failed_artifacts_for_later_stages(self):
         mocked_results = [
             {"response": "uncertain", "artifact": {}},
-            {"response": "uncertain ocr", "artifact": {"text": "", "confidence": 0.1}},
+            {"response": "uncertain ocr", "artifact": {"text": "", "confidence": 0.95}},
             {"response": "I cannot confirm the vehicle yet."},
         ]
         with patch.object(tool, "copilot_llm_call", side_effect=mocked_results) as mock_call:
@@ -63,14 +63,27 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
             "White Toyota Camry center frame plate ABC123 likely your Uber based on color and make details."
         )
         mocked_results = [
-            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}]}},
-            {"response": "ABC123", "artifact": {"text": "ABC123"}},
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.92}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.88}},
             {"response": long_response},
         ]
         with patch.object(tool, "copilot_llm_call", side_effect=mocked_results):
             result = tool.main(_test_image(), {"streaming": True})
 
         self.assertLessEqual(len(result.split()), 15)
+
+    def test_reasoning_receives_partial_artifacts_when_available(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.94}},
+            {"response": "no text", "artifact": {"text": "", "confidence": 0.97}},
+            {"response": "Vehicle appears to be a white Toyota."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results) as mock_call:
+            tool.main(_test_image(), {"expected_make": "Toyota"})
+
+        handed_off = mock_call.call_args_list[2].kwargs["metadata"].get("previous_stage_artifact", {})
+        self.assertIn("vehicle_detection", handed_off)
+        self.assertNotIn("ocr", handed_off)
 
 
 if __name__ == "__main__":

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-import numpy as np
-
 from model_router_client import copilot_llm_call
 
 TOOL_NAME = "uber_vehicle_identification_assistant"
@@ -80,6 +78,8 @@ def _artifact_usable(stage_result: Any) -> bool:
         confidence = artifact.get("confidence")
         if isinstance(confidence, (int, float)) and confidence < 0.35:
             return False
+        if "text" in artifact and not _clean_text(artifact.get("text")):
+            return False
         detections = artifact.get("detections")
         if isinstance(detections, list) and not detections:
             return False
@@ -87,14 +87,29 @@ def _artifact_usable(stage_result: Any) -> bool:
 
 
 def _truncate_for_streaming(text: str, streaming: bool) -> str:
-    cleaned = " ".join(text.split())
-    if not streaming or len(cleaned.split()) <= STREAMING_WORD_LIMIT:
+    words = text.split()
+    cleaned = " ".join(words)
+    if not streaming or len(words) <= STREAMING_WORD_LIMIT:
         return cleaned
-    return " ".join(cleaned.split()[:STREAMING_WORD_LIMIT])
+    return " ".join(words[:STREAMING_WORD_LIMIT])
 
 
-def main(image: np.ndarray, input_data: Any = None) -> Any:
-    if image is None or not isinstance(image, np.ndarray) or image.size == 0:
+def _has_image_data(image: Any) -> bool:
+    if image is None:
+        return False
+    ndim = getattr(image, "ndim", None)
+    if isinstance(ndim, int) and ndim < 2:
+        return False
+    size = getattr(image, "size", None)
+    if isinstance(size, int):
+        return size > 0
+    if isinstance(size, tuple):
+        return all(isinstance(value, int) and value > 0 for value in size)
+    return bool(size)
+
+
+def main(image: Any, input_data: Any = None) -> Any:
+    if not _has_image_data(image):
         return {
             "audio": {"type": "error", "text": "No camera image available."},
             "text": "No camera image available.",
@@ -172,10 +187,9 @@ def main(image: np.ndarray, input_data: Any = None) -> Any:
 
     response = _clean_text(reasoning.get("response")) if isinstance(reasoning, dict) else ""
     if not response:
-        response = "I could not confirm enough vehicle details yet. Please point the camera at the car."
+        return "I could not confirm enough vehicle details yet. Please point the camera at the car."
     return _truncate_for_streaming(response, is_streaming)
 
 
 run = main
 process_image = main
-
