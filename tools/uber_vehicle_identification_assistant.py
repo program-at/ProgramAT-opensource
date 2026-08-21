@@ -131,6 +131,34 @@ def _has_uber_verdict(text: str) -> bool:
     return any(marker in lowered for marker in known_verdict_phrases)
 
 
+def _has_criteria_match_verdict(text: str) -> bool:
+    lowered = text.lower()
+    known_match_phrases = [
+        "provided uber details match this car",
+        "provided uber details do not match this car",
+        "unsure whether provided uber details match this car",
+        "provided details match this car",
+        "provided details do not match this car",
+        "details match",
+        "details do not match",
+    ]
+    return any(marker in lowered for marker in known_match_phrases)
+
+
+def _ensure_criteria_match_verdict(text: str) -> str:
+    if _has_criteria_match_verdict(text):
+        return text
+
+    lowered = text.lower()
+    if "not your uber" in lowered:
+        prefix = "Provided Uber details do not match this car."
+    elif "likely your uber" in lowered:
+        prefix = "Provided Uber details match this car."
+    else:
+        prefix = "I am unsure whether provided Uber details match this car."
+    return f"{prefix} {text}".strip()
+
+
 def _ensure_uber_verdict(text: str, has_user_criteria: bool) -> str:
     if _has_uber_verdict(text):
         return text
@@ -219,9 +247,9 @@ def main(image: Any, input_data: Any = None) -> Any:
                     "You are assisting a blind user. "
                     "Return concise, audio-friendly plain text. "
                     "Start with exactly one of these verdicts: "
-                    "'This is likely your Uber.', "
-                    "'This is not your Uber.', "
-                    "or 'I am unsure if this is your Uber.'. "
+                    "'Provided Uber details match this car, so this is likely your Uber.', "
+                    "'Provided Uber details do not match this car, so this is not your Uber.', "
+                    "or 'I am unsure whether provided Uber details match this car, so I am unsure if this is your Uber.'. "
                     "Include make, model, color, and plate if visible. "
                     "Then provide the brief supporting details."
                 ),
@@ -240,6 +268,8 @@ def main(image: Any, input_data: Any = None) -> Any:
         return "I could not confirm enough vehicle details yet. Please point the camera at the car."
     has_user_criteria = bool(expected_vehicle or user_query)
     response = _ensure_uber_verdict(response, has_user_criteria)
+    if has_user_criteria:
+        response = _ensure_criteria_match_verdict(response)
     return _truncate_for_streaming(response, is_streaming)
 
 

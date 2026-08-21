@@ -49,12 +49,16 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
         mocked_results = [
             {"response": "uncertain", "artifact": {}},
             {"response": "uncertain ocr", "artifact": {"text": "", "confidence": 0.95}},
-            {"response": "I cannot confirm the vehicle yet."},
+            {"response": "Details are unclear right now."},
         ]
         with patch.object(tool, "copilot_llm_call", side_effect=mocked_results) as mock_call:
             result = tool.main(_test_image(), {"query": "black Honda"})
 
-        self.assertEqual(result, "I cannot confirm the vehicle yet.")
+        self.assertEqual(
+            result,
+            "I am unsure whether provided Uber details match this car. "
+            "I am unsure if this is your Uber. Details are unclear right now.",
+        )
         self.assertNotIn("previous_stage_artifact", mock_call.call_args_list[1].kwargs["metadata"])
         self.assertNotIn("previous_stage_artifact", mock_call.call_args_list[2].kwargs["metadata"])
 
@@ -122,9 +126,22 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
         with patch.object(tool, "copilot_llm_call", side_effect=mocked_results):
             result = tool.main(_test_image(), {"query": "white toyota"})
 
+        self.assertIn("I am unsure whether provided Uber details match this car.", result)
         self.assertIn("I am unsure if this is your Uber.", result)
         self.assertNotIn("I need your expected Uber details to tell if this is your Uber.", result)
         self.assertIn("White Toyota Camry, plate ABC123.", result)
+
+    def test_adds_match_verdict_for_likely_uber_response(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.9}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.8}},
+            {"response": "This is likely your Uber. White Toyota Camry, plate ABC123."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results):
+            result = tool.main(_test_image(), {"query": "white toyota camry"})
+
+        self.assertIn("Provided Uber details match this car.", result)
+        self.assertIn("This is likely your Uber.", result)
 
     def test_requests_expected_details_when_no_criteria_provided(self):
         mocked_results = [
