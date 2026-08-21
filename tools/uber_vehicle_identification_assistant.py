@@ -9,6 +9,17 @@ from model_router_client import copilot_llm_call
 TOOL_NAME = "uber_vehicle_identification_assistant"
 TARGET_LABELS = ["car", "vehicle", "license plate", "suv", "sedan"]
 STREAMING_WORD_LIMIT = 15
+TOOL_RUNTIME_INPUT = {
+    "key": "query",
+    "label": "Uber details",
+    "placeholder": "Type expected make, model, color, or plate",
+}
+_tool_runtime_input_key = TOOL_RUNTIME_INPUT.get("key")
+TOOL_RUNTIME_INPUT_KEY = (
+    _tool_runtime_input_key.strip()
+    if isinstance(_tool_runtime_input_key, str) and _tool_runtime_input_key.strip()
+    else "query"
+)
 
 
 def _as_dict(input_data: Any) -> Dict[str, Any]:
@@ -20,6 +31,14 @@ def _clean_text(value: Any) -> str:
         return ""
     text = str(value).strip()
     return text
+
+
+def _first_non_empty(config: Dict[str, Any], keys: list[str]) -> str:
+    for key in keys:
+        value = _clean_text(config.get(key))
+        if value:
+            return value
+    return ""
 
 
 def _extract_expected_vehicle(input_data: Dict[str, Any]) -> Dict[str, str]:
@@ -117,7 +136,8 @@ def main(image: Any, input_data: Any = None) -> Any:
 
     config = _as_dict(input_data)
     expected_vehicle = _extract_expected_vehicle(config)
-    user_query = _clean_text(config.get("query") or config.get("prompt") or config.get("value"))
+    query_keys = list(dict.fromkeys([TOOL_RUNTIME_INPUT_KEY, "query", "prompt", "value"]))
+    user_query = _first_non_empty(config, query_keys)
     criteria_text = _criteria_text(expected_vehicle, user_query)
     is_streaming = bool(
         config.get("streaming")

@@ -99,6 +99,20 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
         self.assertIsNotNone(reasoning_messages)
         self.assertIn("User request: black honda", reasoning_messages[1]["content"])
 
+    def test_runtime_input_block_key_is_honored(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.9}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.8}},
+            {"response": "Black Honda Civic, plate ABC123. Possibly your ride."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results) as mock_call, patch.object(
+            tool, "TOOL_RUNTIME_INPUT", {"key": "uber_query"}
+        ), patch.object(tool, "TOOL_RUNTIME_INPUT_KEY", "uber_query"):
+            tool.main(_test_image(), {"uber_query": "blue toyota"})
+            reasoning_messages = mock_call.call_args_list[2].kwargs.get("messages")
+            self.assertIsNotNone(reasoning_messages)
+            self.assertIn("User request: blue toyota", reasoning_messages[1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()
