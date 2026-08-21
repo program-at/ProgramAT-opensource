@@ -113,6 +113,17 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
             self.assertIsNotNone(reasoning_messages)
             self.assertIn("User request: blue toyota", reasoning_messages[1]["content"])
 
+    def test_adds_explicit_uber_verdict_when_missing(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.9}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.8}},
+            {"response": "White Toyota Camry, plate ABC123."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results):
+            result = tool.main(_test_image(), {"query": "white toyota"})
+
+        self.assertIn("I am unsure if this is your Uber.", result)
+
 
 if __name__ == "__main__":
     unittest.main()

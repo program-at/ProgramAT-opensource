@@ -113,6 +113,28 @@ def _truncate_for_streaming(text: str, streaming: bool) -> str:
     return " ".join(words[:STREAMING_WORD_LIMIT])
 
 
+def _has_uber_verdict(text: str) -> bool:
+    lowered = text.lower()
+    if "your uber" in lowered:
+        return True
+    uncertainty_markers = [
+        "cannot confirm",
+        "can't confirm",
+        "not sure",
+        "unsure",
+        "uncertain",
+    ]
+    return any(marker in lowered for marker in uncertainty_markers)
+
+
+def _ensure_uber_verdict(text: str, has_user_criteria: bool) -> str:
+    if _has_uber_verdict(text):
+        return text
+    if has_user_criteria:
+        return f"I am unsure if this is your Uber. {text}".strip()
+    return f"I need your expected Uber details to tell if this is your Uber. {text}".strip()
+
+
 def _has_image_data(image: Any) -> bool:
     if image is None:
         return False
@@ -192,8 +214,12 @@ def main(image: Any, input_data: Any = None) -> Any:
                 "content": (
                     "You are assisting a blind user. "
                     "Return concise, audio-friendly plain text. "
+                    "Start with exactly one of these verdicts: "
+                    "'This is likely your Uber.', "
+                    "'This is not your Uber.', "
+                    "or 'I am unsure if this is your Uber.'. "
                     "Include make, model, color, and plate if visible. "
-                    "Then state whether it likely matches the user's Uber criteria."
+                    "Then provide the brief supporting details."
                 ),
             },
             {
@@ -208,6 +234,8 @@ def main(image: Any, input_data: Any = None) -> Any:
     response = _clean_text(reasoning.get("response")) if isinstance(reasoning, dict) else ""
     if not response:
         return "I could not confirm enough vehicle details yet. Please point the camera at the car."
+    has_user_criteria = bool(expected_vehicle or user_query)
+    response = _ensure_uber_verdict(response, has_user_criteria)
     return _truncate_for_streaming(response, is_streaming)
 
 
