@@ -117,7 +117,7 @@ def main(image: Any, input_data: Any = None) -> Any:
 
     config = _as_dict(input_data)
     expected_vehicle = _extract_expected_vehicle(config)
-    user_query = _clean_text(config.get("query") or config.get("prompt"))
+    user_query = _clean_text(config.get("query") or config.get("prompt") or config.get("value"))
     criteria_text = _criteria_text(expected_vehicle, user_query)
     is_streaming = bool(
         config.get("streaming")

@@ -85,6 +85,20 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
         self.assertIn("vehicle_detection", handed_off)
         self.assertNotIn("ocr", handed_off)
 
+    def test_value_field_is_used_as_query_fallback(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.9}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.8}},
+            {"response": "Black Honda Civic, plate ABC123. Possibly your ride."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results) as mock_call:
+            tool.main(_test_image(), {"value": "black honda"})
+
+        self.assertEqual(mock_call.call_count, 3)
+        reasoning_messages = mock_call.call_args_list[2].kwargs.get("messages")
+        self.assertIsNotNone(reasoning_messages)
+        self.assertIn("User request: black honda", reasoning_messages[1]["content"])
+
 
 if __name__ == "__main__":
     unittest.main()

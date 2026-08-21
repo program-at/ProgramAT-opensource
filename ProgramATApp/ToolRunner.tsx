@@ -68,6 +68,7 @@ export default function ToolRunner({
   isActive = true,
 }: ToolRunnerProps) {
   const [toolOutput, setToolOutput] = useState('');
+  const [toolInput, setToolInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
   const [isStreaming, setIsStreaming] = useState(false);
   const isStreamingRef = useRef(false); // Ref to avoid stale closures in cleanup effects
@@ -945,7 +946,7 @@ export default function ToolRunner({
       tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
-      input: '',
+      input: toolInput.trim(),
       task: selectedTool.description || selectedTool.name,
       frame: {
         base64: frameData.base64,
@@ -997,7 +998,7 @@ export default function ToolRunner({
       tool_path: selectedTool.path,
       tool_code: selectedTool.code,
       tool_language: selectedTool.language,
-      input: '',
+      input: toolInput.trim(),
       task: selectedTool.description || selectedTool.name,
       throttle_ms: 1000, // Process 1 frame per second
     };
@@ -1206,6 +1207,29 @@ export default function ToolRunner({
                     💬 Conversation
                   </Text>
                 </TouchableOpacity>
+              </View>
+
+              <View style={styles.toolInputSection}>
+                <Text
+                  nativeID="tool-input-label"
+                  style={styles.toolInputLabel}>
+                  Optional input
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={toolInput}
+                  onChangeText={setToolInput}
+                  placeholder="Type details for this tool"
+                  multiline={true}
+                  numberOfLines={3}
+                  editable={!isRunning && !isStreaming}
+                  accessible={true}
+                  accessibilityRole="text"
+                  accessibilityLabel="Tool input text"
+                  accessibilityLabelledBy="tool-input-label"
+                  accessibilityState={{ disabled: isRunning || isStreaming }}
+                  accessibilityHint="Optional text sent to the tool, such as vehicle make, color, or plate"
+                />
               </View>
 
               {/* Follow-up mic button - shown during custom GPT streaming */}
@@ -1562,6 +1586,22 @@ const styles = StyleSheet.create({
     backgroundColor: '#fafafa',
     minHeight: 80,
     textAlignVertical: 'top',
+  },
+  toolInputSection: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 6,
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: '#e0e0e0',
+  },
+  toolInputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 6,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
   },
   oneShotButton: {
     backgroundColor: '#2196F3',
