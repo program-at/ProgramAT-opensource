@@ -123,6 +123,21 @@ class TestUberVehicleIdentificationAssistant(unittest.TestCase):
             result = tool.main(_test_image(), {"query": "white toyota"})
 
         self.assertIn("I am unsure if this is your Uber.", result)
+        self.assertNotIn("I need your expected Uber details to tell if this is your Uber.", result)
+        self.assertIn("White Toyota Camry, plate ABC123.", result)
+
+    def test_requests_expected_details_when_no_criteria_provided(self):
+        mocked_results = [
+            {"response": "vehicle located", "artifact": {"detections": [{"label": "car"}], "confidence": 0.9}},
+            {"response": "ABC123", "artifact": {"text": "ABC123", "confidence": 0.8}},
+            {"response": "White Toyota Camry, plate ABC123."},
+        ]
+        with patch.object(tool, "copilot_llm_call", side_effect=mocked_results):
+            result = tool.main(_test_image(), {})
+
+        self.assertIn("I need your expected Uber details to tell if this is your Uber.", result)
+        self.assertNotIn("I am unsure if this is your Uber.", result)
+        self.assertIn("White Toyota Camry, plate ABC123.", result)
 
 
 if __name__ == "__main__":

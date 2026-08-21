@@ -115,16 +115,20 @@ def _truncate_for_streaming(text: str, streaming: bool) -> str:
 
 def _has_uber_verdict(text: str) -> bool:
     lowered = text.lower()
-    if "your uber" in lowered:
-        return True
-    uncertainty_markers = [
+    known_verdict_phrases = [
+        "this is likely your uber",
+        "this is not your uber",
+        "this might be your uber",
+        "likely your uber",
+        "not your uber",
+        "i am unsure if this is your uber",
         "cannot confirm",
         "can't confirm",
         "not sure",
         "unsure",
         "uncertain",
     ]
-    return any(marker in lowered for marker in uncertainty_markers)
+    return any(marker in lowered for marker in known_verdict_phrases)
 
 
 def _ensure_uber_verdict(text: str, has_user_criteria: bool) -> str:
